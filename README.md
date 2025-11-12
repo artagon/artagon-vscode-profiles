@@ -45,6 +45,7 @@ This repository tracks all Visual Studio Code profiles, shared settings, and hel
 | `cpp-clangd-(crisp|retina)` | C/C++ (clangd) | [full list](#ext-cpp-clangd) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-clangd-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-clangd-retina.code-profile) | clang‑tidy; Ninja; build dirs excluded |
 | `cpp-intellisense-(crisp|retina)` | C/C++ (cpptools) | [full list](#ext-cpp-cpptools) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-intellisense-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-intellisense-retina.code-profile) | cpptools provider; `compile_commands.json`; Ninja |
 | `ai-profile-(crisp|retina)` | Utilities / AI | [full list](#ext-ai) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-profile-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-profile-retina.code-profile) | Copilot‑only policy; chat center |
+| `ai-plus-(crisp|retina)` | Utilities / AI (Copilot + Cody + Continue) | [full list](#ext-ai-plus) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-plus-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-plus-retina.code-profile) | Experimental “try more AI” bundle |
 
 ### Downloadable Profile Bundles
 
@@ -64,6 +65,8 @@ Click an Export badge to download the `.code-profile` bundle for easy import in 
 | cpp-intellisense-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-intellisense-retina.code-profile) |
 | ai-profile-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-profile-crisp.code-profile) |
 | ai-profile-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-profile-retina.code-profile) |
+| ai-plus-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-plus-crisp.code-profile) |
+| ai-plus-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-plus-retina.code-profile) |
 
 ### Full Extension Lists
 
@@ -563,7 +566,55 @@ jq -r '.[].identifier.id' profiles/ai-profile-retina/extensions.json \
   | xargs -n1 -I{} code --profile "ai-profile-retina" --install-extension "{}"
 ```
 
- </details>
+</details>
+
+<a id="ext-ai-plus"></a>
+<details>
+  <summary><strong>AI‑Plus (Copilot + Cody + Continue)</strong> — ai-plus-(crisp|retina)</summary>
+
+- `catppuccin.catppuccin-vsc`
+- `catppuccin.catppuccin-vsc-icons`
+- `enkia.tokyo-night`
+- `zhuangtongfa.Material-theme`
+- `sdras.night-owl`
+- `akamud.vscode-theme-onedark`
+- `dracula-theme.theme-dracula`
+- `pkief.material-icon-theme`
+- `vscode-icons-team.vscode-icons`
+- `eamodio.gitlens`
+- `usernamehw.errorlens`
+- `oderwat.indent-rainbow`
+- `streetsidesoftware.code-spell-checker`
+- `ms-vsliveshare.vsliveshare`
+- `ms-azuretools.vscode-docker`
+- `github.vscode-pull-request-github`
+- `sonarsource.sonarlint-vscode`
+- `mutantdino.resourcemonitor`
+- `fill-labs.dependi`
+- `mikestead.dotenv`
+- `foxundermoon.shell-format`
+- `timonwong.shellcheck`
+- `redhat.vscode-yaml`
+- `github.vscode-github-actions`
+- `github.copilot`
+- `github.copilot-chat`
+- `sourcegraph.cody-ai`
+- `continue.continue`
+- `tamasfe.even-better-toml`
+
+Install all (CLI):
+
+```bash
+# ai-plus-crisp
+jq -r '.[].identifier.id' profiles/ai-plus-crisp/extensions.json \
+  | xargs -n1 -I{} code --profile "ai-plus-crisp" --install-extension "{}"
+
+# ai-plus-retina
+jq -r '.[].identifier.id' profiles/ai-plus-retina/extensions.json \
+  | xargs -n1 -I{} code --profile "ai-plus-retina" --install-extension "{}"
+```
+
+</details>
 
 ## Guides (Step‑by‑Step)
 
