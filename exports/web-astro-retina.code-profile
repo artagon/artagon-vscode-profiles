@@ -102,6 +102,25 @@
     "[astro]": {
       "editor.defaultFormatter": "astro-build.astro-vscode",
       "editor.formatOnSave": true
+    },
+    "files.associations": {
+      "*.astro": "astro"
+    },
+    "emmet.includeLanguages": {
+      "astro": "html"
+    },
+    "tailwindCSS.includeLanguages": {
+      "astro": "html"
+    },
+    "css.validate": true,
+    "scss.validate": true,
+    "less.validate": true,
+    "typescript.suggest.autoImports": true,
+    "javascript.suggest.autoImports": true,
+    "typescript.tsserver.maxTsServerMemory": 3072,
+    "[toml]": {
+      "editor.defaultFormatter": "tamasfe.even-better-toml",
+      "editor.formatOnSave": true
     }
   },
   "extensions": {
@@ -129,11 +148,18 @@
       "vscode-icons-team.vscode-icons",
       "zhuangtongfa.Material-theme",
       "astro-build.astro-vscode",
+      "ecmel.vscode-html-css",
+      "stylelint.vscode-stylelint",
+      "clinyong.vscode-css-modules",
+      "naumovs.color-highlight",
+      "pranaygp.vscode-css-peek",
       "dbaeumer.vscode-eslint",
       "esbenp.prettier-vscode",
       "bradlc.vscode-tailwindcss",
       "christian-kohler.npm-intellisense",
       "eg2.vscode-npm-script",
+      "christian-kohler.path-intellisense",
+      "tamasfe.even-better-toml",
       "github.copilot",
       "github.copilot-chat"
     ]

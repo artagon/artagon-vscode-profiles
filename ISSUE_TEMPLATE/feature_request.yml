@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest an improvement or a new profile
+labels: [enhancement]
+body:
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the change you'd like to see.
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: New profile(s)
+        - label: Profile extensions update
+        - label: Shared editor defaults change
+        - label: Script/CLI change
+        - label: Documentation only
+

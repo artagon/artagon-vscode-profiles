@@ -96,7 +96,11 @@
     "maven.terminal.useJavaHome": true,
     "maven.executable.path": "${env:MAVEN_HOME}/bin/mvn",
     "maven.view": "hierarchical",
-    "java.debug.settings.console": "integratedTerminal"
+    "java.debug.settings.console": "integratedTerminal",
+    "[toml]": {
+      "editor.defaultFormatter": "tamasfe.even-better-toml",
+      "editor.formatOnSave": true
+    }
   },
   "extensions": {
     "enabled": [
@@ -137,7 +141,8 @@
       "zhuangtongfa.Material-theme",
       "fill-labs.dependi",
       "github.copilot",
-      "github.copilot-chat"
+      "github.copilot-chat",
+      "tamasfe.even-better-toml"
     ]
   }
 }

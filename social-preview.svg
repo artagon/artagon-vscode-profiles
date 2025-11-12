@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0D1117"/>
+      <stop offset="100%" stop-color="#1F2937"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
+
+  <!-- Accent blocks -->
+  <rect x="60" y="460" width="180" height="16" rx="8" fill="#58A6FF" opacity="0.7"/>
+  <rect x="252" y="460" width="210" height="16" rx="8" fill="#7C3AED" opacity="0.6"/>
+  <rect x="476" y="460" width="170" height="16" rx="8" fill="#10B981" opacity="0.6"/>
+  <rect x="660" y="460" width="160" height="16" rx="8" fill="#F59E0B" opacity="0.6"/>
+
+  <!-- Title -->
+  <g font-family="'Inter', -apple-system, system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif" fill="#E6EDF3">
+    <text x="60" y="210" font-size="64" font-weight="700">VS Code Profiles</text>
+    <text x="60" y="280" font-size="36" opacity="0.9">Crisp / Retina · Portable · Reproducible</text>
+
+    <text x="60" y="360" font-size="30" opacity="0.95">Web/Astro · Java (jenv) · Rust · C/C++</text>
+    <text x="60" y="410" font-size="26" fill="#58A6FF">AI: GitHub Copilot + Copilot Chat</text>
+  </g>
+
+  <!-- VS Code Angle -->
+  <path d="M1150 130 l-140 120 v140 l140 120 l70 -40 v-300 z" fill="#0EA5E9" opacity="0.15"/>
+</svg>
+

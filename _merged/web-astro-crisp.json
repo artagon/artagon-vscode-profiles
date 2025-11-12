@@ -116,5 +116,9 @@
   "less.validate": true,
   "typescript.suggest.autoImports": true,
   "javascript.suggest.autoImports": true,
-  "typescript.tsserver.maxTsServerMemory": 3072
+  "typescript.tsserver.maxTsServerMemory": 3072,
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml",
+    "editor.formatOnSave": true
+  }
 }

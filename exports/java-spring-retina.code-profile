@@ -111,6 +111,10 @@
     "java.debug.settings.hotCodeReplace": "auto",
     "maven.executable.preferMavenWrapper": true,
     "maven.view": "hierarchical",
+    "[toml]": {
+      "editor.defaultFormatter": "tamasfe.even-better-toml",
+      "editor.formatOnSave": true
+    },
     "$schema": "https://json.schemastore.org/vscode-settings",
     "java.experimental.progressReports.enabled": true,
     "spring-boot.ls.java.home": "${command:jenv.javaHome}",
@@ -187,7 +191,8 @@
       "github.vscode-pull-request-github",
       "fill-labs.dependi",
       "github.copilot",
-      "github.copilot-chat"
+      "github.copilot-chat",
+      "tamasfe.even-better-toml"
     ]
   }
 }
