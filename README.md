@@ -137,21 +137,47 @@ bash scripts/install-extensions.sh ai-profile-crisp
 ```
 
 ## Layout Overview
-- `_shared/` — base editor/terminal settings (`editor-crisp` & `editor-retina` variants).
-- `_overrides/` — per-profile JSON fragments. Overrides may declare `"@extends"` to inherit other fragments (e.g., Spring profiles extend `java-profile-base.jsonc`).
-- `_merged/` — generated settings; never edit directly.
-- `profiles/<name>/` — per-profile `settings.json` symlink (into `_merged/`) plus `extensions.json` describing the extension bundle.
-- `scripts/` — helper scripts (`validate-json.sh`, `compose-settings.sh`, `export-profiles.sh`, `open-profiles.sh`, git hooks, tests).
- - compose-settings.sh — merges shared base + override into _merged and refreshes symlinks in profiles/
-  - export-profiles.sh — builds exports/<profile>.code-profile from merged settings + extensions
-  - validate-json.sh — runs jq over every JSON/JSONC fragment and extensions list
-  - install-extensions.sh — installs the extensions declared for a profile via `code --install-extension`
-  - open-profiles.sh — opens each profile once so it appears in the VS Code profile switcher
- - setup-cpp-toolchain.sh / setup-rust-toolchain.sh / setup-java-toolchain.sh — quick-start scripts for language-specific toolchains
-  - vspcli — command-line helper for listing profiles, opening workspaces, installing extensions, composing, exporting
-  - scripts/tests/run.sh — smoke-tests helper scripts (validate, compose, export, open-profiles via mock `code`)
-- `exports/` — portable `.code-profile` bundles for importing via VS Code’s “Profiles: Import Profile”.
-- `agents/` — documentation used by LLM assistants (`README.md`, `project.md`, `instructions.md`).
+
+Directory tree (top‑level):
+
+```
+.
+├─ _shared/           # editor baselines (crisp/retina)
+├─ _overrides/        # per‑profile settings (strict JSON; supports "@extends")
+├─ _merged/           # merged settings (generated)
+├─ profiles/          # per‑profile extensions.json + settings symlink
+├─ scripts/           # helpers (compose/export/validate/open/install, CLI)
+├─ exports/           # .code-profile bundles (for VS Code import)
+├─ agents/            # maintainer/LLM docs
+├─ branding/          # social preview assets
+└─ .github/           # issue/PR templates, CODEOWNERS, funding
+```
+
+Paths and purpose:
+
+| Path | Purpose | Notes |
+|---|---|---|
+| `_shared/` | Base editor/terminal settings | JSONC files: `editor-crisp.jsonc`, `editor-retina.jsonc` |
+| `_overrides/` | Per‑profile overrides | Strict JSON; supports `"@extends"` chains |
+| `_merged/` | Generated merged settings | Do not edit; created by composer |
+| `profiles/` | Profile manifests | `extensions.json` + `settings.json` symlink into `_merged/` |
+| `scripts/` | Tooling scripts + CLI | compose/export/validate/open/install, git hooks, tests, `vspcli` |
+| `exports/` | Portable bundles | Import via VS Code “Profiles: Import Profile” |
+| `agents/` | Docs for maintainers/LLMs | Architecture + maintenance workflow |
+| `branding/` | Social preview assets | `social-preview.svg` (export PNG, upload in repo settings) |
+| `.github/` | Repo metadata | Issue/PR templates, CODEOWNERS, FUNDING |
+
+Scripts quick reference:
+
+| Script | Action | Example |
+|---|---|---|
+| `scripts/compose-settings.sh` | Merge shared + overrides → `_merged/` and refresh symlinks | `bash scripts/compose-settings.sh java-spring-*` |
+| `scripts/export-profiles.sh` | Build `.code-profile` bundles | `bash scripts/export-profiles.sh web-astro-crisp` |
+| `scripts/validate-json.sh` | Validate JSON/JSONC fragments and extensions lists | `bash scripts/validate-json.sh` |
+| `scripts/open-profiles.sh` | Open/register profiles (optionally skip installs) | `scripts/open-profiles.sh --skip-install rust-profile-crisp` |
+| `scripts/install-extensions.sh` | Install declared extensions (group filters supported) | `bash scripts/install-extensions.sh <profile> --group General` |
+| `scripts/vspcli` | Unified CLI for list/open/install/compose/export | `vspcli --open-profiles --skip-install <profiles...>` |
+| `scripts/tests/run.sh` | Smoke test: validate→compose→export→open (mock) | `bash scripts/tests/run.sh` |
 
 ## Standalone install (non-XDG environments)
 1. Clone the repo wherever it is convenient (no need for `~/.config`). Example: `git clone https://… ~/src/vscode-profiles`.
