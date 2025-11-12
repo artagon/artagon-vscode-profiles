@@ -236,6 +236,186 @@ The following lists show the full set of extensions per profile family. Crisp an
 </details>
 
 <details>
+  <summary><strong>C/C++ (cpptools)</strong> — cpp-intellisense-(crisp|retina)</summary>
+
+- `akamud.vscode-theme-onedark`
+- `catppuccin.catppuccin-vsc`
+- `catppuccin.catppuccin-vsc-icons`
+- `dracula-theme.theme-dracula`
+- `eamodio.gitlens`
+- `enkia.tokyo-night`
+- `foxundermoon.shell-format`
+- `github.vscode-github-actions`
+- `github.vscode-pull-request-github`
+- `jeff-hykin.better-cpp-syntax`
+- `mikestead.dotenv`
+- `ms-azuretools.vscode-docker`
+- `ms-vscode.cmake-tools`
+- `ms-vscode.cpptools`
+- `ms-vscode.cpptools-extension-pack`
+- `ms-vsliveshare.vsliveshare`
+- `mutantdino.resourcemonitor`
+- `oderwat.indent-rainbow`
+- `pkief.material-icon-theme`
+- `redhat.vscode-yaml`
+- `sdras.night-owl`
+- `sonarsource.sonarlint-vscode`
+- `streetsidesoftware.code-spell-checker`
+- `timonwong.shellcheck`
+- `twxs.cmake`
+- `usernamehw.errorlens`
+- `vadimcn.vscode-lldb`
+- `vscode-icons-team.vscode-icons`
+- `zhuangtongfa.Material-theme`
+- `fill-labs.dependi`
+- `github.copilot`
+- `github.copilot-chat`
+- `tamasfe.even-better-toml`
+
+</details>
+
+<details>
+  <summary><strong>Java (Gradle‑first)</strong> — java-gradle-(crisp|retina)</summary>
+
+- `akamud.vscode-theme-onedark`
+- `catppuccin.catppuccin-vsc`
+- `catppuccin.catppuccin-vsc-icons`
+- `dracula-theme.theme-dracula`
+- `eamodio.gitlens`
+- `editorconfig.editorconfig`
+- `enkia.tokyo-night`
+- `foxundermoon.shell-format`
+- `gabrielbb.vscode-lombok`
+- `github.vscode-github-actions`
+- `github.vscode-pull-request-github`
+- `mikestead.dotenv`
+- `ms-azuretools.vscode-docker`
+- `ms-vsliveshare.vsliveshare`
+- `mutantdino.resourcemonitor`
+- `naco-siren.gradle-language`
+- `oderwat.indent-rainbow`
+- `pkief.material-icon-theme`
+- `pmd.pmd`
+- `redhat.java`
+- `redhat.vscode-xml`
+- `redhat.vscode-yaml`
+- `richardwillis.vscode-gradle`
+- `sdras.night-owl`
+- `shengchen.vscode-checkstyle`
+- `sonarsource.sonarlint-vscode`
+- `streetsidesoftware.code-spell-checker`
+- `timonwong.shellcheck`
+- `usernamehw.errorlens`
+- `vscjava.vscode-gradle`
+- `vscjava.vscode-java-debug`
+- `vscjava.vscode-java-dependency`
+- `vscjava.vscode-java-pack`
+- `vscjava.vscode-java-test`
+- `vscode-icons-team.vscode-icons`
+- `zhuangtongfa.Material-theme`
+- `fill-labs.dependi`
+- `github.copilot`
+- `github.copilot-chat`
+- `tamasfe.even-better-toml`
+
+</details>
+
+<details>
+  <summary><strong>Java (Maven‑first)</strong> — java-maven-(crisp|retina)</summary>
+
+- `akamud.vscode-theme-onedark`
+- `catppuccin.catppuccin-vsc`
+- `catppuccin.catppuccin-vsc-icons`
+- `dracula-theme.theme-dracula`
+- `eamodio.gitlens`
+- `editorconfig.editorconfig`
+- `enkia.tokyo-night`
+- `foxundermoon.shell-format`
+- `gabrielbb.vscode-lombok`
+- `github.vscode-github-actions`
+- `github.vscode-pull-request-github`
+- `mikestead.dotenv`
+- `ms-azuretools.vscode-docker`
+- `ms-vsliveshare.vsliveshare`
+- `mutantdino.resourcemonitor`
+- `oderwat.indent-rainbow`
+- `pkief.material-icon-theme`
+- `pmd.pmd`
+- `redhat.java`
+- `redhat.vscode-xml`
+- `redhat.vscode-yaml`
+- `sdras.night-owl`
+- `shengchen.vscode-checkstyle`
+- `shirdows.vscode-maven-dependency-explorer`
+- `sonarsource.sonarlint-vscode`
+- `streetsidesoftware.code-spell-checker`
+- `timonwong.shellcheck`
+- `usernamehw.errorlens`
+- `vscjava.vscode-java-debug`
+- `vscjava.vscode-java-dependency`
+- `vscjava.vscode-java-pack`
+- `vscjava.vscode-java-test`
+- `vscjava.vscode-maven`
+- `vscode-icons-team.vscode-icons`
+- `zhuangtongfa.Material-theme`
+- `fill-labs.dependi`
+- `github.copilot`
+- `github.copilot-chat`
+- `tamasfe.even-better-toml`
+
+</details>
+
+<details>
+  <summary><strong>Java (Spring)</strong> — java-spring-(crisp|retina)</summary>
+
+- `akamud.vscode-theme-onedark`
+- `catppuccin.catppuccin-vsc`
+- `catppuccin.catppuccin-vsc-icons`
+- `dracula-theme.theme-dracula`
+- `eamodio.gitlens`
+- `editorconfig.editorconfig`
+- `enkia.tokyo-night`
+- `foxundermoon.shell-format`
+- `gabrielbb.vscode-lombok`
+- `github.vscode-github-actions`
+- `mikestead.dotenv`
+- `ms-azuretools.vscode-docker`
+- `ms-vsliveshare.vsliveshare`
+- `mutantdino.resourcemonitor`
+- `oderwat.indent-rainbow`
+- `pivotal.vscode-spring-boot`
+- `pkief.material-icon-theme`
+- `pmd.pmd`
+- `redhat.java`
+- `redhat.vscode-xml`
+- `redhat.vscode-yaml`
+- `richardwillis.vscode-gradle`
+- `sdras.night-owl`
+- `shengchen.vscode-checkstyle`
+- `shirdows.vscode-maven-dependency-explorer`
+- `sonarsource.sonarlint-vscode`
+- `streetsidesoftware.code-spell-checker`
+- `timonwong.shellcheck`
+- `usernamehw.errorlens`
+- `vscjava.vscode-gradle`
+- `vscjava.vscode-java-debug`
+- `vscjava.vscode-java-dependency`
+- `vscjava.vscode-java-pack`
+- `vscjava.vscode-java-test`
+- `vscjava.vscode-maven`
+- `vscjava.vscode-spring-boot-dashboard`
+- `vscjava.vscode-spring-cloud`
+- `vscjava.vscode-spring-initializr`
+- `vscode-icons-team.vscode-icons`
+- `zhuangtongfa.Material-theme`
+- `github.vscode-pull-request-github`
+- `fill-labs.dependi`
+- `github.copilot`
+- `github.copilot-chat`
+- `tamasfe.even-better-toml`
+
+</details>
+<details>
   <summary><strong>AI (Copilot)</strong> — ai-profile-(crisp|retina)</summary>
 
 - `catppuccin.catppuccin-vsc`
