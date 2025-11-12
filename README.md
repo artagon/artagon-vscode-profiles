@@ -110,6 +110,18 @@ The following lists show the full set of extensions per profile family. Crisp an
 - `github.copilot`
 - `github.copilot-chat`
 
+Install all (CLI):
+
+```bash
+# web-astro-crisp
+jq -r '.[].identifier.id' profiles/web-astro-crisp/extensions.json \
+  | xargs -n1 -I{} code --profile "web-astro-crisp" --install-extension "{}"
+
+# web-astro-retina
+jq -r '.[].identifier.id' profiles/web-astro-retina/extensions.json \
+  | xargs -n1 -I{} code --profile "web-astro-retina" --install-extension "{}"
+```
+
 </details>
 
 <details>
@@ -157,6 +169,18 @@ The following lists show the full set of extensions per profile family. Crisp an
 - `github.copilot-chat`
 - `tamasfe.even-better-toml`
 
+Install all (CLI):
+
+```bash
+# java-profile-crisp
+jq -r '.[].identifier.id' profiles/java-profile-crisp/extensions.json \
+  | xargs -n1 -I{} code --profile "java-profile-crisp" --install-extension "{}"
+
+# java-profile-retina
+jq -r '.[].identifier.id' profiles/java-profile-retina/extensions.json \
+  | xargs -n1 -I{} code --profile "java-profile-retina" --install-extension "{}"
+```
+
 </details>
 
 <details>
@@ -192,6 +216,18 @@ The following lists show the full set of extensions per profile family. Crisp an
 - `zhuangtongfa.Material-theme`
 - `github.copilot`
 - `github.copilot-chat`
+
+Install all (CLI):
+
+```bash
+# rust-profile-crisp
+jq -r '.[].identifier.id' profiles/rust-profile-crisp/extensions.json \
+  | xargs -n1 -I{} code --profile "rust-profile-crisp" --install-extension "{}"
+
+# rust-profile-retina
+jq -r '.[].identifier.id' profiles/rust-profile-retina/extensions.json \
+  | xargs -n1 -I{} code --profile "rust-profile-retina" --install-extension "{}"
+```
 
 </details>
 
@@ -233,6 +269,18 @@ The following lists show the full set of extensions per profile family. Crisp an
 - `github.copilot-chat`
 - `tamasfe.even-better-toml`
 
+Install all (CLI):
+
+```bash
+# cpp-clangd-crisp
+jq -r '.[].identifier.id' profiles/cpp-clangd-crisp/extensions.json \
+  | xargs -n1 -I{} code --profile "cpp-clangd-crisp" --install-extension "{}"
+
+# cpp-clangd-retina
+jq -r '.[].identifier.id' profiles/cpp-clangd-retina/extensions.json \
+  | xargs -n1 -I{} code --profile "cpp-clangd-retina" --install-extension "{}"
+```
+
 </details>
 
 <details>
@@ -271,6 +319,18 @@ The following lists show the full set of extensions per profile family. Crisp an
 - `github.copilot`
 - `github.copilot-chat`
 - `tamasfe.even-better-toml`
+
+Install all (CLI):
+
+```bash
+# cpp-intellisense-crisp
+jq -r '.[].identifier.id' profiles/cpp-intellisense-crisp/extensions.json \
+  | xargs -n1 -I{} code --profile "cpp-intellisense-crisp" --install-extension "{}"
+
+# cpp-intellisense-retina
+jq -r '.[].identifier.id' profiles/cpp-intellisense-retina/extensions.json \
+  | xargs -n1 -I{} code --profile "cpp-intellisense-retina" --install-extension "{}"
+```
 
 </details>
 
@@ -318,6 +378,18 @@ The following lists show the full set of extensions per profile family. Crisp an
 - `github.copilot-chat`
 - `tamasfe.even-better-toml`
 
+Install all (CLI):
+
+```bash
+# java-gradle-crisp
+jq -r '.[].identifier.id' profiles/java-gradle-crisp/extensions.json \
+  | xargs -n1 -I{} code --profile "java-gradle-crisp" --install-extension "{}"
+
+# java-gradle-retina
+jq -r '.[].identifier.id' profiles/java-gradle-retina/extensions.json \
+  | xargs -n1 -I{} code --profile "java-gradle-retina" --install-extension "{}"
+```
+
 </details>
 
 <details>
@@ -362,6 +434,18 @@ The following lists show the full set of extensions per profile family. Crisp an
 - `github.copilot`
 - `github.copilot-chat`
 - `tamasfe.even-better-toml`
+
+Install all (CLI):
+
+```bash
+# java-maven-crisp
+jq -r '.[].identifier.id' profiles/java-maven-crisp/extensions.json \
+  | xargs -n1 -I{} code --profile "java-maven-crisp" --install-extension "{}"
+
+# java-maven-retina
+jq -r '.[].identifier.id' profiles/java-maven-retina/extensions.json \
+  | xargs -n1 -I{} code --profile "java-maven-retina" --install-extension "{}"
+```
 
 </details>
 
@@ -414,6 +498,18 @@ The following lists show the full set of extensions per profile family. Crisp an
 - `github.copilot-chat`
 - `tamasfe.even-better-toml`
 
+Install all (CLI):
+
+```bash
+# java-spring-crisp
+jq -r '.[].identifier.id' profiles/java-spring-crisp/extensions.json \
+  | xargs -n1 -I{} code --profile "java-spring-crisp" --install-extension "{}"
+
+# java-spring-retina
+jq -r '.[].identifier.id' profiles/java-spring-retina/extensions.json \
+  | xargs -n1 -I{} code --profile "java-spring-retina" --install-extension "{}"
+```
+
 </details>
 <details>
   <summary><strong>AI (Copilot)</strong> — ai-profile-(crisp|retina)</summary>
@@ -445,6 +541,18 @@ The following lists show the full set of extensions per profile family. Crisp an
 - `github.copilot`
 - `github.copilot-chat`
 - `tamasfe.even-better-toml`
+
+Install all (CLI):
+
+```bash
+# ai-profile-crisp
+jq -r '.[].identifier.id' profiles/ai-profile-crisp/extensions.json \
+  | xargs -n1 -I{} code --profile "ai-profile-crisp" --install-extension "{}"
+
+# ai-profile-retina
+jq -r '.[].identifier.id' profiles/ai-profile-retina/extensions.json \
+  | xargs -n1 -I{} code --profile "ai-profile-retina" --install-extension "{}"
+```
 
 </details>
 
