@@ -27,7 +27,10 @@ In `_overrides/<profile>.jsonc`:
 
 ## Continue/Cody
 
-Continue and Cody expose many provider‑specific options (local LLMs, enterprise endpoints). These vary by setup, so we recommend configuring them in VS Code’s Settings UI or in workspace `.vscode/settings.json`.
+Continue and Cody expose many provider‑specific options (local LLMs, enterprise endpoints). These vary by setup, so we recommend configuring them in VS Code’s Settings UI or in workspace `.vscode/settings.json` and tool‑specific files (e.g., `.continue/config`). Skeleton fragments are included here as placeholders you can extend locally:
+
+- `ai/continue.jsonc` — empty shell; add your Continue settings here if you want to reuse via ``.
+- `ai/cody.jsonc` — empty shell; add Cody settings (autocomplete, chat toggles) as needed.
 
 Helpful links:
 - Continue: https://marketplace.visualstudio.com/items?itemName=continue.continue
