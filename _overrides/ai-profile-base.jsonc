@@ -10,10 +10,12 @@
   "chat.editor.fontSize": 14,
   "chat.editor.fontFamily": "'JetBrains Mono', 'Cascadia Code', 'IBM Plex Mono', 'SFMono-Regular', monospace",
   "chat.editor.renderWhitespace": "selection",
-  "editor.accessibilitySupport": "off"
-  ,
+  "editor.accessibilitySupport": "off",
   "[toml]": {
     "editor.defaultFormatter": "tamasfe.even-better-toml",
     "editor.formatOnSave": true
-  }
+  },
+  "@extends": [
+    "ai/copilot.jsonc"
+  ]
 }

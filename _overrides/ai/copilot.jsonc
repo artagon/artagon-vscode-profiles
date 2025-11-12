@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/vscode-settings",
+  "github.copilot.enable": {
+    "*": true,
+    "plaintext": false,
+    "scminput": false
+  },
+  "editor.inlineSuggest.enabled": true,
+  "github.copilot.chat.enabled": true,
+  "chat.commandCenter.enabled": true,
+  "workbench.startupEditor": "chatView",
+  "github.copilot.panel.autoOpen": false
+}
