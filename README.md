@@ -2,6 +2,19 @@
 
 This repository tracks all Visual Studio Code profiles, shared settings, and helper scripts under `~/.config/vscode`. It replaces the stock `User/` folder with a reproducible, profile-aware layout and scripting toolkit. Clone it anywhere (e.g., `~/src/vscode-profiles`) if you prefer—profile symlinks stay relative, so the layout remains portable even when teammates do not follow the same XDG conventions.
 
+## About
+
+[![OS macOS](https://img.shields.io/badge/os-macOS-000000?logo=apple&logoColor=white)](#)
+[![OS Linux](https://img.shields.io/badge/os-Linux-0b7261?logo=linux&logoColor=white)](#)
+[![OS Windows](https://img.shields.io/badge/os-Windows-0078D4?logo=windows&logoColor=white)](#)
+[![AI Copilot Only](https://img.shields.io/badge/AI-Copilot%20only-1f6feb?logo=githubcopilot&logoColor=white)](#)
+[![Topics](https://img.shields.io/badge/profiles-astro%2C%20java%2C%20rust%2C%20c%2B%2B-4a7bbb)](#)
+
+- Portable, profile‑based VS Code setup with crisp/retina shared baselines and per‑profile overrides.
+- Web/Astro (TypeScript/JS + HTML/CSS), Java via jenv, Rust, and C/C++ stacks pre‑configured.
+- AI policy: GitHub Copilot + Copilot Chat only (no other assistants).
+- Scripts for validate/compose/export/open/install; exports ready for “Profiles: Import Profile”.
+
 ## Quick Start (First‑Time Users)
 - Requirements: VS Code CLI on PATH (`code --version`) and `jq`.
 - Compose + export:
