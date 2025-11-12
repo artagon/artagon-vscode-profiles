@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(done)",
+      "Bash(find:*)",
+      "Bash(openspec --version:*)",
+      "Bash(openspec --help:*)",
+      "Bash(openspec change --help:*)",
+      "Bash(openspec init --help:*)",
+      "Bash(openspec init:*)",
+      "Bash(mkdir:*)",
+      "Bash(openspec validate:*)",
+      "Bash(openspec list:*)",
+      "Bash(openspec show:*)",
+      "Bash(cat:*)",
+      "Bash(jq:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

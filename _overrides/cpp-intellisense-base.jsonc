@@ -1,0 +1,49 @@
+{
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "C_Cpp.default.intelliSenseMode": "clang-arm64",
+  "C_Cpp.default.cppStandard": "c++20",
+  "C_Cpp.default.cStandard": "c17",
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+  "C_Cpp.default.includePath": [
+    "${workspaceFolder}/include",
+    "${workspaceFolder}/src"
+  ],
+  "cmake.buildDirectory": "${workspaceFolder}/build",
+  "cmake.generator": "Ninja",
+  "cmake.configureOnOpen": true,
+  "cmake.cmakePath": "/opt/homebrew/bin/cmake",
+  "cmake.loggingLevel": "warning",
+  "cmake.copyCompileCommands": "${workspaceFolder}/compile_commands.json",
+  "cmake.parallelJobs": 8,
+  "cmake.preferredGenerators": [
+    "Ninja"
+  ],
+  "cmake.sourceDirectory": "${workspaceFolder}",
+  "cmake.environment": {
+    "CC": "/usr/bin/clang",
+    "CXX": "/usr/bin/clang++"
+  },
+  "cmake.ctestArgs": [
+    "-j",
+    "4"
+  ],
+  "C_Cpp.clang_format_path": "/opt/homebrew/opt/llvm/bin/clang-format",
+  "files.watcherExclude": {
+    "**/build": true,
+    "**/cmake-build-*": true,
+    "**/.vscode/ipch": true
+  },
+  "[cpp]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools",
+    "editor.formatOnSave": true
+  },
+  "[c]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools",
+    "editor.formatOnSave": true
+  }
+  ,
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml",
+    "editor.formatOnSave": true
+  }
+}

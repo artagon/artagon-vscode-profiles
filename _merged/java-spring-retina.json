@@ -1,0 +1,143 @@
+{
+  "workbench.colorTheme": "Catppuccin Mocha",
+  "workbench.preferredDarkColorTheme": "Catppuccin Mocha",
+  "workbench.iconTheme": "catppuccin-icons",
+  "workbench.fontAliasing": "auto",
+  "workbench.list.smoothScrolling": true,
+  "workbench.tree.indent": 16,
+  "workbench.tree.renderIndentGuides": "always",
+  "workbench.tree.expandMode": "doubleClick",
+  "window.commandCenter": true,
+  "window.titleBarStyle": "custom",
+  "window.nativeTabs": true,
+  "window.autoDetectHighContrast": true,
+  "terminal.integrated.gpuAcceleration": "on",
+  "terminal.integrated.rendererType": "auto",
+  "terminal.integrated.smoothScrolling": true,
+  "terminal.integrated.fontFamily": "'JetBrains Mono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'IBM Plex Mono', 'SFMono-Regular', monospace",
+  "terminal.integrated.fontSize": 15,
+  "terminal.integrated.minimumContrastRatio": 4.5,
+  "editor.fontFamily": "'JetBrains Mono', 'JetBrainsMono Nerd Font', 'Fira Code', 'Cascadia Code', 'IBM Plex Mono', 'SFMono-Regular', monospace",
+  "editor.fontLigatures": true,
+  "editor.fontVariations": true,
+  "editor.fontSize": 15,
+  "editor.lineHeight": 24,
+  "editor.fontWeight": "450",
+  "editor.cursorSmoothCaretAnimation": "on",
+  "editor.cursorBlinking": "expand",
+  "editor.smoothScrolling": true,
+  "editor.hover.enabled": true,
+  "editor.hover.delay": 200,
+  "editor.hover.showDefinitionPreview": true,
+  "editor.guides.bracketPairs": true,
+  "editor.guides.highlightActiveIndentation": true,
+  "editor.guides.indentation": true,
+  "editor.linkedEditing": true,
+  "editor.renderLineHighlight": "all",
+  "editor.renderWhitespace": "selection",
+  "editor.minimap.enabled": true,
+  "editor.minimap.renderCharacters": false,
+  "editor.inlineSuggest.enabled": true,
+  "editor.codeLens": true,
+  "editor.inlayHints.enabled": "on",
+  "editor.quickSuggestions": {
+    "other": true,
+    "comments": false,
+    "strings": true
+  },
+  "editor.quickSuggestionsDelay": 50,
+  "editor.suggest.preview": true,
+  "editor.suggest.showStatusBar": true,
+  "editor.suggest.localityBonus": true,
+  "editor.suggest.shareSuggestSelections": true,
+  "editor.parameterHints.enabled": true,
+  "editor.parameterHints.cycle": true,
+  "editor.stickyTabStops": true,
+  "editor.tabSize": 2,
+  "editor.bracketPairColorization.enabled": true,
+  "editor.accessibilitySupport": "off",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "git.autofetch": true,
+  "git.confirmSync": false,
+  "extensions.ignoreRecommendations": true,
+  "extensions.showRecommendationsOnlyOnDemand": true,
+  "security.workspace.trust.untrustedFiles": "open",
+  "breadcrumbs.enabled": true,
+  "explorer.confirmDragAndDrop": false,
+  "explorer.compactFolders": false,
+  "explorer.decorations.colors": true,
+  "explorer.decorations.badges": true,
+  "telemetry.telemetryLevel": "off",
+  "java.jdt.ls.java.home": "${command:jenv.javaHome}",
+  "java.configuration.runtimes": [
+    {
+      "name": "JDK",
+      "path": "${command:jenv.javaHome}",
+      "default": true
+    }
+  ],
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "java.compile.nullAnalysis.mode": "automatic",
+  "java.project.importHint": false,
+  "java.project.importOnFirstTimeStartup": "automatic",
+  "java.referencesCodeLens.enabled": true,
+  "java.implementationsCodeLens.enabled": true,
+  "java.signatureHelp.description.enabled": true,
+  "java.sources.downloadJavadoc": true,
+  "java.sources.downloadSources": true,
+  "java.sources.organizeImports.starThreshold": 999,
+  "java.sources.organizeImports.staticStarThreshold": 999,
+  "java.format.settings.profile": "GoogleStyle",
+  "java.import.gradle.enabled": true,
+  "java.import.gradle.wrapper.enabled": true,
+  "java.import.maven.enabled": true,
+  "java.import.gradle.java.home": "${command:jenv.javaHome}",
+  "java.import.gradle.userHome": "${env:GRADLE_USER_HOME}",
+  "java.import.gradle.version": "wrapper",
+  "java.import.gradle.offline.enabled": false,
+  "java.import.gradle.refresh.enabled": true,
+  "java.import.gradle.java.homeFallback": true,
+  "java.test.config": {
+    "name": "SpringBoot",
+    "workingDirectory": "${workspaceFolder}",
+    "vmArgs": [
+      "-ea"
+    ]
+  },
+  "java.test.defaultConfig": "SpringBoot",
+  "java.debug.settings.console": "integratedTerminal",
+  "java.debug.settings.hotCodeReplace": "auto",
+  "maven.executable.preferMavenWrapper": true,
+  "maven.view": "hierarchical",
+  "$schema": "https://json.schemastore.org/vscode-settings",
+  "java.experimental.progressReports.enabled": true,
+  "spring-boot.ls.java.home": "${command:jenv.javaHome}",
+  "spring-boot.ls.java.vmargs": [
+    "-Xms256m",
+    "-Xmx2G"
+  ],
+  "spring.initializr.serviceUrl": "https://start.spring.io",
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "redhat.java",
+  "files.associations": {
+    "*.jsp": "jsp"
+  },
+  "[java]": {
+    "editor.defaultFormatter": "redhat.java",
+    "editor.formatOnSave": true
+  },
+  "[properties]": {
+    "editor.defaultFormatter": "vscode.json-language-features"
+  },
+  "yaml.customTags": [
+    "!Ref",
+    "!Sub"
+  ],
+  "yaml.schemas": {
+    "https://json.schemastore.org/spring-configuration-metadata.json": [
+      "application*.yml",
+      "bootstrap*.yml"
+    ]
+  }
+}

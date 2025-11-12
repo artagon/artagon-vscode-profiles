@@ -1,0 +1,45 @@
+{
+  "java.jdt.ls.java.home": "${command:jenv.javaHome}",
+  "java.configuration.runtimes": [
+    {
+      "name": "JDK",
+      "path": "${command:jenv.javaHome}",
+      "default": true
+    }
+  ],
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "java.compile.nullAnalysis.mode": "automatic",
+  "java.project.importHint": false,
+  "java.project.importOnFirstTimeStartup": "automatic",
+  "java.referencesCodeLens.enabled": true,
+  "java.implementationsCodeLens.enabled": true,
+  "java.signatureHelp.description.enabled": true,
+  "java.sources.downloadJavadoc": true,
+  "java.sources.downloadSources": true,
+  "java.sources.organizeImports.starThreshold": 999,
+  "java.sources.organizeImports.staticStarThreshold": 999,
+  "java.format.settings.profile": "GoogleStyle",
+  "java.import.gradle.enabled": true,
+  "java.import.gradle.wrapper.enabled": true,
+  "java.import.maven.enabled": true,
+  "java.import.gradle.java.home": "${command:jenv.javaHome}",
+  "java.import.gradle.userHome": "${env:GRADLE_USER_HOME}",
+  "java.import.gradle.version": "wrapper",
+  "java.import.gradle.offline.enabled": false,
+  "java.import.gradle.refresh.enabled": true,
+  "java.import.gradle.java.homeFallback": true,
+  "java.test.config": {
+    "name": "JUnit",
+    "workingDirectory": "${workspaceFolder}",
+    "vmArgs": ["-ea"]
+  },
+  "java.test.defaultConfig": "JUnit",
+  "java.debug.settings.console": "integratedTerminal",
+  "java.debug.settings.hotCodeReplace": "auto",
+  "maven.executable.preferMavenWrapper": true,
+  "maven.view": "hierarchical",
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml",
+    "editor.formatOnSave": true
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "java.jdt.ls.java.home": "${command:jenv.javaHome}",
+  "java.import.gradle.enabled": true,
+  "java.import.gradle.wrapper.enabled": true,
+  "java.import.gradle.java.home": "${command:jenv.javaHome}",
+  "java.import.gradle.userHome": "${env:GRADLE_USER_HOME}",
+  "java.import.gradle.version": "wrapper",
+  "java.import.gradle.arguments": [
+    "--parallel",
+    "--build-cache"
+  ],
+  "java.import.maven.enabled": false,
+  "gradle.java.home": "${command:jenv.javaHome}",
+  "gradle.debug": true,
+  "gradle.completion": {
+    "enabled": true
+  },
+  "java.configuration.runtimes": [
+    {
+      "name": "JDK",
+      "path": "${command:jenv.javaHome}",
+      "default": true
+    }
+  ],
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "java.sources.organizeImports.starThreshold": 999,
+  "java.sources.organizeImports.staticStarThreshold": 999,
+  "java.signatureHelp.description.enabled": true,
+  "java.referencesCodeLens.enabled": true,
+  "java.test.config": {
+    "name": "GradleJUnit",
+    "projectName": "${workspaceFolderBasename}",
+    "workingDirectory": "${workspaceFolder}",
+    "vmArgs": [
+      "-ea"
+    ]
+  },
+  "java.test.defaultConfig": "GradleJUnit",
+  "java.debug.settings.console": "integratedTerminal"
+  ,
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml",
+    "editor.formatOnSave": true
+  }
+}

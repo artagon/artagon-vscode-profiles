@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json.schemastore.org/vscode-settings",
+  "chat.commandCenter.enabled": true,
+  "workbench.startupEditor": "chatView",
+  "github.copilot.enable": {
+    "*": true
+  },
+  "github.copilot.chat.editor.enableCodeActions": true,
+  "github.copilot.inlineSuggest.enableCodeActions": true,
+  "chat.editor.fontSize": 14,
+  "chat.editor.fontFamily": "'JetBrains Mono', 'Cascadia Code', 'IBM Plex Mono', 'SFMono-Regular', monospace",
+  "chat.editor.renderWhitespace": "selection",
+  "editor.accessibilitySupport": "off"
+  ,
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml",
+    "editor.formatOnSave": true
+  }
+}

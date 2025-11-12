@@ -1,0 +1,4 @@
+{
+  "$schema": "https://json.schemastore.org/vscode-settings",
+  "@extends": ["ai-profile-base.jsonc"]
+}

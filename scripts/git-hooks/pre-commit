@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+run() {
+  local description="$1"
+  shift
+  echo "pre-commit: $description"
+  "$@"
+}
+
+ensure_code_cli() {
+  if command -v code >/dev/null 2>&1; then
+    code --version >/dev/null
+    return 0
+  fi
+  if command -v code-insiders >/dev/null 2>&1; then
+    code-insiders --version >/dev/null
+    return 0
+  fi
+  echo "pre-commit: VS Code CLI (code or code-insiders) not found in PATH" >&2
+  exit 1
+}
+
+run "validating JSON fragments" bash "$ROOT/scripts/validate-json.sh"
+run "ensuring VS Code CLI is available" ensure_code_cli
+run "composing profile settings" bash "$ROOT/scripts/compose-settings.sh"
+run "exporting profile bundles" bash "$ROOT/scripts/export-profiles.sh"

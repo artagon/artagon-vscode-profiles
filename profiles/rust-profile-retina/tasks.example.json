@@ -1,0 +1,37 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Cargo: Build",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build"],
+      "group": "build"
+    },
+    {
+      "label": "Cargo: Test",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["test"],
+      "group": "test",
+      "dependsOn": "Cargo: Build"
+    },
+    {
+      "label": "Cargo: Clippy",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["clippy", "--all-targets", "--all-features"],
+      "group": "build"
+    },
+    {
+      "label": "Cargo: Run",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["run"],
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      }
+    }
+  ]
+}

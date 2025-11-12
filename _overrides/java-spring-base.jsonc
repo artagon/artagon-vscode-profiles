@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json.schemastore.org/vscode-settings",
+  "@extends": ["java-profile-base.jsonc"],
+  "java.import.gradle.enabled": true,
+  "java.import.maven.enabled": true,
+  "java.experimental.progressReports.enabled": true,
+  "java.test.defaultConfig": "SpringBoot",
+  "java.test.config": {
+    "name": "SpringBoot",
+    "workingDirectory": "${workspaceFolder}",
+    "vmArgs": ["-ea"]
+  },
+  "spring-boot.ls.java.home": "${command:jenv.javaHome}",
+  "spring-boot.ls.java.vmargs": ["-Xms256m", "-Xmx2G"],
+  "spring.initializr.serviceUrl": "https://start.spring.io",
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "redhat.java",
+  "files.associations": {
+    "*.jsp": "jsp"
+  },
+  "[java]": {
+    "editor.defaultFormatter": "redhat.java",
+    "editor.formatOnSave": true
+  },
+  "[properties]": {
+    "editor.defaultFormatter": "vscode.json-language-features"
+  },
+  "yaml.customTags": ["!Ref", "!Sub"],
+  "yaml.schemas": {
+    "https://json.schemastore.org/spring-configuration-metadata.json": [
+      "application*.yml",
+      "bootstrap*.yml"
+    ]
+  },
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml",
+    "editor.formatOnSave": true
+  }
+}

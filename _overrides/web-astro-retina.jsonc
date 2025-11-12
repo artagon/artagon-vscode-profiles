@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json.schemastore.org/vscode-settings",
+  "@extends": ["web-astro-base.jsonc"]
+}
+

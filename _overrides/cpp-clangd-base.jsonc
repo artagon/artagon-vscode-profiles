@@ -1,0 +1,47 @@
+{
+  "clangd.path": "/opt/homebrew/opt/llvm/bin/clangd",
+  "clangd.onConfigChanged": "restart",
+  "clangd.arguments": [
+    "--background-index",
+    "--clang-tidy",
+    "--completion-style=detailed",
+    "--enable-config",
+    "--header-insertion=never",
+    "--pch-storage=memory"
+  ],
+  "C_Cpp.intelliSenseEngine": "Disabled",
+  "cmake.buildDirectory": "${workspaceFolder}/build",
+  "cmake.generator": "Ninja",
+  "cmake.configureOnOpen": true,
+  "cmake.copyCompileCommands": "${workspaceFolder}/compile_commands.json",
+  "cmake.loggingLevel": "warning",
+  "cmake.parallelJobs": 8,
+  "cmake.preferredGenerators": ["Ninja"],
+  "cmake.sourceDirectory": "${workspaceFolder}",
+  "cmake.ctestArgs": ["-j", "4"],
+  "cmake.environment": {
+    "CC": "/usr/bin/clang",
+    "CXX": "/usr/bin/clang++"
+  },
+  "clangd.semanticHighlighting": true,
+  "clangd.detectExtensionConflicts": true,
+  "clangd.serverCompletionRanking": true,
+  "files.watcherExclude": {
+    "**/build": true,
+    "**/cmake-build-*": true,
+    "**/.vscode/ipch": true
+  },
+  "[cpp]": {
+    "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
+    "editor.formatOnSave": true
+  },
+  "[c]": {
+    "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
+    "editor.formatOnSave": true
+  }
+  ,
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml",
+    "editor.formatOnSave": true
+  }
+}

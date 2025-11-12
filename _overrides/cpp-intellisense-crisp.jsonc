@@ -1,0 +1,4 @@
+{
+  "@extends": ["cpp-intellisense-base.jsonc"]
+}
+

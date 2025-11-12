@@ -1,0 +1,42 @@
+{
+  "rust-analyzer.procMacro.enable": true,
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.cargo.features": "all",
+  "rust-analyzer.cargo.buildScripts.enable": true,
+  "rust-analyzer.cargo.extraEnv": {
+    "RUSTUP_TOOLCHAIN": "stable"
+  },
+  "rust-analyzer.workspace.symbol.search.limit": 5000,
+  "rust-analyzer.diagnostics.experimental.enable": true,
+  "rust-analyzer.server.extraEnv": {
+    "RUSTUP_HOME": "${env:RUSTUP_HOME}",
+    "CARGO_HOME": "${env:CARGO_HOME}"
+  },
+  "rust-analyzer.inlayHints.bindingModeHints.enable": true,
+  "rust-analyzer.inlayHints.typeHints.enable": true,
+  "rust-analyzer.inlayHints.parameterHints.enable": true,
+  "rust-analyzer.rustfmt.extraArgs": [
+    "--edition",
+    "2021"
+  ],
+  "rust-analyzer.checkOnSave": {
+    "command": "clippy"
+  },
+  "editor.formatOnSave": true,
+  "editor.formatOnSaveMode": "modificationsIfAvailable",
+  "editor.defaultFormatter": "rust-lang.rust-analyzer",
+  "terminal.integrated.env.osx": {
+    "RUSTUP_HOME": "${env:RUSTUP_HOME}",
+    "CARGO_HOME": "${env:CARGO_HOME}"
+  },
+  "files.watcherExclude": {
+    "**/target": true
+  },
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer",
+    "editor.formatOnSave": true
+  },
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml"
+  }
+}

@@ -1,0 +1,8 @@
+User/globalStorage/
+User/workspaceStorage/
+User/logs/
+User/Backups/
+User/*.db
+User/sync/
+# merged outputs now live in ~/.config/vscode/_merged; nothing under vscode/_merged anymore
+.DS_Store

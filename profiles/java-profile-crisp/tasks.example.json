@@ -1,0 +1,35 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Gradle: Build",
+      "type": "shell",
+      "command": "./gradlew",
+      "args": ["build"],
+      "group": "build"
+    },
+    {
+      "label": "Gradle: Test",
+      "type": "shell",
+      "command": "./gradlew",
+      "args": ["test"],
+      "group": "test",
+      "dependsOn": "Gradle: Build"
+    },
+    {
+      "label": "Maven: Package",
+      "type": "shell",
+      "command": "mvn",
+      "args": ["-B", "clean", "package"],
+      "group": "build"
+    },
+    {
+      "label": "Maven: Test",
+      "type": "shell",
+      "command": "mvn",
+      "args": ["-B", "test"],
+      "group": "test",
+      "dependsOn": "Maven: Package"
+    }
+  ]
+}
