@@ -32,6 +32,67 @@ This repository tracks all Visual Studio Code profiles, shared settings, and hel
 - C/C++: `cpp-clangd-(crisp|retina)` and `cpp-intellisense-(crisp|retina)`.
 - AI bundle: `ai-profile-(crisp|retina)` with GitHub Copilot + Copilot Chat only.
 
+## Guides (Step‑by‑Step)
+
+### Web (Astro/Node)
+1) Install Node.js (LTS) via nvm/fnm/volta and ensure `node -v` and `npm -v` work
+2) Compose and open the profile (register without installs first)
+   - `bash scripts/compose-settings.sh web-astro-crisp`
+   - `vspcli --open-profiles --skip-install web-astro-crisp`
+3) Install declared extensions
+   - `bash scripts/install-extensions.sh web-astro-crisp`
+4) Create and run a project
+   - `npm create astro@latest`
+   - `cd <app> && npm install && npm run dev`
+5) Formatting & IntelliSense
+   - Prettier/ESLint on save for JS/TS/HTML/CSS/JSON
+   - Astro syntax + formatter; Emmet works in `.astro`
+   - Tailwind IntelliSense (Astro mapped via `tailwindCSS.includeLanguages.astro = html`)
+
+Use `web-astro-retina` for the HiDPI variant.
+
+### Java (jenv; Gradle/Maven/Spring)
+1) Install jenv and add your JDKs
+   - `brew install jenv` (macOS) → add init to shell and `jenv add /Library/Java/JavaVirtualMachines/<jdk>/Contents/Home`
+   - `jenv global <version>`
+2) Compose and open a Java profile
+   - `bash scripts/compose-settings.sh java-profile-crisp`
+   - `vspcli --open-profiles --skip-install java-profile-crisp`
+3) Install extensions
+   - `bash scripts/install-extensions.sh java-profile-crisp`
+4) Project tips
+   - Gradle: use `java-gradle-*` profiles; Maven: `java-maven-*`; Spring: `java-spring-*`
+   - Profiles resolve JDK via `${command:jenv.javaHome}` (no manual JAVA_HOME)
+
+### Rust
+1) Install Rust toolchain and components
+   - `rustup install stable`
+   - `rustup component add rust-src rustfmt clippy`
+2) Compose/open and install
+   - `bash scripts/compose-settings.sh rust-profile-crisp`
+   - `vspcli --open-profiles --skip-install rust-profile-crisp`
+   - `bash scripts/install-extensions.sh rust-profile-crisp`
+3) Notes
+   - rust-analyzer with clippy on save; CodeLLDB for debugging; Dependi for dependency insights; Even Better TOML for Cargo files
+
+### C/C++ (clangd or Microsoft cpptools)
+1) Install build tools
+   - CMake + Ninja (and LLVM/clangd for clangd profile)
+2) Compose/open and install
+   - `bash scripts/compose-settings.sh cpp-clangd-crisp` (or `cpp-intellisense-crisp`)
+   - `vspcli --open-profiles --skip-install cpp-clangd-crisp`
+   - `bash scripts/install-extensions.sh cpp-clangd-crisp`
+3) Project tips
+   - `cmake.buildDirectory` defaults to `${workspaceFolder}/build` (watcher excludes set)
+   - clangd profile disables Microsoft IntelliSense; cpptools profile uses CMake Tools provider and `compile_commands.json`
+
+### AI (Copilot)
+1) Open a profile and install extensions
+   - `vspcli --open-profiles --skip-install ai-profile-crisp`
+   - `bash scripts/install-extensions.sh ai-profile-crisp`
+2) Sign in to GitHub Copilot and Copilot Chat when prompted
+3) Policy: other AI assistants are intentionally excluded
+
 ## Layout Overview
 - `_shared/` — base editor/terminal settings (`editor-crisp` & `editor-retina` variants).
 - `_overrides/` — per-profile JSON fragments. Overrides may declare `"@extends"` to inherit other fragments (e.g., Spring profiles extend `java-profile-base.jsonc`).
