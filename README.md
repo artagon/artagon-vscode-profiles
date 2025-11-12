@@ -65,6 +65,209 @@ Click an Export badge to download the `.code-profile` bundle for easy import in 
 | ai-profile-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-profile-crisp.code-profile) |
 | ai-profile-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-profile-retina.code-profile) |
 
+### Full Extension Lists
+
+The following lists show the full set of extensions per profile family. Crisp and Retina variants share the same extension set unless otherwise noted.
+
+<details>
+  <summary><strong>Web (Astro)</strong> — web-astro-(crisp|retina)</summary>
+
+- `akamud.vscode-theme-onedark`
+- `catppuccin.catppuccin-vsc`
+- `catppuccin.catppuccin-vsc-icons`
+- `dracula-theme.theme-dracula`
+- `eamodio.gitlens`
+- `enkia.tokyo-night`
+- `foxundermoon.shell-format`
+- `github.vscode-github-actions`
+- `github.vscode-pull-request-github`
+- `mikestead.dotenv`
+- `ms-azuretools.vscode-docker`
+- `ms-vsliveshare.vsliveshare`
+- `mutantdino.resourcemonitor`
+- `oderwat.indent-rainbow`
+- `pkief.material-icon-theme`
+- `redhat.vscode-yaml`
+- `sdras.night-owl`
+- `sonarsource.sonarlint-vscode`
+- `streetsidesoftware.code-spell-checker`
+- `usernamehw.errorlens`
+- `vscode-icons-team.vscode-icons`
+- `zhuangtongfa.Material-theme`
+- `astro-build.astro-vscode`
+- `ecmel.vscode-html-css`
+- `stylelint.vscode-stylelint`
+- `clinyong.vscode-css-modules`
+- `naumovs.color-highlight`
+- `pranaygp.vscode-css-peek`
+- `dbaeumer.vscode-eslint`
+- `esbenp.prettier-vscode`
+- `bradlc.vscode-tailwindcss`
+- `christian-kohler.npm-intellisense`
+- `eg2.vscode-npm-script`
+- `christian-kohler.path-intellisense`
+- `tamasfe.even-better-toml`
+- `github.copilot`
+- `github.copilot-chat`
+
+</details>
+
+<details>
+  <summary><strong>Java (General)</strong> — java-profile-(crisp|retina)</summary>
+
+- `akamud.vscode-theme-onedark`
+- `catppuccin.catppuccin-vsc`
+- `catppuccin.catppuccin-vsc-icons`
+- `dracula-theme.theme-dracula`
+- `eamodio.gitlens`
+- `editorconfig.editorconfig`
+- `enkia.tokyo-night`
+- `esbenp.prettier-vscode`
+- `foxundermoon.shell-format`
+- `gabrielbb.vscode-lombok`
+- `github.vscode-github-actions`
+- `github.vscode-pull-request-github`
+- `mikestead.dotenv`
+- `ms-azuretools.vscode-docker`
+- `ms-vsliveshare.vsliveshare`
+- `mutantdino.resourcemonitor`
+- `oderwat.indent-rainbow`
+- `pkief.material-icon-theme`
+- `pmd.pmd`
+- `redhat.java`
+- `redhat.vscode-xml`
+- `redhat.vscode-yaml`
+- `richardwillis.vscode-gradle`
+- `sdras.night-owl`
+- `shengchen.vscode-checkstyle`
+- `sonarsource.sonarlint-vscode`
+- `streetsidesoftware.code-spell-checker`
+- `timonwong.shellcheck`
+- `usernamehw.errorlens`
+- `vscjava.vscode-gradle`
+- `vscjava.vscode-java-debug`
+- `vscjava.vscode-java-dependency`
+- `vscjava.vscode-java-pack`
+- `vscjava.vscode-java-test`
+- `vscjava.vscode-maven`
+- `vscode-icons-team.vscode-icons`
+- `zhuangtongfa.Material-theme`
+- `fill-labs.dependi`
+- `github.copilot`
+- `github.copilot-chat`
+- `tamasfe.even-better-toml`
+
+</details>
+
+<details>
+  <summary><strong>Rust</strong> — rust-profile-(crisp|retina)</summary>
+
+- `akamud.vscode-theme-onedark`
+- `catppuccin.catppuccin-vsc`
+- `catppuccin.catppuccin-vsc-icons`
+- `dracula-theme.theme-dracula`
+- `eamodio.gitlens`
+- `enkia.tokyo-night`
+- `fill-labs.dependi`
+- `foxundermoon.shell-format`
+- `github.vscode-github-actions`
+- `github.vscode-pull-request-github`
+- `mikestead.dotenv`
+- `ms-azuretools.vscode-docker`
+- `ms-vsliveshare.vsliveshare`
+- `mutantdino.resourcemonitor`
+- `oderwat.indent-rainbow`
+- `panicbit.cargo`
+- `pkief.material-icon-theme`
+- `redhat.vscode-yaml`
+- `rust-lang.rust-analyzer`
+- `sdras.night-owl`
+- `sonarsource.sonarlint-vscode`
+- `streetsidesoftware.code-spell-checker`
+- `tamasfe.even-better-toml`
+- `timonwong.shellcheck`
+- `usernamehw.errorlens`
+- `vadimcn.vscode-lldb`
+- `vscode-icons-team.vscode-icons`
+- `zhuangtongfa.Material-theme`
+- `github.copilot`
+- `github.copilot-chat`
+
+</details>
+
+<details>
+  <summary><strong>C/C++ (clangd)</strong> — cpp-clangd-(crisp|retina)</summary>
+
+- `akamud.vscode-theme-onedark`
+- `catppuccin.catppuccin-vsc`
+- `catppuccin.catppuccin-vsc-icons`
+- `dracula-theme.theme-dracula`
+- `eamodio.gitlens`
+- `enkia.tokyo-night`
+- `foxundermoon.shell-format`
+- `github.vscode-github-actions`
+- `github.vscode-pull-request-github`
+- `jeff-hykin.better-cpp-syntax`
+- `llvm-vs-code-extensions.vscode-clangd`
+- `mikestead.dotenv`
+- `ms-azuretools.vscode-docker`
+- `ms-vscode.cmake-tools`
+- `ms-vscode.cpptools`
+- `ms-vsliveshare.vsliveshare`
+- `mutantdino.resourcemonitor`
+- `notskm.clang-tidy`
+- `oderwat.indent-rainbow`
+- `pkief.material-icon-theme`
+- `redhat.vscode-yaml`
+- `sdras.night-owl`
+- `sonarsource.sonarlint-vscode`
+- `streetsidesoftware.code-spell-checker`
+- `timonwong.shellcheck`
+- `twxs.cmake`
+- `usernamehw.errorlens`
+- `vadimcn.vscode-lldb`
+- `vscode-icons-team.vscode-icons`
+- `zhuangtongfa.Material-theme`
+- `fill-labs.dependi`
+- `github.copilot`
+- `github.copilot-chat`
+- `tamasfe.even-better-toml`
+
+</details>
+
+<details>
+  <summary><strong>AI (Copilot)</strong> — ai-profile-(crisp|retina)</summary>
+
+- `catppuccin.catppuccin-vsc`
+- `catppuccin.catppuccin-vsc-icons`
+- `enkia.tokyo-night`
+- `zhuangtongfa.Material-theme`
+- `sdras.night-owl`
+- `akamud.vscode-theme-onedark`
+- `dracula-theme.theme-dracula`
+- `pkief.material-icon-theme`
+- `vscode-icons-team.vscode-icons`
+- `eamodio.gitlens`
+- `usernamehw.errorlens`
+- `oderwat.indent-rainbow`
+- `streetsidesoftware.code-spell-checker`
+- `ms-vsliveshare.vsliveshare`
+- `ms-azuretools.vscode-docker`
+- `github.vscode-pull-request-github`
+- `sonarsource.sonarlint-vscode`
+- `mutantdino.resourcemonitor`
+- `fill-labs.dependi`
+- `mikestead.dotenv`
+- `foxundermoon.shell-format`
+- `timonwong.shellcheck`
+- `redhat.vscode-yaml`
+- `github.vscode-github-actions`
+- `github.copilot`
+- `github.copilot-chat`
+- `tamasfe.even-better-toml`
+
+</details>
+
 ## Guides (Step‑by‑Step)
 
 Below are copy‑pasteable shell snippets for each stack. Each block shows: compose → open (register) → install → a minimal smoke test. Replace `*-crisp` with `*-retina` if you prefer the HiDPI baseline.
