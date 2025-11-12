@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json.schemastore.org/vscode-settings",
+  "@extends": ["ai-profile-base.jsonc"],
+  "chat.commandCenter.enabled": true,
+  "workbench.startupEditor": "chatView"
+}

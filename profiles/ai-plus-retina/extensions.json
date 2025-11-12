@@ -1,0 +1,147 @@
+[
+  {
+    "identifier": {
+      "id": "catppuccin.catppuccin-vsc"
+    }
+  },
+  {
+    "identifier": {
+      "id": "catppuccin.catppuccin-vsc-icons"
+    }
+  },
+  {
+    "identifier": {
+      "id": "enkia.tokyo-night"
+    }
+  },
+  {
+    "identifier": {
+      "id": "zhuangtongfa.Material-theme"
+    }
+  },
+  {
+    "identifier": {
+      "id": "sdras.night-owl"
+    }
+  },
+  {
+    "identifier": {
+      "id": "akamud.vscode-theme-onedark"
+    }
+  },
+  {
+    "identifier": {
+      "id": "dracula-theme.theme-dracula"
+    }
+  },
+  {
+    "identifier": {
+      "id": "pkief.material-icon-theme"
+    }
+  },
+  {
+    "identifier": {
+      "id": "vscode-icons-team.vscode-icons"
+    }
+  },
+  {
+    "identifier": {
+      "id": "eamodio.gitlens"
+    }
+  },
+  {
+    "identifier": {
+      "id": "usernamehw.errorlens"
+    }
+  },
+  {
+    "identifier": {
+      "id": "oderwat.indent-rainbow"
+    }
+  },
+  {
+    "identifier": {
+      "id": "streetsidesoftware.code-spell-checker"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ms-vsliveshare.vsliveshare"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ms-azuretools.vscode-docker"
+    }
+  },
+  {
+    "identifier": {
+      "id": "github.vscode-pull-request-github"
+    }
+  },
+  {
+    "identifier": {
+      "id": "sonarsource.sonarlint-vscode"
+    }
+  },
+  {
+    "identifier": {
+      "id": "mutantdino.resourcemonitor"
+    }
+  },
+  {
+    "identifier": {
+      "id": "fill-labs.dependi"
+    }
+  },
+  {
+    "identifier": {
+      "id": "mikestead.dotenv"
+    }
+  },
+  {
+    "identifier": {
+      "id": "foxundermoon.shell-format"
+    }
+  },
+  {
+    "identifier": {
+      "id": "timonwong.shellcheck"
+    }
+  },
+  {
+    "identifier": {
+      "id": "redhat.vscode-yaml"
+    }
+  },
+  {
+    "identifier": {
+      "id": "github.vscode-github-actions"
+    }
+  },
+  {
+    "identifier": {
+      "id": "github.copilot"
+    }
+  },
+  {
+    "identifier": {
+      "id": "github.copilot-chat"
+    }
+  },
+  {
+    "identifier": {
+      "id": "tamasfe.even-better-toml"
+    }
+  },
+  {
+    "identifier": {
+      "id": "sourcegraph.cody-ai"
+    }
+  },
+  {
+    "identifier": {
+      "id": "continue.continue"
+    }
+  }
+]
