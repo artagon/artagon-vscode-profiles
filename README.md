@@ -46,6 +46,25 @@ This repository tracks all Visual Studio Code profiles, shared settings, and hel
 | `cpp-intellisense-(crisp|retina)` | C/C++ (cpptools) | `ms-vscode.cpptools`, `ms-vscode.cmake-tools` | cpptools provider; `compile_commands.json` path; CMake Ninja |
 | `ai-profile-(crisp|retina)` | Utilities / AI | `github.copilot`, `github.copilot-chat` (+ common utilities) | Copilot‑only policy; Chat command center enabled |
 
+### Downloadable Profile Bundles
+
+Click an Export badge to download the `.code-profile` bundle for easy import in VS Code (Profiles → Import Profile).
+
+| Profile | Export |
+|---|---|
+| web-astro-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/web-astro-crisp.code-profile) |
+| web-astro-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/web-astro-retina.code-profile) |
+| java-profile-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/java-profile-crisp.code-profile) |
+| java-profile-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/java-profile-retina.code-profile) |
+| rust-profile-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/rust-profile-crisp.code-profile) |
+| rust-profile-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/rust-profile-retina.code-profile) |
+| cpp-clangd-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-clangd-crisp.code-profile) |
+| cpp-clangd-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-clangd-retina.code-profile) |
+| cpp-intellisense-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-intellisense-crisp.code-profile) |
+| cpp-intellisense-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-intellisense-retina.code-profile) |
+| ai-profile-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-profile-crisp.code-profile) |
+| ai-profile-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-profile-retina.code-profile) |
+
 ## Guides (Step‑by‑Step)
 
 Below are copy‑pasteable shell snippets for each stack. Each block shows: compose → open (register) → install → a minimal smoke test. Replace `*-crisp` with `*-retina` if you prefer the HiDPI baseline.
@@ -149,6 +168,48 @@ bash scripts/install-extensions.sh ai-profile-crisp
 # Sign in to GitHub Copilot and Copilot Chat when prompted.
 # Policy: other AI assistants are intentionally excluded.
 ```
+
+## XDG vs Non‑XDG Environments
+
+These profiles work whether you keep this repo under `~/.config/vscode` (XDG‑style) or anywhere else.
+
+### Where profiles live (this repo)
+- `profiles/<name>/extensions.json` declares the profile’s extensions
+- `profiles/<name>/settings.json` is a symlink to `_merged/<name>.json` (managed by the composer)
+
+### Where VS Code stores profile state (editor cache)
+When you open a profile with `code --profile <name>`, VS Code registers it and caches profile data under your platform’s User directory:
+
+| Platform | VS Code User directory |
+|---|---|
+| macOS | `~/Library/Application Support/Code/User` |
+| Linux | `${XDG_CONFIG_HOME:-~/.config}/Code/User` |
+| Windows | `%APPDATA%\Code\User` |
+
+Our `open-profiles.sh` also copies the merged `settings.json` into VS Code’s cached profile directory (`User/profiles/<id>/settings.json`) when possible, so your window reflects new settings immediately.
+
+### XDG‑style usage
+```bash
+# Keep repo under ~/.config/vscode (optional, but neat)
+mkdir -p ~/.config && cd ~/.config
+git clone git@github.com:artagon/artagon-vscode-profiles.git vscode
+cd vscode
+bash scripts/validate-json.sh && bash scripts/compose-settings.sh
+vspcli --open-profiles --skip-install web-astro-crisp
+```
+
+### Non‑XDG usage
+```bash
+# Keep repo anywhere (e.g., ~/Projects)
+git clone git@github.com:artagon/artagon-vscode-profiles.git ~/Projects/artagon-vscode-profiles
+cd ~/Projects/artagon-vscode-profiles
+bash scripts/validate-json.sh && bash scripts/compose-settings.sh
+vspcli --open-profiles --skip-install web-astro-crisp
+
+# Profiles still register in the VS Code User directory for your OS (table above).
+```
+
+> Note: Extensions are installed by VS Code into its extension directory and enabled per profile. The profile manifests in this repo remain the source of truth for what each profile should enable.
 
 ## Layout Overview
 
