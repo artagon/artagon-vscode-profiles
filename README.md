@@ -32,6 +32,20 @@ This repository tracks all Visual Studio Code profiles, shared settings, and hel
 - C/C++: `cpp-clangd-(crisp|retina)` and `cpp-intellisense-(crisp|retina)`.
 - AI bundle: `ai-profile-(crisp|retina)` with GitHub Copilot + Copilot Chat only.
 
+## Profile Matrix
+
+| Profile | Stack | Key Extensions (subset) | Notable Settings / Notes |
+|---|---|---|---|
+| `web-astro-(crisp|retina)` | Astro · Node · TS/JS · HTML/CSS | `astro-build.astro-vscode`, `dbaeumer.vscode-eslint`, `esbenp.prettier-vscode`, `bradlc.vscode-tailwindcss`, `ecmel.vscode-html-css` | Prettier on save for web files; Astro formatter; Emmet in `.astro`; Tailwind mapped for Astro; TOML formatting enabled |
+| `java-profile-(crisp|retina)` | Java (general) | Java Debug/Test/Dependency, Maven, Gradle, Lombok, Checkstyle, PMD, XML/YAML, SonarLint, GitLens | JDK resolved via `${command:jenv.javaHome}`; Gradle & Maven both enabled |
+| `java-gradle-(crisp|retina)` | Java (Gradle‑first) | Gradle language/completion, Java tooling | Maven import disabled; jenv for JDK |
+| `java-maven-(crisp|retina)` | Java (Maven‑first) | VS Code Maven + dependency explorer, Java tooling | Gradle import disabled; jenv for JDK |
+| `java-spring-(crisp|retina)` | Spring Boot | Spring Boot/Initializr/Cloud, Java tooling | `spring-boot.ls.java.home` via jenv; YAML schema for Spring; Java formatter defaults |
+| `rust-profile-(crisp|retina)` | Rust | `rust-lang.rust-analyzer`, `vadimcn.vscode-lldb`, `tamasfe.even-better-toml`, `panicbit.cargo`, `fill-labs.dependi` | clippy on save; watcher excludes `**/target`; TOML formatting |
+| `cpp-clangd-(crisp|retina)` | C/C++ (clangd) | `llvm-vs-code-extensions.vscode-clangd`, `ms-vscode.cmake-tools`, `ms-vscode.cpptools` | Microsoft IntelliSense disabled; clang‑tidy enabled; CMake Ninja; watcher excludes build dirs |
+| `cpp-intellisense-(crisp|retina)` | C/C++ (cpptools) | `ms-vscode.cpptools`, `ms-vscode.cmake-tools` | cpptools provider; `compile_commands.json` path; CMake Ninja |
+| `ai-profile-(crisp|retina)` | Utilities / AI | `github.copilot`, `github.copilot-chat` (+ common utilities) | Copilot‑only policy; Chat command center enabled |
+
 ## Guides (Step‑by‑Step)
 
 Below are copy‑pasteable shell snippets for each stack. Each block shows: compose → open (register) → install → a minimal smoke test. Replace `*-crisp` with `*-retina` if you prefer the HiDPI baseline.
