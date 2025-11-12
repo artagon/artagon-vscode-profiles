@@ -34,17 +34,17 @@ This repository tracks all Visual Studio Code profiles, shared settings, and hel
 
 ## Profile Matrix
 
-| Profile | Stack | Key Extensions (subset) | Notable Settings / Notes |
-|---|---|---|---|
-| `web-astro-(crisp|retina)` | Astro · Node · TS/JS · HTML/CSS | `astro-build.astro-vscode`, `dbaeumer.vscode-eslint`, `esbenp.prettier-vscode`, `bradlc.vscode-tailwindcss`, `ecmel.vscode-html-css` | Prettier on save for web files; Astro formatter; Emmet in `.astro`; Tailwind mapped for Astro; TOML formatting enabled |
-| `java-profile-(crisp|retina)` | Java (general) | Java Debug/Test/Dependency, Maven, Gradle, Lombok, Checkstyle, PMD, XML/YAML, SonarLint, GitLens | JDK resolved via `${command:jenv.javaHome}`; Gradle & Maven both enabled |
-| `java-gradle-(crisp|retina)` | Java (Gradle‑first) | Gradle language/completion, Java tooling | Maven import disabled; jenv for JDK |
-| `java-maven-(crisp|retina)` | Java (Maven‑first) | VS Code Maven + dependency explorer, Java tooling | Gradle import disabled; jenv for JDK |
-| `java-spring-(crisp|retina)` | Spring Boot | Spring Boot/Initializr/Cloud, Java tooling | `spring-boot.ls.java.home` via jenv; YAML schema for Spring; Java formatter defaults |
-| `rust-profile-(crisp|retina)` | Rust | `rust-lang.rust-analyzer`, `vadimcn.vscode-lldb`, `tamasfe.even-better-toml`, `panicbit.cargo`, `fill-labs.dependi` | clippy on save; watcher excludes `**/target`; TOML formatting |
-| `cpp-clangd-(crisp|retina)` | C/C++ (clangd) | `llvm-vs-code-extensions.vscode-clangd`, `ms-vscode.cmake-tools`, `ms-vscode.cpptools` | Microsoft IntelliSense disabled; clang‑tidy enabled; CMake Ninja; watcher excludes build dirs |
-| `cpp-intellisense-(crisp|retina)` | C/C++ (cpptools) | `ms-vscode.cpptools`, `ms-vscode.cmake-tools` | cpptools provider; `compile_commands.json` path; CMake Ninja |
-| `ai-profile-(crisp|retina)` | Utilities / AI | `github.copilot`, `github.copilot-chat` (+ common utilities) | Copilot‑only policy; Chat command center enabled |
+| Profile | Stack | Extensions | Export (CR/RT) | Notes |
+|---|---|---|---|---|
+| `web-astro-(crisp|retina)` | Astro · Node · TS/JS · HTML/CSS | [full list](#ext-web-astro) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/web-astro-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/web-astro-retina.code-profile) | Prettier on save; Astro formatter; Emmet in `.astro`; Tailwind mapped for Astro; TOML formatting |
+| `java-profile-(crisp|retina)` | Java (general) | [full list](#ext-java-profile) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/java-profile-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/java-profile-retina.code-profile) | JDK via `${command:jenv.javaHome}`; Gradle & Maven enabled |
+| `java-gradle-(crisp|retina)` | Java (Gradle‑first) | [full list](#ext-java-gradle) | — | Maven import disabled; jenv for JDK |
+| `java-maven-(crisp|retina)` | Java (Maven‑first) | [full list](#ext-java-maven) | — | Gradle import disabled; jenv for JDK |
+| `java-spring-(crisp|retina)` | Spring Boot | [full list](#ext-java-spring) | — | jenv for Spring LS; Spring YAML schema |
+| `rust-profile-(crisp|retina)` | Rust | [full list](#ext-rust) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/rust-profile-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/rust-profile-retina.code-profile) | clippy on save; exclude `**/target`; TOML formatting |
+| `cpp-clangd-(crisp|retina)` | C/C++ (clangd) | [full list](#ext-cpp-clangd) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-clangd-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-clangd-retina.code-profile) | clang‑tidy; Ninja; build dirs excluded |
+| `cpp-intellisense-(crisp|retina)` | C/C++ (cpptools) | [full list](#ext-cpp-cpptools) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-intellisense-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-intellisense-retina.code-profile) | cpptools provider; `compile_commands.json`; Ninja |
+| `ai-profile-(crisp|retina)` | Utilities / AI | [full list](#ext-ai) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-profile-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-profile-retina.code-profile) | Copilot‑only policy; chat center |
 
 ### Downloadable Profile Bundles
 
@@ -69,6 +69,7 @@ Click an Export badge to download the `.code-profile` bundle for easy import in 
 
 The following lists show the full set of extensions per profile family. Crisp and Retina variants share the same extension set unless otherwise noted.
 
+<a id="ext-web-astro"></a>
 <details>
   <summary><strong>Web (Astro)</strong> — web-astro-(crisp|retina)</summary>
 
@@ -122,8 +123,9 @@ jq -r '.[].identifier.id' profiles/web-astro-retina/extensions.json \
   | xargs -n1 -I{} code --profile "web-astro-retina" --install-extension "{}"
 ```
 
-</details>
+ </details>
 
+<a id="ext-java-profile"></a>
 <details>
   <summary><strong>Java (General)</strong> — java-profile-(crisp|retina)</summary>
 
@@ -181,8 +183,9 @@ jq -r '.[].identifier.id' profiles/java-profile-retina/extensions.json \
   | xargs -n1 -I{} code --profile "java-profile-retina" --install-extension "{}"
 ```
 
-</details>
+ </details>
 
+<a id="ext-rust"></a>
 <details>
   <summary><strong>Rust</strong> — rust-profile-(crisp|retina)</summary>
 
@@ -229,8 +232,9 @@ jq -r '.[].identifier.id' profiles/rust-profile-retina/extensions.json \
   | xargs -n1 -I{} code --profile "rust-profile-retina" --install-extension "{}"
 ```
 
-</details>
+ </details>
 
+<a id="ext-cpp-clangd"></a>
 <details>
   <summary><strong>C/C++ (clangd)</strong> — cpp-clangd-(crisp|retina)</summary>
 
@@ -281,8 +285,9 @@ jq -r '.[].identifier.id' profiles/cpp-clangd-retina/extensions.json \
   | xargs -n1 -I{} code --profile "cpp-clangd-retina" --install-extension "{}"
 ```
 
-</details>
+ </details>
 
+<a id="ext-cpp-cpptools"></a>
 <details>
   <summary><strong>C/C++ (cpptools)</strong> — cpp-intellisense-(crisp|retina)</summary>
 
@@ -332,8 +337,9 @@ jq -r '.[].identifier.id' profiles/cpp-intellisense-retina/extensions.json \
   | xargs -n1 -I{} code --profile "cpp-intellisense-retina" --install-extension "{}"
 ```
 
-</details>
+ </details>
 
+<a id="ext-java-gradle"></a>
 <details>
   <summary><strong>Java (Gradle‑first)</strong> — java-gradle-(crisp|retina)</summary>
 
@@ -390,8 +396,9 @@ jq -r '.[].identifier.id' profiles/java-gradle-retina/extensions.json \
   | xargs -n1 -I{} code --profile "java-gradle-retina" --install-extension "{}"
 ```
 
-</details>
+ </details>
 
+<a id="ext-java-maven"></a>
 <details>
   <summary><strong>Java (Maven‑first)</strong> — java-maven-(crisp|retina)</summary>
 
@@ -447,8 +454,9 @@ jq -r '.[].identifier.id' profiles/java-maven-retina/extensions.json \
   | xargs -n1 -I{} code --profile "java-maven-retina" --install-extension "{}"
 ```
 
-</details>
+ </details>
 
+<a id="ext-java-spring"></a>
 <details>
   <summary><strong>Java (Spring)</strong> — java-spring-(crisp|retina)</summary>
 
@@ -510,7 +518,8 @@ jq -r '.[].identifier.id' profiles/java-spring-retina/extensions.json \
   | xargs -n1 -I{} code --profile "java-spring-retina" --install-extension "{}"
 ```
 
-</details>
+ </details>
+<a id="ext-ai"></a>
 <details>
   <summary><strong>AI (Copilot)</strong> — ai-profile-(crisp|retina)</summary>
 
@@ -554,7 +563,7 @@ jq -r '.[].identifier.id' profiles/ai-profile-retina/extensions.json \
   | xargs -n1 -I{} code --profile "ai-profile-retina" --install-extension "{}"
 ```
 
-</details>
+ </details>
 
 ## Guides (Step‑by‑Step)
 
