@@ -34,64 +34,107 @@ This repository tracks all Visual Studio Code profiles, shared settings, and hel
 
 ## Guides (Step‑by‑Step)
 
-### Web (Astro/Node)
-1) Install Node.js (LTS) via nvm/fnm/volta and ensure `node -v` and `npm -v` work
-2) Compose and open the profile (register without installs first)
-   - `bash scripts/compose-settings.sh web-astro-crisp`
-   - `vspcli --open-profiles --skip-install web-astro-crisp`
-3) Install declared extensions
-   - `bash scripts/install-extensions.sh web-astro-crisp`
-4) Create and run a project
-   - `npm create astro@latest`
-   - `cd <app> && npm install && npm run dev`
-5) Formatting & IntelliSense
-   - Prettier/ESLint on save for JS/TS/HTML/CSS/JSON
-   - Astro syntax + formatter; Emmet works in `.astro`
-   - Tailwind IntelliSense (Astro mapped via `tailwindCSS.includeLanguages.astro = html`)
+Below are copy‑pasteable shell snippets for each stack. Each block shows: compose → open (register) → install → a minimal smoke test. Replace `*-crisp` with `*-retina` if you prefer the HiDPI baseline.
 
-Use `web-astro-retina` for the HiDPI variant.
+### Web (Astro/Node)
+Install Node LTS, compose/open the profile, install extensions, and scaffold an Astro app.
+
+```bash
+# 1) Node.js LTS (pick your favorite version manager)
+#    macOS example with nvm:
+export NVM_DIR="$HOME/.nvm" && [ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && . "/opt/homebrew/opt/nvm/nvm.sh"
+nvm install --lts && nvm use --lts
+node -v && npm -v
+
+# 2) Compose + open (register profile without installing extensions)
+bash scripts/compose-settings.sh web-astro-crisp
+vspcli --open-profiles --skip-install web-astro-crisp
+
+# 3) Install extensions declared by the profile
+bash scripts/install-extensions.sh web-astro-crisp
+
+# 4) Create and run an Astro project
+npm create astro@latest my-astro-app -- --template starter
+cd my-astro-app
+npm install
+npm run dev
+
+# Notes: Prettier/ESLint format on save for JS/TS/HTML/CSS/JSON.
+# Astro files use the Astro formatter; Emmet works in .astro.
+# Tailwind IntelliSense mapped for Astro.
+```
 
 ### Java (jenv; Gradle/Maven/Spring)
-1) Install jenv and add your JDKs
-   - `brew install jenv` (macOS) → add init to shell and `jenv add /Library/Java/JavaVirtualMachines/<jdk>/Contents/Home`
-   - `jenv global <version>`
-2) Compose and open a Java profile
-   - `bash scripts/compose-settings.sh java-profile-crisp`
-   - `vspcli --open-profiles --skip-install java-profile-crisp`
-3) Install extensions
-   - `bash scripts/install-extensions.sh java-profile-crisp`
-4) Project tips
-   - Gradle: use `java-gradle-*` profiles; Maven: `java-maven-*`; Spring: `java-spring-*`
-   - Profiles resolve JDK via `${command:jenv.javaHome}` (no manual JAVA_HOME)
+Use jenv so profiles can resolve the active JDK automatically.
+
+```bash
+# 1) Install jenv and register JDKs (macOS example)
+brew install jenv
+echo 'export PATH="$HOME/.jenv/bin:$PATH"' >> ~/.zshrc
+echo 'eval "$(jenv init -)"'          >> ~/.zshrc
+source ~/.zshrc
+
+jenv add /Library/Java/JavaVirtualMachines/<jdk>/Contents/Home
+jenv global <version>
+
+# 2) Compose + open (register), then install extensions
+bash scripts/compose-settings.sh java-profile-crisp
+vspcli --open-profiles --skip-install java-profile-crisp
+bash scripts/install-extensions.sh java-profile-crisp
+
+# Tips: use java-gradle-* / java-maven-* / java-spring-* for focused workflows.
+# Profiles read the JDK via ${command:jenv.javaHome} — no manual JAVA_HOME.
+```
 
 ### Rust
-1) Install Rust toolchain and components
-   - `rustup install stable`
-   - `rustup component add rust-src rustfmt clippy`
-2) Compose/open and install
-   - `bash scripts/compose-settings.sh rust-profile-crisp`
-   - `vspcli --open-profiles --skip-install rust-profile-crisp`
-   - `bash scripts/install-extensions.sh rust-profile-crisp`
-3) Notes
-   - rust-analyzer with clippy on save; CodeLLDB for debugging; Dependi for dependency insights; Even Better TOML for Cargo files
+Install the toolchain and compose/open/install the profile.
+
+```bash
+# 1) Toolchain + components
+curl https://sh.rustup.rs -sSf | sh -s -- -y
+source "$HOME/.cargo/env"
+rustup component add rust-src rustfmt clippy
+
+# 2) Compose + open (register), then install extensions
+bash scripts/compose-settings.sh rust-profile-crisp
+vspcli --open-profiles --skip-install rust-profile-crisp
+bash scripts/install-extensions.sh rust-profile-crisp
+
+# Notes: rust-analyzer + clippy on save; CodeLLDB for debugging; Dependi + Even Better TOML.
+```
 
 ### C/C++ (clangd or Microsoft cpptools)
-1) Install build tools
-   - CMake + Ninja (and LLVM/clangd for clangd profile)
-2) Compose/open and install
-   - `bash scripts/compose-settings.sh cpp-clangd-crisp` (or `cpp-intellisense-crisp`)
-   - `vspcli --open-profiles --skip-install cpp-clangd-crisp`
-   - `bash scripts/install-extensions.sh cpp-clangd-crisp`
-3) Project tips
-   - `cmake.buildDirectory` defaults to `${workspaceFolder}/build` (watcher excludes set)
-   - clangd profile disables Microsoft IntelliSense; cpptools profile uses CMake Tools provider and `compile_commands.json`
+Pick either clangd (fast/precise LSP) or cpptools (Microsoft IntelliSense). Install build tools, then compose/open/install.
+
+```bash
+# 1) Build tools (macOS examples)
+brew install cmake ninja llvm   # clangd in LLVM for the clangd profile
+
+# 2) Compose + open (clangd example) and install extensions
+bash scripts/compose-settings.sh cpp-clangd-crisp
+vspcli --open-profiles --skip-install cpp-clangd-crisp
+bash scripts/install-extensions.sh cpp-clangd-crisp
+
+# Alternative: Microsoft C/C++ IntelliSense profile
+# bash scripts/compose-settings.sh cpp-intellisense-crisp
+# vspcli --open-profiles --skip-install cpp-intellisense-crisp
+# bash scripts/install-extensions.sh cpp-intellisense-crisp
+
+# Tips: build dir defaults to ${workspaceFolder}/build (watcher excludes set).
+# clangd profile disables Microsoft IntelliSense; cpptools uses CMake Tools provider
+# and compile_commands.json for accurate navigation/completion.
+```
 
 ### AI (Copilot)
-1) Open a profile and install extensions
-   - `vspcli --open-profiles --skip-install ai-profile-crisp`
-   - `bash scripts/install-extensions.sh ai-profile-crisp`
-2) Sign in to GitHub Copilot and Copilot Chat when prompted
-3) Policy: other AI assistants are intentionally excluded
+Open the AI profile, install Copilot + Chat, then sign in when prompted.
+
+```bash
+vspcli --open-profiles --skip-install ai-profile-crisp
+bash scripts/install-extensions.sh ai-profile-crisp
+
+# Sign in to GitHub Copilot and Copilot Chat when prompted.
+# Policy: other AI assistants are intentionally excluded.
+```
 
 ## Layout Overview
 - `_shared/` — base editor/terminal settings (`editor-crisp` & `editor-retina` variants).
