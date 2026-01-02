@@ -17,7 +17,10 @@ if [ ! -d "$PROFILES_DIR" ]; then
   exit 1
 fi
 
-mapfile -t PROFILES < <(find "$PROFILES_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+PROFILES=()
+while IFS= read -r name; do
+  [ -n "$name" ] && PROFILES+=("$name")
+done < <(find "$PROFILES_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
 
 if [ "${#PROFILES[@]}" -eq 0 ]; then
   echo "export-profiles: no profiles to export" >&2

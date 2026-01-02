@@ -89,7 +89,10 @@ jq '.settings // {}' "$BUNDLE" > "$tmp_settings"
 mv "$tmp_settings" "$TARGET_DIR/settings.json"
 echo "Imported settings into profile '$PROFILE' (cache dir: $TARGET_DIR)"
 
-mapfile -t EXTENSIONS < <(jq -r '.extensions.enabled[]?' "$BUNDLE" 2>/dev/null || true)
+EXTENSIONS=()
+while IFS= read -r ext; do
+  [ -n "$ext" ] && EXTENSIONS+=("$ext")
+done < <(jq -r '.extensions.enabled[]?' "$BUNDLE" 2>/dev/null || true)
 if [ "${#EXTENSIONS[@]}" -gt 0 ]; then
   DELAY="${VSCODE_EXTENSION_INSTALL_DELAY:-1}"
   for ext in "${EXTENSIONS[@]}"; do

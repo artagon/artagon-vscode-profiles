@@ -66,6 +66,20 @@ fi
 
 mkdir -p "$INSTALL_CACHE"
 
+HASH_CMD=""
+if command -v shasum >/dev/null 2>&1; then
+  HASH_CMD="shasum"
+elif command -v sha1sum >/dev/null 2>&1; then
+  HASH_CMD="sha1sum"
+else
+  HASH_CMD="cksum"
+fi
+
+hash_file() {
+  local file="$1"
+  $HASH_CMD "$file" | awk '{print $1}'
+}
+
 # Parse CLI args: allow --skip-install flag and profiles list
 ARGS=()
 while [ "$#" -gt 0 ]; do
@@ -94,10 +108,15 @@ if [ "$#" -gt 0 ]; then
   while [ "$#" -gt 0 ]; do ARGS+=("$1"); shift; done
 fi
 
+PROFILES=()
 if [ "${#ARGS[@]}" -gt 0 ]; then
-  mapfile -t PROFILES < <(printf '%s\n' "${ARGS[@]}")
+  for arg in "${ARGS[@]}"; do
+    PROFILES+=("$arg")
+  done
 else
-  mapfile -t PROFILES < <(find "$PROFILES_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+  while IFS= read -r name; do
+    [ -n "$name" ] && PROFILES+=("$name")
+  done < <(find "$PROFILES_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
 fi
 
 FILTERED=()
@@ -119,16 +138,27 @@ PROFILES=("${FILTERED[@]}")
 ensure_extensions() {
   local name="$1"
   local marker="$INSTALL_CACHE/$name"
+  local ext_file="$PROFILES_DIR/$name/extensions.json"
+  local ext_hash=""
+  if [ -f "$ext_file" ]; then
+    ext_hash="$(hash_file "$ext_file" 2>/dev/null || true)"
+  fi
   if [ "$SKIP_INSTALL" = "1" ]; then
     return 0
   fi
-  if [ -f "$marker" ]; then
-    return 0
+  if [ -f "$marker" ] && [ -n "$ext_hash" ]; then
+    if [ "$(cat "$marker" 2>/dev/null || true)" = "$ext_hash" ]; then
+      return 0
+    fi
   fi
   if [ -x "$INSTALL_SCRIPT" ]; then
     echo "Ensuring extensions for $name"
     if bash "$INSTALL_SCRIPT" "$name"; then
-      touch "$marker"
+      if [ -n "$ext_hash" ]; then
+        printf '%s\n' "$ext_hash" > "$marker"
+      else
+        touch "$marker"
+      fi
     else
       echo "Warning: extension install failed for $name" >&2
     fi

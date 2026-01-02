@@ -6,17 +6,26 @@ SHARED="$ROOT/_shared"
 OVR="$ROOT/_overrides"
 MERGED="$ROOT/_merged"
 mkdir -p "$MERGED" "$PROFILES_DIR"
-# Collect override chain (parents first, then file), compatible with older bash
+# Collect override chain (parents first, then file), compatible with older bash and with cycle detection
 collect_overrides() {
-  local file="$1"
+  local file="$1" stack="$2"
   [ -f "$file" ] || return 0
-  local -a parents=()
-  mapfile -t parents < <(jq -r '."@extends"? // empty | (if type=="string" then . else .[] end)' "$file" 2>/dev/null || true)
+  case " $stack " in
+    *" $file "*)
+      echo "Error: detected @extends cycle: $stack -> $file" >&2
+      return 1
+      ;;
+  esac
+  local parents=()
+  while IFS= read -r parent; do
+    [ -n "$parent" ] && parents+=("$parent")
+  done < <(jq -r '."@extends"? // empty | (if type=="string" then . else .[] end)' "$file" 2>/dev/null || true)
+  local new_stack="$stack $file"
   if [ "${#parents[@]}" -gt 0 ]; then
     for parent in "${parents[@]}"; do
       local parent_path="$OVR/$parent"
       if [ -f "$parent_path" ]; then
-        collect_overrides "$parent_path"
+        collect_overrides "$parent_path" "$new_stack" || return 1
       else
         echo "Warning: missing extends file $parent referenced by $file" >&2
       fi
@@ -38,8 +47,15 @@ merge_one() {
     echo "Skip $name (profile dir missing at $profile_dir)" >&2
     return 0
   fi
-  local -a overrides=()
-  mapfile -t overrides < <(collect_overrides "$override")
+  local overrides_output
+  if ! overrides_output="$(collect_overrides "$override" "")"; then
+    echo "Skip $name due to earlier errors" >&2
+    return 1
+  fi
+  local overrides=()
+  while IFS= read -r line; do
+    [ -n "$line" ] && overrides+=("$line")
+  done <<<"$overrides_output"
   if [ "${#overrides[@]}" -eq 0 ]; then
     echo "Skip $name (no resolvable overrides)" >&2
     return 0

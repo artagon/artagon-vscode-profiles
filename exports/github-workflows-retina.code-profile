@@ -1,11 +1,11 @@
 {
   "settings": {
-    "workbench.colorTheme": "Tokyo Night",
-    "workbench.preferredDarkColorTheme": "Tokyo Night",
-    "workbench.iconTheme": "material-icon-theme",
-    "workbench.fontAliasing": "antialiased",
+    "workbench.colorTheme": "Catppuccin Mocha",
+    "workbench.preferredDarkColorTheme": "Catppuccin Mocha",
+    "workbench.iconTheme": "catppuccin-icons",
+    "workbench.fontAliasing": "auto",
     "workbench.list.smoothScrolling": true,
-    "workbench.tree.indent": 14,
+    "workbench.tree.indent": 16,
     "workbench.tree.renderIndentGuides": "always",
     "workbench.tree.expandMode": "doubleClick",
     "window.commandCenter": true,
@@ -16,13 +16,13 @@
     "terminal.integrated.rendererType": "auto",
     "terminal.integrated.smoothScrolling": true,
     "terminal.integrated.fontFamily": "'JetBrains Mono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'IBM Plex Mono', 'SFMono-Regular', monospace",
-    "terminal.integrated.fontSize": 14,
+    "terminal.integrated.fontSize": 15,
     "terminal.integrated.minimumContrastRatio": 4.5,
     "editor.fontFamily": "'JetBrains Mono', 'JetBrainsMono Nerd Font', 'Fira Code', 'Cascadia Code', 'IBM Plex Mono', 'SFMono-Regular', monospace",
     "editor.fontLigatures": true,
     "editor.fontVariations": true,
-    "editor.fontSize": 14,
-    "editor.lineHeight": 22,
+    "editor.fontSize": 15,
+    "editor.lineHeight": 24,
     "editor.fontWeight": "450",
     "editor.cursorSmoothCaretAnimation": "on",
     "editor.cursorBlinking": "expand",
@@ -71,20 +71,33 @@
     "explorer.decorations.badges": true,
     "telemetry.telemetryLevel": "off",
     "$schema": "https://json.schemastore.org/vscode-settings",
-    "github.copilot.enable": {
-      "*": true,
-      "plaintext": false,
-      "scminput": false
+    "editor.formatOnSave": true,
+    "[yaml]": {
+      "editor.defaultFormatter": "redhat.vscode-yaml",
+      "editor.formatOnSave": true
     },
-    "github.copilot.chat.enabled": true,
-    "chat.commandCenter.enabled": true,
-    "workbench.startupEditor": "chatView",
-    "github.copilot.panel.autoOpen": false,
-    "github.copilot.chat.editor.enableCodeActions": true,
-    "github.copilot.inlineSuggest.enableCodeActions": true,
-    "chat.editor.fontSize": 14,
-    "chat.editor.fontFamily": "'JetBrains Mono', 'Cascadia Code', 'IBM Plex Mono', 'SFMono-Regular', monospace",
-    "chat.editor.renderWhitespace": "selection",
+    "yaml.validate": true,
+    "yaml.format.enable": true,
+    "yaml.schemas": {
+      "https://json.schemastore.org/github-workflow.json": [
+        ".github/workflows/*.yml",
+        ".github/workflows/*.yaml"
+      ],
+      "https://json.schemastore.org/github-action.json": [
+        ".github/actions/**/action.yml",
+        ".github/actions/**/action.yaml"
+      ]
+    },
+    "files.associations": {
+      ".github/workflows/*.yml": "yaml",
+      ".github/workflows/*.yaml": "yaml",
+      ".github/actions/**/action.yml": "yaml",
+      ".github/actions/**/action.yaml": "yaml"
+    },
+    "[shellscript]": {
+      "editor.defaultFormatter": "foxundermoon.shell-format",
+      "editor.formatOnSave": true
+    },
     "[toml]": {
       "editor.defaultFormatter": "tamasfe.even-better-toml",
       "editor.formatOnSave": true
@@ -92,35 +105,33 @@
   },
   "extensions": {
     "enabled": [
+      "akamud.vscode-theme-onedark",
       "catppuccin.catppuccin-vsc",
       "catppuccin.catppuccin-vsc-icons",
-      "enkia.tokyo-night",
-      "zhuangtongfa.Material-theme",
-      "sdras.night-owl",
-      "akamud.vscode-theme-onedark",
       "dracula-theme.theme-dracula",
-      "pkief.material-icon-theme",
-      "vscode-icons-team.vscode-icons",
       "eamodio.gitlens",
-      "usernamehw.errorlens",
-      "oderwat.indent-rainbow",
-      "streetsidesoftware.code-spell-checker",
-      "ms-vsliveshare.vsliveshare",
-      "ms-azuretools.vscode-docker",
-      "github.vscode-pull-request-github",
-      "sonarsource.sonarlint-vscode",
-      "mutantdino.resourcemonitor",
-      "fill-labs.dependi",
-      "mikestead.dotenv",
+      "editorconfig.editorconfig",
+      "enkia.tokyo-night",
+      "esbenp.prettier-vscode",
       "foxundermoon.shell-format",
-      "timonwong.shellcheck",
-      "redhat.vscode-yaml",
       "github.vscode-github-actions",
+      "github.vscode-pull-request-github",
+      "mikestead.dotenv",
+      "ms-azuretools.vscode-docker",
+      "mutantdino.resourcemonitor",
+      "oderwat.indent-rainbow",
+      "pkief.material-icon-theme",
+      "redhat.vscode-yaml",
+      "sdras.night-owl",
+      "sonarsource.sonarlint-vscode",
+      "streetsidesoftware.code-spell-checker",
+      "timonwong.shellcheck",
+      "usernamehw.errorlens",
+      "vscode-icons-team.vscode-icons",
+      "zhuangtongfa.Material-theme",
       "github.copilot",
       "github.copilot-chat",
-      "tamasfe.even-better-toml",
-      "sourcegraph.cody-ai",
-      "continue.continue"
+      "tamasfe.even-better-toml"
     ]
   }
 }

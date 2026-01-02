@@ -21,7 +21,8 @@ PROFILE=""
 GROUP_FILTER=()
 
 normalize_group() {
-  local g="${1,,}"
+  local g
+  g="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   case "$g" in
     ai) echo "AI" ;;
     cmake) echo "CMake" ;;
@@ -96,7 +97,10 @@ if [ ! -f "$EXT_FILE" ]; then
   exit 1
 fi
 
-mapfile -t EXT_IDS < <(jq -r '.[].identifier.id' "$EXT_FILE")
+EXT_IDS=()
+while IFS= read -r ext; do
+  [ -n "$ext" ] && EXT_IDS+=("$ext")
+done < <(jq -r '.[].identifier.id' "$EXT_FILE")
 
 if [ "${#EXT_IDS[@]}" -eq 0 ]; then
   echo "No extensions listed in $EXT_FILE" >&2
