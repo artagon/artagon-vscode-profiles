@@ -26,6 +26,16 @@
 - [ ] 5.2 Update agents/project.md to match actual ai-profile contents.
 - [ ] 5.3 Update agents/README.md to reflect open-profiles CLI behavior.
 
+## 5a. Extension Compatibility Checking
+- [x] 5a.1 Create scripts/check-extension-compatibility.sh with Marketplace API integration.
+- [x] 5a.2 Implement caching mechanism with 1-hour TTL to avoid rate limiting.
+- [x] 5a.3 Add support for checking single, multiple, or all profiles.
+- [x] 5a.4 Implement JSON and human-readable output formats.
+- [x] 5a.5 Add --verbose, --no-cache, --marketplace-only, and --json options.
+- [x] 5a.6 Create docs/EXTENSION_COMPATIBILITY.md with comprehensive usage guide.
+- [x] 5a.7 Include CI/CD integration examples and pre-commit hook templates in documentation.
+- [x] 5a.8 Add troubleshooting section for common issues (rate limiting, network errors, false positives).
+
 ## 6. Benchmark Refactoring (artagon-uri)
 - [ ] 6.1 Split Result/Either comparison into explicit reference vs primitive suites (update ResultEitherComparisonBenchmark or introduce dedicated classes).
 - [ ] 6.2 Align EitherBenchmark and ResultBenchmark factories and map paths (Result.okInt vs Either.rightInt, Result.ok vs Either.right).
@@ -38,5 +48,6 @@
 - [ ] 7.1 Run scripts/validate-json.sh.
 - [ ] 7.2 Run scripts/compose-settings.sh for affected profiles.
 - [ ] 7.3 Run scripts/tests/run.sh.
-- [ ] 7.4 Run openspec validate harden-vscode-profile-tooling --strict (if OpenSpec is initialized at repo root).
-- [ ] 7.5 In artagon-uri, run ./gradlew jmhOptPrimitive jmhEither jmhResult jmhResultEitherCompare with allocation profiling enabled.
+- [x] 7.4 Run scripts/check-extension-compatibility.sh --all --marketplace-only to verify extension compatibility checking.
+- [ ] 7.5 Run openspec validate harden-vscode-profile-tooling --strict (if OpenSpec is initialized at repo root).
+- [ ] 7.6 In artagon-uri, run ./gradlew jmhOptPrimitive jmhEither jmhResult jmhResultEitherCompare with allocation profiling enabled.

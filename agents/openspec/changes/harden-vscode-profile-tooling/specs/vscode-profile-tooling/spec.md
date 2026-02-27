@@ -55,3 +55,45 @@ The system SHALL keep documentation consistent with actual profile contents and 
 #### Scenario: CLI support documentation is accurate
 - **WHEN** documentation references open-profiles.sh CLI support
 - **THEN** it SHALL match the script behavior (code vs code-insiders)
+
+### Requirement: Extension Compatibility Checking
+The system SHALL provide automated checking of extension compatibility against the current VS Code version.
+
+#### Scenario: Check single profile for incompatible extensions
+- **WHEN** check-extension-compatibility.sh is executed with a profile name
+- **THEN** it SHALL query the VS Code Marketplace API for each extension in the profile
+- **AND** it SHALL extract the engines.vscode requirement from extension metadata
+- **AND** it SHALL compare the requirement against the current VS Code version
+- **AND** it SHALL report extensions as "compatible", "incompatible", or "unknown"
+
+#### Scenario: Check all profiles
+- **WHEN** check-extension-compatibility.sh is executed with --all flag
+- **THEN** it SHALL check all profiles found in profiles/*/extensions.json
+- **AND** it SHALL provide a summary of total, compatible, incompatible, and unknown extensions
+
+#### Scenario: Cache Marketplace API responses
+- **WHEN** check-extension-compatibility.sh queries extension metadata
+- **THEN** it SHALL cache responses in ~/.cache/vscode-extension-check/
+- **AND** cached responses SHALL have a TTL of 1 hour
+- **AND** the --no-cache flag SHALL bypass the cache and fetch fresh data
+
+#### Scenario: JSON output for automation
+- **WHEN** check-extension-compatibility.sh is executed with --json flag
+- **THEN** it SHALL output structured JSON including vscodeVersion, summary, and extensions array
+- **AND** each extension entry SHALL include profile, extension ID, status, latest version, engine requirement, installed version, and last updated timestamp
+
+#### Scenario: Verbose output shows all extensions
+- **WHEN** check-extension-compatibility.sh is executed with --verbose flag
+- **THEN** it SHALL display all extensions including compatible ones
+- **AND** it SHALL show version and engine requirement for each extension
+
+#### Scenario: Marketplace-only mode for faster checks
+- **WHEN** check-extension-compatibility.sh is executed with --marketplace-only flag
+- **THEN** it SHALL skip checking if extensions are installed locally
+- **AND** installed version SHALL be reported as "not installed"
+
+#### Scenario: Graceful handling of API failures
+- **WHEN** Marketplace API is unavailable or rate-limited
+- **THEN** the script SHALL report affected extensions with "unknown" status
+- **AND** it SHALL continue checking remaining extensions
+- **AND** it SHALL provide a warning message about API issues

@@ -126,7 +126,7 @@ should_install_group() {
 group_for_extension() {
   local ext="$1"
   case "$ext" in
-    github.copilot|github.copilot-chat|anthropic.claude-code|googlecloudtools.cloudcode|continue.continue|codeium.codeium|tabnine.tabnine-vscode)
+    github.copilot|github.copilot-chat|anthropic.claude-code|openai.chatgpt|googlecloudtools.cloudcode|Continue.continue|continue.continue|codeium.codeium|tabnine.tabnine-vscode|sourcegraph.cody-ai|sourcegraph.amp)
       echo "AI"
       ;;
     ms-vscode.cmake-tools|twxs.cmake)

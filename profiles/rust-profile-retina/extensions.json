@@ -21,12 +21,47 @@
   },
   {
     "identifier": {
-      "id": "eamodio.gitlens"
+      "id": "enkia.tokyo-night"
     }
   },
   {
     "identifier": {
-      "id": "enkia.tokyo-night"
+      "id": "sdras.night-owl"
+    }
+  },
+  {
+    "identifier": {
+      "id": "zhuangtongfa.Material-theme"
+    }
+  },
+  {
+    "identifier": {
+      "id": "pkief.material-icon-theme"
+    }
+  },
+  {
+    "identifier": {
+      "id": "vscode-icons-team.vscode-icons"
+    }
+  },
+  {
+    "identifier": {
+      "id": "rust-lang.rust-analyzer"
+    }
+  },
+  {
+    "identifier": {
+      "id": "dustypomerleau.rust-syntax"
+    }
+  },
+  {
+    "identifier": {
+      "id": "vadimcn.vscode-lldb"
+    }
+  },
+  {
+    "identifier": {
+      "id": "tamasfe.even-better-toml"
     }
   },
   {
@@ -36,7 +71,27 @@
   },
   {
     "identifier": {
-      "id": "foxundermoon.shell-format"
+      "id": "BarbossHack.crates-io"
+    }
+  },
+  {
+    "identifier": {
+      "id": "JScearcy.rust-doc-viewer"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ryanluker.vscode-coverage-gutters"
+    }
+  },
+  {
+    "identifier": {
+      "id": "usernamehw.errorlens"
+    }
+  },
+  {
+    "identifier": {
+      "id": "eamodio.gitlens"
     }
   },
   {
@@ -51,11 +106,6 @@
   },
   {
     "identifier": {
-      "id": "mikestead.dotenv"
-    }
-  },
-  {
-    "identifier": {
       "id": "ms-azuretools.vscode-docker"
     }
   },
@@ -66,22 +116,12 @@
   },
   {
     "identifier": {
-      "id": "mutantdino.resourcemonitor"
+      "id": "foxundermoon.shell-format"
     }
   },
   {
     "identifier": {
-      "id": "oderwat.indent-rainbow"
-    }
-  },
-  {
-    "identifier": {
-      "id": "panicbit.cargo"
-    }
-  },
-  {
-    "identifier": {
-      "id": "pkief.material-icon-theme"
+      "id": "timonwong.shellcheck"
     }
   },
   {
@@ -91,12 +131,17 @@
   },
   {
     "identifier": {
-      "id": "rust-lang.rust-analyzer"
+      "id": "mikestead.dotenv"
     }
   },
   {
     "identifier": {
-      "id": "sdras.night-owl"
+      "id": "oderwat.indent-rainbow"
+    }
+  },
+  {
+    "identifier": {
+      "id": "mutantdino.resourcemonitor"
     }
   },
   {
@@ -111,42 +156,27 @@
   },
   {
     "identifier": {
-      "id": "tamasfe.even-better-toml"
-    }
-  },
-  {
-    "identifier": {
-      "id": "timonwong.shellcheck"
-    }
-  },
-  {
-    "identifier": {
-      "id": "usernamehw.errorlens"
-    }
-  },
-  {
-    "identifier": {
-      "id": "vadimcn.vscode-lldb"
-    }
-  },
-  {
-    "identifier": {
-      "id": "vscode-icons-team.vscode-icons"
-    }
-  },
-  {
-    "identifier": {
-      "id": "zhuangtongfa.Material-theme"
-    }
-  },
-  {
-    "identifier": {
       "id": "github.copilot"
     }
   },
   {
     "identifier": {
       "id": "github.copilot-chat"
+    }
+  },
+  {
+    "identifier": {
+      "id": "anthropic.claude-code"
+    }
+  },
+  {
+    "identifier": {
+      "id": "openai.chatgpt"
+    }
+  },
+  {
+    "identifier": {
+      "id": "Continue.continue"
     }
   }
 ]

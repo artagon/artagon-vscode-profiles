@@ -1,42 +1,158 @@
 {
+  "$schema": "https://json.schemastore.org/vscode-settings",
+
   "rust-analyzer.procMacro.enable": true,
-  "rust-analyzer.check.command": "clippy",
-  "rust-analyzer.cargo.features": "all",
   "rust-analyzer.cargo.buildScripts.enable": true,
+  "rust-analyzer.cargo.features": "all",
   "rust-analyzer.cargo.extraEnv": {
     "RUSTUP_TOOLCHAIN": "stable"
   },
-  "rust-analyzer.workspace.symbol.search.limit": 5000,
+
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.check.extraArgs": ["--all-targets"],
+  "rust-analyzer.checkOnSave": true,
+
   "rust-analyzer.diagnostics.experimental.enable": true,
+  "rust-analyzer.diagnostics.disabled": [],
+
+  "rust-analyzer.completion.autoimport.enable": true,
+  "rust-analyzer.completion.autoself.enable": true,
+  "rust-analyzer.completion.postfix.enable": true,
+  "rust-analyzer.completion.snippets.custom": {
+    "Arc::new": {
+      "postfix": "arc",
+      "body": "Arc::new(${receiver})",
+      "requires": "std::sync::Arc",
+      "description": "Put the expression into an `Arc`",
+      "scope": "expr"
+    },
+    "Rc::new": {
+      "postfix": "rc",
+      "body": "Rc::new(${receiver})",
+      "requires": "std::rc::Rc",
+      "description": "Put the expression into an `Rc`",
+      "scope": "expr"
+    },
+    "Box::pin": {
+      "postfix": "pinbox",
+      "body": "Box::pin(${receiver})",
+      "requires": "std::boxed::Box",
+      "description": "Put the expression into a pinned `Box`",
+      "scope": "expr"
+    },
+    "Ok": {
+      "postfix": "ok",
+      "body": "Ok(${receiver})",
+      "description": "Wrap the expression in a `Result::Ok`",
+      "scope": "expr"
+    },
+    "Err": {
+      "postfix": "err",
+      "body": "Err(${receiver})",
+      "description": "Wrap the expression in a `Result::Err`",
+      "scope": "expr"
+    },
+    "Some": {
+      "postfix": "some",
+      "body": "Some(${receiver})",
+      "description": "Wrap the expression in an `Option::Some`",
+      "scope": "expr"
+    }
+  },
+
+  "rust-analyzer.inlayHints.typeHints.enable": true,
+  "rust-analyzer.inlayHints.parameterHints.enable": true,
+  "rust-analyzer.inlayHints.chainingHints.enable": true,
+  "rust-analyzer.inlayHints.bindingModeHints.enable": true,
+  "rust-analyzer.inlayHints.closureReturnTypeHints.enable": "with_block",
+  "rust-analyzer.inlayHints.lifetimeElisionHints.enable": "skip_trivial",
+  "rust-analyzer.inlayHints.reborrowHints.enable": "mutable",
+  "rust-analyzer.inlayHints.closureCaptureHints.enable": true,
+  "rust-analyzer.inlayHints.discriminantHints.enable": "fieldless",
+  "rust-analyzer.inlayHints.maxLength": 40,
+
+  "rust-analyzer.hover.actions.enable": true,
+  "rust-analyzer.hover.actions.run.enable": true,
+  "rust-analyzer.hover.actions.debug.enable": true,
+  "rust-analyzer.hover.actions.gotoTypeDef.enable": true,
+  "rust-analyzer.hover.actions.implementations.enable": true,
+  "rust-analyzer.hover.actions.references.enable": true,
+  "rust-analyzer.hover.documentation.enable": true,
+  "rust-analyzer.hover.documentation.keywords.enable": true,
+  "rust-analyzer.hover.links.enable": true,
+
+  "rust-analyzer.semanticHighlighting.operator.specialization.enable": true,
+  "rust-analyzer.semanticHighlighting.punctuation.enable": true,
+  "rust-analyzer.semanticHighlighting.punctuation.specialization.enable": true,
+  "rust-analyzer.semanticHighlighting.strings.enable": true,
+
+  "rust-analyzer.lens.enable": true,
+  "rust-analyzer.lens.run.enable": true,
+  "rust-analyzer.lens.debug.enable": true,
+  "rust-analyzer.lens.implementations.enable": true,
+  "rust-analyzer.lens.references.adt.enable": true,
+  "rust-analyzer.lens.references.trait.enable": true,
+  "rust-analyzer.lens.references.enumVariant.enable": true,
+  "rust-analyzer.lens.references.method.enable": true,
+
+  "rust-analyzer.workspace.symbol.search.limit": 5000,
+  "rust-analyzer.workspace.symbol.search.scope": "workspace_and_dependencies",
+
   "rust-analyzer.server.extraEnv": {
     "RUSTUP_HOME": "${env:RUSTUP_HOME}",
     "CARGO_HOME": "${env:CARGO_HOME}"
   },
-  "rust-analyzer.inlayHints.bindingModeHints.enable": true,
-  "rust-analyzer.inlayHints.typeHints.enable": true,
-  "rust-analyzer.inlayHints.parameterHints.enable": true,
-  "rust-analyzer.rustfmt.extraArgs": [
-    "--edition",
-    "2021"
-  ],
-  "rust-analyzer.checkOnSave": {
-    "command": "clippy"
-  },
+
+  "rust-analyzer.rustfmt.extraArgs": ["--edition", "2021"],
+  "rust-analyzer.rustfmt.rangeFormatting.enable": true,
+
+  "rust-analyzer.typing.autoClosingAngleBrackets.enable": true,
+
   "editor.formatOnSave": true,
   "editor.formatOnSaveMode": "modificationsIfAvailable",
   "editor.defaultFormatter": "rust-lang.rust-analyzer",
+  "editor.stickyScroll.enabled": true,
+  "editor.stickyScroll.maxLineCount": 5,
+
+  "editor.semanticHighlighting.enabled": true,
+  "editor.semanticTokenColorCustomizations": {
+    "[*]": {
+      "rules": {
+        "*.mutable": { "fontStyle": "underline" },
+        "*.unsafe": { "fontStyle": "bold" },
+        "*.consuming": { "fontStyle": "italic" }
+      }
+    }
+  },
+
   "terminal.integrated.env.osx": {
     "RUSTUP_HOME": "${env:RUSTUP_HOME}",
     "CARGO_HOME": "${env:CARGO_HOME}"
   },
-  "files.watcherExclude": {
-    "**/target": true
+  "terminal.integrated.env.linux": {
+    "RUSTUP_HOME": "${env:RUSTUP_HOME}",
+    "CARGO_HOME": "${env:CARGO_HOME}"
   },
+
+  "files.watcherExclude": {
+    "**/target": true,
+    "**/.cargo": true
+  },
+  "search.exclude": {
+    "**/target": true,
+    "**/.cargo": true
+  },
+
+  "testing.automaticallyOpenPeekView": "failureInVisibleDocument",
+
   "[rust]": {
     "editor.defaultFormatter": "rust-lang.rust-analyzer",
-    "editor.formatOnSave": true
+    "editor.formatOnSave": true,
+    "editor.tabSize": 4,
+    "editor.rulers": [100]
   },
   "[toml]": {
-    "editor.defaultFormatter": "tamasfe.even-better-toml"
+    "editor.defaultFormatter": "tamasfe.even-better-toml",
+    "editor.formatOnSave": true
   }
 }

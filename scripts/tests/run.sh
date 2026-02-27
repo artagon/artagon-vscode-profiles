@@ -86,7 +86,7 @@ log "install-extensions.sh honors group filters"
 rm -f "$CODE_LOG"
 export VSCODE_EXTENSION_INSTALL_DELAY=0
 bash "$ROOT/scripts/install-extensions.sh" java-profile-crisp --group AI >/dev/null
-ai_count="$(jq -r '.[].identifier.id' "$ROOT/profiles/java-profile-crisp/extensions.json" | grep -E '^(github\.copilot|github\.copilot-chat|anthropic\.claude-code|googlecloudtools\.cloudcode|continue\.continue|codeium\.codeium|tabnine\.tabnine-vscode)$' || true)"
+ai_count="$(jq -r '.[].identifier.id' "$ROOT/profiles/java-profile-crisp/extensions.json" | grep -iE '^(github\.copilot|github\.copilot-chat|anthropic\.claude-code|openai\.chatgpt|googlecloudtools\.cloudcode|continue\.continue|codeium\.codeium|tabnine\.tabnine-vscode|sourcegraph\.cody-ai|sourcegraph\.amp)$' || true)"
 ai_count="$(printf '%s\n' "$ai_count" | sed '/^$/d' | wc -l | tr -d ' ')"
 logged_ai="$( { grep -c 'action=install' "$CODE_LOG" 2>/dev/null || echo 0; } | tr -d '[:space:]')"
 [ "$ai_count" -eq "$logged_ai" ] || fail "Expected $ai_count AI installs, saw $logged_ai"
