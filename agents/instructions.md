@@ -26,10 +26,28 @@ Themes & Icons
   - Material Icon Theme (pkief.material-icon-theme), vscode-icons (vscode-icons-team.vscode-icons), Catppuccin Icons (catppuccin.catppuccin-vsc-icons)
 - Default selections (per _shared editor files) can be overridden in _overrides/<profile>.jsonc when needed.
 - Typography, GPU & IntelliSense defaults:
-  - Fonts: JetBrains Mono + JetBrainsMono Nerd Font fallback (ligatures + variable axes enabled) with Cascadia Code, IBM Plex Mono, SF Mono, monospace fallback.
-  - GPU: terminal + editor renderers force hardware acceleration with auto renderer choice and a minimum contrast ratio of 4.5 for accessibility.
+  - Fonts: JetBrains Mono (primary) with professional fallback chain: JetBrainsMono Nerd Font, Monaspace Neon (GitHub), Geist Mono (Vercel), Berkeley Mono, Fira Code, Cascadia Code (Microsoft), Intel One Mono, IBM Plex Mono, SFMono-Regular (macOS), monospace. Ligatures + variable axes enabled. Edit `editor.fontFamily` and `terminal.integrated.fontFamily` in `_shared/editor-*.jsonc` to customize.
+  - GPU: terminal + editor renderers force hardware acceleration with a minimum contrast ratio of 4.5 for accessibility.
   - Font smoothing: crisp profiles pin `workbench.fontAliasing=antialiased`; retina profiles leave it `auto` for HiDPI subpixel AA.
   - Inline docs/IntelliSense: hover definition preview, inline suggestions, code lens, parameter hints, linked editing, suggest preview/status bar/locality bonus all enabled globally. Override per profile only if tooling conflicts.
+- Notification suppression (global, in `_shared/editor-*.jsonc`):
+  - VS Code update popups: `update.mode=manual`, `update.showReleaseNotes=false`
+  - Extension update popups: `extensions.autoCheckUpdates=false`, `extensions.autoUpdate=true`
+  - Welcome/tips: `workbench.tips.enabled=false`, `workbench.welcomePage.walkthroughs.openOnInstall=false`, `workbench.startupEditor=none`
+
+Customizing Fonts
+- All font settings live in `_shared/editor-crisp.jsonc` and `_shared/editor-retina.jsonc`.
+- To change the primary font: move it to position 1 in the `editor.fontFamily` and `terminal.integrated.fontFamily` strings.
+- Recompose after editing: `bash scripts/compose-settings.sh`
+- Recommended professional coding fonts (all free unless noted):
+  - JetBrains Mono — variable weight, ligatures, wide glyph set
+  - Monaspace Neon — GitHub's texture-healing monospace (2024)
+  - Geist Mono — Vercel's clean, minimal coding font
+  - Fira Code — popular open-source ligature font
+  - Cascadia Code — Microsoft's default terminal font
+  - Intel One Mono — accessibility-focused, high x-height
+  - IBM Plex Mono — neutral, corporate open-source
+  - Berkeley Mono — retro terminal aesthetic (paid)
 
 Plan-Test-Commit Procedure
 - Execute every plan step sequentially. After finishing a step, immediately run `bash ~/.config/vscode/scripts/validate-json.sh` (and `code --version` if the step touches VS Code CLI workflows) before moving on so regressions are caught at the exact step that introduced them.
@@ -87,9 +105,11 @@ Profiles & Intent
   - Linting: ESLint and Stylelint enabled by default; TOML formatting via Even Better TOML.
   - Open with `vsp web-astro-crisp <path>` (or retina variant). Install with `scripts/install-extensions.sh web-astro-crisp`.
 - AI (ai-profile-*)
-  - Bundles GitHub Copilot + Copilot Chat only. Other assistants (Claude, Gemini, Continue, Codeium, Tabnine) are intentionally excluded.
-  - Chat command center enabled by default (`workbench.startupEditor=chatView`). Open with `vsp ai-profile-crisp <path>` or retina variant.
-  - Run `bash ~/.config/vscode/scripts/install-extensions.sh ai-profile-crisp` (or retina) on new machines and sign in to Copilot.
+  - ai-profile: Bundles GitHub Copilot + Copilot Chat only. Chat command center enabled by default (`workbench.startupEditor=chatView`).
+  - ai-plus: Experimental bundle: Copilot + Cody (Sourcegraph) + Continue.
+  - Language profiles (Java, Rust, C++, Web) now include: Copilot, Claude Code (`anthropic.claude-code`), Codex (`openai.chatgpt`), and Continue (`Continue.continue`).
+  - AI fragment configs live in `_overrides/ai/`: copilot.jsonc, claude-code.jsonc, codex.jsonc, continue.jsonc, cody.jsonc. These are reusable settings fragments that can be extended via `@extends`.
+  - Run `bash ~/.config/vscode/scripts/install-extensions.sh <profile>` on new machines and sign in to each AI service.
 - C/C++
   - cpp-intellisense: Microsoft C/C++ IntelliSense. CMake Tools provider; compile_commands at ${workspaceFolder}/build.
   - cpp-clangd: clangd with background index + clang-tidy; compile_commands dir set to ${workspaceFolder}/build.

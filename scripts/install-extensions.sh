@@ -73,9 +73,11 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 GROUP_ARGS=()
-for g in "${GROUP_FILTER[@]}"; do
-  GROUP_ARGS+=("--group" "$g")
-done
+if [ "${#GROUP_FILTER[@]}" -gt 0 ]; then
+  for g in "${GROUP_FILTER[@]}"; do
+    GROUP_ARGS+=("--group" "$g")
+  done
+fi
 
 if [ "$PROFILE" = "all" ]; then
   ANY_FAILED=0
@@ -83,8 +85,10 @@ if [ "$PROFILE" = "all" ]; then
     [ -d "$dir" ] || continue
     name="$(basename "$dir")"
     echo ">>> Installing extensions for $name"
-    if ! bash "$0" "$name" "${GROUP_ARGS[@]}"; then
-      ANY_FAILED=1
+    if [ "${#GROUP_ARGS[@]}" -gt 0 ]; then
+      bash "$0" "$name" "${GROUP_ARGS[@]}" || ANY_FAILED=1
+    else
+      bash "$0" "$name" || ANY_FAILED=1
     fi
   done
   exit "$ANY_FAILED"

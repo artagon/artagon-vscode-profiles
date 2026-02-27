@@ -3,22 +3,30 @@
     "workbench.colorTheme": "Catppuccin Mocha",
     "workbench.preferredDarkColorTheme": "Catppuccin Mocha",
     "workbench.iconTheme": "catppuccin-icons",
-    "workbench.fontAliasing": "auto",
+    "workbench.fontAliasing": "antialiased",
     "workbench.list.smoothScrolling": true,
     "workbench.tree.indent": 16,
     "workbench.tree.renderIndentGuides": "always",
     "workbench.tree.expandMode": "doubleClick",
+    "workbench.sideBar.location": "right",
     "window.commandCenter": true,
     "window.titleBarStyle": "custom",
     "window.nativeTabs": true,
     "window.autoDetectHighContrast": true,
+    "update.mode": "manual",
+    "update.showReleaseNotes": false,
+    "extensions.autoUpdate": true,
+    "extensions.ignoreRecommendations": true,
+    "extensions.autoCheckUpdates": false,
+    "workbench.startupEditor": "none",
+    "workbench.tips.enabled": false,
+    "workbench.welcomePage.walkthroughs.openOnInstall": false,
     "terminal.integrated.gpuAcceleration": "on",
-    "terminal.integrated.rendererType": "auto",
     "terminal.integrated.smoothScrolling": true,
-    "terminal.integrated.fontFamily": "'JetBrains Mono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'IBM Plex Mono', 'SFMono-Regular', monospace",
+    "terminal.integrated.fontFamily": "'JetBrains Mono', 'JetBrainsMono Nerd Font', 'Monaspace Neon', 'Geist Mono', 'Berkeley Mono', 'Fira Code', 'Cascadia Code', 'Intel One Mono', 'IBM Plex Mono', 'SFMono-Regular', monospace",
     "terminal.integrated.fontSize": 15,
     "terminal.integrated.minimumContrastRatio": 4.5,
-    "editor.fontFamily": "'JetBrains Mono', 'JetBrainsMono Nerd Font', 'Fira Code', 'Cascadia Code', 'IBM Plex Mono', 'SFMono-Regular', monospace",
+    "editor.fontFamily": "'JetBrains Mono', 'JetBrainsMono Nerd Font', 'Monaspace Neon', 'Geist Mono', 'Berkeley Mono', 'Fira Code', 'Cascadia Code', 'Intel One Mono', 'IBM Plex Mono', 'SFMono-Regular', monospace",
     "editor.fontLigatures": true,
     "editor.fontVariations": true,
     "editor.fontSize": 15,
@@ -61,8 +69,6 @@
     "files.insertFinalNewline": true,
     "git.autofetch": true,
     "git.confirmSync": false,
-    "extensions.ignoreRecommendations": true,
-    "extensions.showRecommendationsOnlyOnDemand": true,
     "security.workspace.trust.untrustedFiles": "open",
     "breadcrumbs.enabled": true,
     "explorer.confirmDragAndDrop": false,
@@ -74,9 +80,7 @@
     "rust-analyzer.procMacro.enable": true,
     "rust-analyzer.cargo.buildScripts.enable": true,
     "rust-analyzer.cargo.features": "all",
-    "rust-analyzer.cargo.extraEnv": {
-      "RUSTUP_TOOLCHAIN": "stable"
-    },
+    "rust-analyzer.cargo.extraEnv": {},
     "rust-analyzer.check.command": "clippy",
     "rust-analyzer.check.extraArgs": [
       "--all-targets"
@@ -86,7 +90,11 @@
     "rust-analyzer.diagnostics.disabled": [],
     "rust-analyzer.completion.autoimport.enable": true,
     "rust-analyzer.completion.autoself.enable": true,
+    "rust-analyzer.completion.callable.snippets": "fill_arguments",
+    "rust-analyzer.completion.fullFunctionSignatures.enable": true,
+    "rust-analyzer.completion.limit": null,
     "rust-analyzer.completion.postfix.enable": true,
+    "rust-analyzer.completion.privateEditable.enable": true,
     "rust-analyzer.completion.snippets.custom": {
       "Arc::new": {
         "postfix": "arc",
@@ -161,10 +169,7 @@
     "rust-analyzer.lens.references.method.enable": true,
     "rust-analyzer.workspace.symbol.search.limit": 5000,
     "rust-analyzer.workspace.symbol.search.scope": "workspace_and_dependencies",
-    "rust-analyzer.server.extraEnv": {
-      "RUSTUP_HOME": "${env:RUSTUP_HOME}",
-      "CARGO_HOME": "${env:CARGO_HOME}"
-    },
+    "rust-analyzer.server.extraEnv": null,
     "rust-analyzer.rustfmt.extraArgs": [
       "--edition",
       "2021"
@@ -192,14 +197,6 @@
         }
       }
     },
-    "terminal.integrated.env.osx": {
-      "RUSTUP_HOME": "${env:RUSTUP_HOME}",
-      "CARGO_HOME": "${env:CARGO_HOME}"
-    },
-    "terminal.integrated.env.linux": {
-      "RUSTUP_HOME": "${env:RUSTUP_HOME}",
-      "CARGO_HOME": "${env:CARGO_HOME}"
-    },
     "files.watcherExclude": {
       "**/target": true,
       "**/.cargo": true
@@ -215,7 +212,34 @@
       "editor.tabSize": 4,
       "editor.rulers": [
         100
-      ]
+      ],
+      "editor.suggest.snippetsPreventQuickSuggestions": false,
+      "editor.suggest.showKeywords": true,
+      "editor.suggest.showSnippets": true,
+      "editor.suggest.showFunctions": true,
+      "editor.suggest.showConstructors": true,
+      "editor.suggest.showFields": true,
+      "editor.suggest.showVariables": true,
+      "editor.suggest.showClasses": true,
+      "editor.suggest.showStructs": true,
+      "editor.suggest.showInterfaces": true,
+      "editor.suggest.showModules": true,
+      "editor.suggest.showProperties": true,
+      "editor.suggest.showEvents": true,
+      "editor.suggest.showMethods": true,
+      "editor.suggest.showEnumMembers": true,
+      "editor.suggest.showValues": true,
+      "editor.suggest.showConstants": true,
+      "editor.suggest.showTypeParameters": true,
+      "editor.quickSuggestions": {
+        "other": "on",
+        "comments": "off",
+        "strings": "on"
+      },
+      "editor.acceptSuggestionOnCommitCharacter": true,
+      "editor.suggestOnTriggerCharacters": true,
+      "editor.wordBasedSuggestions": "off",
+      "editor.semanticHighlighting.enabled": true
     },
     "[toml]": {
       "editor.defaultFormatter": "tamasfe.even-better-toml",
