@@ -7,10 +7,11 @@ OVR="$ROOT/_overrides"
 MERGED="$ROOT/_merged"
 mkdir -p "$MERGED" "$PROFILES_DIR"
 
-# Accepted shape for @extends values. Permits bare filenames or single-level subpaths
-# (e.g. "ai/copilot.jsonc"); rejects traversal (..), absolute paths (/), home (~),
-# backslashes, NUL, and anything else not made of [A-Za-z0-9._-] segments separated by /.
-EXTENDS_NAME_RE='^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)*\.jsonc$'
+# Accepted shape for @extends values. Permits bare filenames or a SINGLE-LEVEL
+# subpath (e.g. "ai/copilot.jsonc" — the only depth currently used in the repo).
+# Rejects traversal (..), absolute paths (/), home (~), backslashes, NUL, multi-
+# level subdirs, and anything else not made of [A-Za-z0-9._-] segments.
+EXTENDS_NAME_RE='^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)?\.jsonc$'
 
 # realpath shim — macOS does not ship GNU realpath in stock; fall back to python.
 resolve_real_path() {
@@ -124,12 +125,25 @@ merge_one() {
   echo "Merged $name -> $MERGED/$name.json"
 }
 
+FAILED=()
 if [ "$#" -gt 0 ]; then
-  for n in "$@"; do merge_one "$n"; done
+  for n in "$@"; do
+    if ! merge_one "$n"; then
+      FAILED+=("$n")
+    fi
+  done
 else
   for d in "$PROFILES_DIR"/*; do
     [ -d "$d" ] || continue
     n="$(basename "$d")"
-    merge_one "$n"
+    if ! merge_one "$n"; then
+      FAILED+=("$n")
+    fi
   done
+fi
+
+if [ "${#FAILED[@]}" -gt 0 ]; then
+  printf '\ncompose-settings: failed for %d profile(s):\n' "${#FAILED[@]}" >&2
+  for n in "${FAILED[@]}"; do printf '  - %s\n' "$n" >&2; done
+  exit 1
 fi
