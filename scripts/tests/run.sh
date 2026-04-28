@@ -155,48 +155,56 @@ EOF
 out="$(run_compose test-fixture || true)"
 echo "$out" | grep -qi "cycle" || fail "Expected cycle detection through symlink, got: $out"
 
-log "extension-id allowlist rejects injection-shaped values across all three paths"
+log "extension-id allowlist rejects injection-shaped values end-to-end across all three scripts"
+# These tests invoke the production scripts directly so removing a call-site
+# call to validate_extension_id would make them fail. (Earlier version only
+# sourced the helper, which proved the regex worked but not the wiring.)
 INJ_ID='evil; rm -rf /tmp/x'
-INJ_PROFILE="$TMP/injection-profile"
-mkdir -p "$INJ_PROFILE"
-cat > "$INJ_PROFILE/extensions.json" <<EOF
+
+# Path A: scripts/install-extensions.sh against a fixture profile under a
+# fresh ROOT. We can't easily redirect ROOT, so create the fixture in the
+# real profiles/ tree and clean up after.
+INJ_PROFILE_NAME="__test_injection_profile__"
+INJ_PROFILE_DIR="$ROOT/profiles/$INJ_PROFILE_NAME"
+mkdir -p "$INJ_PROFILE_DIR"
+cat > "$INJ_PROFILE_DIR/extensions.json" <<EOF
 [ { "identifier": { "id": "${INJ_ID}" } } ]
 EOF
-# Path A: install-extensions.sh — point profiles dir at our fixture by symlinking
-mkdir -p "$TMP/profiles-fixture"
-ln -sfn "$INJ_PROFILE" "$TMP/profiles-fixture/injection-profile"
-out_a="$( ROOT_OVERRIDE="$TMP/profiles-fixture" bash -c '
-  set +e
-  EXT_FILE="$0/injection-profile/extensions.json"
-  source "'"$ROOT"'/scripts/lib/extension-id.sh"
-  ext="$(jq -r ".[].identifier.id" "$EXT_FILE")"
-  validate_extension_id "$ext"
-  echo "exit=$?"
-' "$TMP/profiles-fixture" 2>&1)"
-echo "$out_a" | grep -q 'exit=1' || fail "Expected install-extensions path to reject injection id, got: $out_a"
+trap 'rm -rf "$TMP" "$INJ_PROFILE_DIR"' EXIT
+set +e
+out_a="$(bash "$ROOT/scripts/install-extensions.sh" "$INJ_PROFILE_NAME" 2>&1)"
+rc_a=$?
+set -e
+[ "$rc_a" -ne 0 ] || fail "install-extensions.sh accepted injection id (exit=$rc_a). Output: $out_a"
+echo "$out_a" | grep -q 'rejected extension id' || fail "Expected 'rejected extension id' in install-extensions.sh output, got: $out_a"
 
-# Path B: import-profile.sh — feed a poisoned bundle
+# Path B: scripts/import-profile.sh with a poisoned .code-profile bundle.
+# import-profile.sh writes to VSCODE_USER_DIR; point that at $TMP so we
+# don't perturb the real profile cache. PROFILE name itself is benign;
+# the injection is in extensions.enabled.
 INJ_BUNDLE="$TMP/injection.code-profile"
 cat > "$INJ_BUNDLE" <<EOF
 { "settings": {}, "extensions": { "enabled": ["${INJ_ID}"] } }
 EOF
-out_b="$( bash -c '
-  set +e
-  source "'"$ROOT"'/scripts/lib/extension-id.sh"
-  ext="$(jq -r ".extensions.enabled[]" "$0")"
-  validate_extension_id "$ext"
-  echo "exit=$?"
-' "$INJ_BUNDLE" 2>&1)"
-echo "$out_b" | grep -q 'exit=1' || fail "Expected import-profile path to reject injection id, got: $out_b"
+INJ_VSCODE_DIR="$TMP/vscode-user-dir"
+mkdir -p "$INJ_VSCODE_DIR/globalStorage"
+echo '{}' > "$INJ_VSCODE_DIR/globalStorage/storage.json"
+set +e
+out_b="$(VSCODE_USER_DIR="$INJ_VSCODE_DIR" bash "$ROOT/scripts/import-profile.sh" "${INJ_PROFILE_NAME}_b" "$INJ_BUNDLE" 2>&1)"
+rc_b=$?
+set -e
+[ "$rc_b" -ne 0 ] || fail "import-profile.sh accepted injection id (exit=$rc_b). Output: $out_b"
+echo "$out_b" | grep -q 'rejected extension id' || fail "Expected 'rejected extension id' in import-profile.sh output, got: $out_b"
 
-# Path C: vspcli --install-ext direct value
-out_c="$( bash -c '
-  set +e
-  source "'"$ROOT"'/scripts/lib/extension-id.sh"
-  validate_extension_id "$0"
-  echo "exit=$?"
-' "$INJ_ID" 2>&1)"
-echo "$out_c" | grep -q 'exit=1' || fail "Expected vspcli path to reject injection id, got: $out_c"
+# Path C: scripts/vspcli --install-ext with a poisoned id arg.
+set +e
+out_c="$(bash "$ROOT/scripts/vspcli" --install-ext "$INJ_PROFILE_NAME" "$INJ_ID" 2>&1)"
+rc_c=$?
+set -e
+[ "$rc_c" -ne 0 ] || fail "vspcli --install-ext accepted injection id (exit=$rc_c). Output: $out_c"
+echo "$out_c" | grep -q 'rejected extension id' || fail "Expected 'rejected extension id' in vspcli output, got: $out_c"
+
+rm -rf "$INJ_PROFILE_DIR"
 
 log "import-profile.sh PROFILE_ID generator is safe under set -euo pipefail"
 out_d="$( bash -c '
