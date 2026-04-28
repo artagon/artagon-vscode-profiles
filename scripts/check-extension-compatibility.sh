@@ -2,7 +2,12 @@
 set -euo pipefail
 
 # check-extension-compatibility.sh
-# Checks VS Code extensions for compatibility with the current VS Code version
+# Checks VS Code extensions for compatibility with the current VS Code version.
+#
+# Exit codes:
+#   0  clean run, no findings
+#   1  findings present (incompatible or unknown extensions)
+#   2  CLI misuse (unknown flag, missing dependency, version detection failure)
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VSCODE_VERSION="${VSCODE_VERSION:-$(code --version 2>/dev/null | head -n1 || echo "unknown")}"
@@ -38,7 +43,6 @@ REQUIREMENTS:
   - jq: For JSON processing
   - curl: For Marketplace API queries
 EOF
-  exit 0
 }
 
 # Parse arguments
@@ -56,8 +60,8 @@ while [[ $# -gt 0 ]]; do
     --verbose|-v) VERBOSE=true; shift ;;
     --no-cache) USE_CACHE=false; shift ;;
     --marketplace-only) MARKETPLACE_ONLY=true; shift ;;
-    --help|-h) usage ;;
-    -*) error "Unknown option: $1"; usage ;;
+    --help|-h) usage; exit 0 ;;
+    -*) error "Unknown option: $1"; usage >&2; exit 2 ;;
     *) PROFILES+=("$1"); shift ;;
   esac
 done
@@ -66,14 +70,14 @@ done
 for cmd in code jq curl; do
   if ! command -v "$cmd" &>/dev/null; then
     error "Required command not found: $cmd"
-    exit 1
+    exit 2
   fi
 done
 
 # Get VS Code version info
 if [[ "$VSCODE_VERSION" == "unknown" ]]; then
   error "Cannot detect VS Code version. Ensure 'code' is in PATH."
-  exit 1
+  exit 2
 fi
 
 # Parse semantic version
@@ -178,18 +182,21 @@ check_compatibility() {
   fi
 }
 
-# Check installed extensions
+# Check installed extensions for the named profile.
+# Uses `code --list-extensions --show-versions --profile <name>` so results are
+# scoped to the profile under audit (no cross-profile false positives).
 check_installed_extensions() {
   local ext_id="$1"
-
-  if ! code --list-extensions 2>/dev/null | grep -qi "^${ext_id}$"; then
+  local profile="$2"
+  local listing
+  listing=$(code --profile "$profile" --list-extensions --show-versions 2>/dev/null) || listing=""
+  local match
+  # Marketplace IDs are case-insensitive; match the `id@version` line, then split on '@'.
+  match=$(printf '%s\n' "$listing" | grep -i "^${ext_id}@" | head -n1)
+  if [[ -z "$match" ]]; then
     return 1
   fi
-
-  # Get installed version
-  local installed_version
-  installed_version=$(code --show-extension "$ext_id" 2>/dev/null | grep -i "version:" | awk '{print $2}' || echo "unknown")
-  echo "$installed_version"
+  printf '%s\n' "${match#*@}"
 }
 
 # Get all profiles
@@ -227,16 +234,20 @@ while IFS= read -r profile; do
 
     TOTAL_EXTENSIONS=$((TOTAL_EXTENSIONS + 1))
 
-    # Check marketplace compatibility
-    compat_info=$(check_compatibility "$ext_id")
-    compat_status=$?
+    # Capture per-extension compat result without aborting the loop under set -e.
+    # check_compatibility returns 0 (compatible), 1 (incompatible), 2 (unknown).
+    if compat_info=$(check_compatibility "$ext_id"); then
+      compat_status=0
+    else
+      compat_status=$?
+    fi
 
     IFS='|' read -r status version engine updated <<< "$compat_info"
 
-    # Check if installed (unless marketplace-only mode)
+    # Check if installed (unless marketplace-only mode), scoped to this profile.
     installed_version="not installed"
     if [[ "$MARKETPLACE_ONLY" == false ]]; then
-      installed_version=$(check_installed_extensions "$ext_id" || echo "not installed")
+      installed_version=$(check_installed_extensions "$ext_id" "$profile" || echo "not installed")
     fi
 
     # Track stats
@@ -301,13 +312,18 @@ else
   [[ $UNKNOWN_COUNT -gt 0 ]] && warn "Unknown: $UNKNOWN_COUNT" || log "Unknown: 0"
   log "$(printf '%.0s═' {1..60})"
 
-  if [[ $INCOMPATIBLE_COUNT -gt 0 ]]; then
-    printf '\n⚠️  Action required: %d incompatible extension(s) found!\n' "$INCOMPATIBLE_COUNT"
-    log "Review the extensions marked as incompatible above."
+  if [[ $INCOMPATIBLE_COUNT -gt 0 ]] || [[ $UNKNOWN_COUNT -gt 0 ]]; then
+    [[ $INCOMPATIBLE_COUNT -gt 0 ]] && printf '\n⚠️  Action required: %d incompatible extension(s) found!\n' "$INCOMPATIBLE_COUNT"
+    [[ $UNKNOWN_COUNT -gt 0 ]] && warn "$UNKNOWN_COUNT extension(s) returned unknown — see notes above."
     exit 1
   else
     printf '\n✅ All extensions are compatible with VS Code %s\n' "$VSCODE_VERSION"
   fi
+fi
+
+# JSON path also returns 1 on findings so automation can branch on exit code.
+if [[ "$JSON_OUTPUT" == true ]] && { [[ $INCOMPATIBLE_COUNT -gt 0 ]] || [[ $UNKNOWN_COUNT -gt 0 ]]; }; then
+  exit 1
 fi
 
 exit 0
