@@ -34,7 +34,13 @@ run "exporting profile bundles" bash "$ROOT/scripts/export-profiles.sh"
 # user-hostile (a doc-only commit could pull in unrelated regen). The CI gate
 # 'git diff --exit-code _merged/ exports/' fails for the same reason, so we want
 # the local hook to catch it first.
-DIRTY=$(git -C "$ROOT" status --porcelain _merged/ exports/ | awk '$1 ~ /[?MD]/' || true)
+# Match any non-clean porcelain line for _merged/ exports/. Column 1 is the
+# index status (A/M/D/R/C/?), column 2 is the worktree status (M/D/?). We
+# care about anything that would leave the next CI 'git diff --exit-code'
+# unhappy: untracked (??), unstaged-modify ( M), unstaged-delete ( D), and
+# also already-staged-but-modified-again (MM) etc. The regex below rejects
+# anything except a clean line.
+DIRTY=$(git -C "$ROOT" status --porcelain _merged/ exports/ | awk '$1 ~ /[?MDARC]/ || $2 ~ /[?MD]/' || true)
 if [ -n "$DIRTY" ]; then
   cat >&2 <<EOF
 pre-commit: compose/export regenerated tracked files that are not staged.

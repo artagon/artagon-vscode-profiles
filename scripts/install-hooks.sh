@@ -20,6 +20,16 @@ if [ -z "$current" ]; then
 fi
 
 if [ "$current" = "$TARGET" ]; then
+  # Already pointed at our hooks dir, but verify the actual hook scripts
+  # are executable. A chmod regression after `git checkout` (especially on
+  # filesystems that don't preserve the +x bit) would silently make the
+  # hook a no-op.
+  for hook in "$ROOT/$TARGET"/*; do
+    [ -e "$hook" ] || continue
+    [ -x "$hook" ] && continue
+    echo "install-hooks: $hook is not executable; run 'chmod +x $hook' to enable" >&2
+    exit 1
+  done
   echo "install-hooks: already installed (core.hooksPath = $TARGET)"
   exit 0
 fi

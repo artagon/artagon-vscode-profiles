@@ -19,7 +19,7 @@ The composer SHALL surface parse errors when reading `@extends` declarations and
 - **THEN** the composer reports the parse error and exits non-zero for that profile
 
 ### Requirement: Path containment for @extends
-The composer SHALL accept only `@extends` values whose lexical shape is `<segment>(/<segment>)*\.jsonc` where each segment matches `[a-zA-Z0-9._-]+`, AND whose resolved real path lies within the real path of `_overrides/`. Any other value (including `..` segments, leading `/`, leading `~`, backslashes, NUL bytes, or values that resolve outside `_overrides/`) SHALL be rejected with a clear error.
+The composer SHALL accept only `@extends` values whose lexical shape is `<segment>(/<segment>)?\.jsonc` (a bare filename or a single sub-directory plus filename) where each segment matches `[a-zA-Z0-9._-]+`, AND whose resolved real path lies within the real path of `_overrides/`. Any other value (including `..` segments, leading `/`, leading `~`, backslashes, NUL bytes, multi-level sub-paths, or values that resolve outside `_overrides/`) SHALL be rejected with a clear error.
 
 #### Scenario: Traversal segment
 - **WHEN** an override declares `"@extends": ["../../../etc/passwd"]`

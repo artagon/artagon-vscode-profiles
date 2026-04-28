@@ -51,7 +51,7 @@
 - [x] 8.1 Add `.github/workflows/ci.yml` pinned to `runs-on: ubuntu-latest`. Step order: install jq + openssl; run `scripts/compose-settings.sh && scripts/export-profiles.sh`; assert `git diff --exit-code _merged/ exports/`; run `scripts/validate-json.sh`; run `scripts/tests/run.sh`.
 - [x] 8.2 Add `scripts/install-hooks.sh` — an idempotent installer that reads `git config --get core.hooksPath` and refuses to overwrite a foreign value. Referenced from `CONTRIBUTING.md`.
 - [x] 8.3 Add a workflow status badge to `README.md`
-- [x] 8.4 Add a `tests/run.sh` assertion that `_overrides/java-spring-{crisp,retina}.jsonc` are symlinks pointing at `java-spring-base.jsonc`
+- [x] 8.4 Add `tests/run.sh` assertions that all 10 `_overrides/<stack>-{crisp,retina}.jsonc` leaves (java-{gradle,maven,profile,spring} + rust-profile) are symlinks pointing at `<stack>-base.jsonc`
 - [x] 8.5 Add a constraint to `openspec/project.md` documenting the symlink trick used for Java Spring DPI variants
 
 ## 9. Final regenerate (do LAST after all edits)
@@ -63,6 +63,6 @@
 ## 10. Validation
 
 - [x] 10.1 Run `openspec validate harden-profile-tooling-and-pipeline --strict` — passes
-- [x] 10.2 Run `scripts/tests/run.sh` locally and confirm all 11 test groups pass
+- [x] 10.2 Run `scripts/tests/run.sh` locally and confirm all 13 test groups pass (six new groups added in this change: path-containment, end-to-end injection, PROFILE_ID safety, regex drift, symlink invariant, Workspace Trust value)
 - [x] 10.3 Compose+export are idempotent (verified by md5-hashing all artifacts before and after a second regen). CI's `git diff --exit-code _merged/ exports/` gate will pass once the diff is committed.
 - [x] 10.4 Code-spec drift confirmed by `tests/run.sh` group "extension-id regex literal in helper matches the spec deltas"
