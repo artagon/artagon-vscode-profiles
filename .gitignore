@@ -6,3 +6,6 @@ User/*.db
 User/sync/
 # merged outputs now live in ~/.config/vscode/_merged; nothing under vscode/_merged anymore
 .DS_Store
+
+# Per-machine state — never commit
+.cache/
