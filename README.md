@@ -4,6 +4,7 @@ This repository tracks all Visual Studio Code profiles, shared settings, and hel
 
 ## About
 
+[![CI](https://github.com/Artagon/artagon-vscode-profiles/actions/workflows/ci.yml/badge.svg)](https://github.com/Artagon/artagon-vscode-profiles/actions/workflows/ci.yml)
 [![OS macOS](https://img.shields.io/badge/os-macOS-000000?logo=apple&logoColor=white)](#)
 [![OS Linux](https://img.shields.io/badge/os-Linux-0b7261?logo=linux&logoColor=white)](#)
 [![OS Windows](https://img.shields.io/badge/os-Windows-0078D4?logo=windows&logoColor=white)](#)
@@ -14,6 +15,10 @@ This repository tracks all Visual Studio Code profiles, shared settings, and hel
 - Web/Astro (TypeScript/JS + HTML/CSS), Java via jenv, Rust, and C/C++ stacks pre‑configured.
 - AI policy: GitHub Copilot + Copilot Chat only (no other assistants).
 - Scripts for validate/compose/export/open/install; exports ready for “Profiles: Import Profile”.
+
+## Behavior Change Notice
+
+Starting with the `harden-profile-tooling-and-pipeline` change, all shipped profiles default `security.workspace.trust.untrustedFiles` to `"prompt"` (was `"open"`). The first time you open an untrusted folder under a managed profile, VS Code will show its Workspace Trust prompt before running language servers, tasks, debug launches, or formatters defined in the workspace. This is the recommended secure default — accept the prompt to proceed normally.
 
 ## Quick Start (First‑Time Users)
 - Requirements: VS Code CLI on PATH (`code --version`) and `jq`.
