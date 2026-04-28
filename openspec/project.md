@@ -35,9 +35,10 @@ This repository manages Visual Studio Code profile configurations under `~/.conf
 ## Constraints and Notes
 - `_merged/` is generated output; do not edit files there.
 - `_shared/*.jsonc` and `_overrides/*.jsonc` must be strict JSON (no comments).
-- Overrides may declare `"@extends"` to reuse base settings in parent-first order.
+- Overrides may declare `"@extends"` to reuse base settings in parent-first order. The composer accepts only bare filenames or single-level subpaths under `_overrides/` and rejects `..`, leading `/`, leading `~`, backslashes, and NUL. Cycles are detected by resolved real path, so symlinked overrides cannot trick the detector.
 - Profile names containing `retina` use `editor-retina.jsonc`; all others use `editor-crisp.jsonc`.
 - `profiles/<name>/settings.json` is a repo-relative symlink to `_merged/<name>.json`.
+- Java Spring leaf overrides use a symlink invariant: `_overrides/java-spring-{crisp,retina}.jsonc` are symlinks pointing at `java-spring-base.jsonc`. The composer's filename-keyed base selection means each leaf inherits the correct shared-DPI base while sharing every other key. Tools that "convert symlinks to files" (some IDE save modes, some archivers) will silently break propagation. `scripts/tests/run.sh` asserts the symlink shape on every run.
 
 ## External Dependencies
 - VS Code CLI (`code`)
