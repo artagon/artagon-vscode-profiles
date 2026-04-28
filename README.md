@@ -20,6 +20,8 @@ This repository tracks all Visual Studio Code profiles, shared settings, and hel
 
 Starting with the `harden-profile-tooling-and-pipeline` change, all shipped profiles default `security.workspace.trust.untrustedFiles` to `"prompt"` (was `"open"`). The first time you open an untrusted folder under a managed profile, VS Code will show its Workspace Trust prompt before running language servers, tasks, debug launches, or formatters defined in the workspace. This is the recommended secure default — accept the prompt to proceed normally.
 
+See [CHANGELOG.md](./CHANGELOG.md) for a complete list of changes.
+
 ## Quick Start (First‑Time Users)
 - Requirements: VS Code CLI on PATH (`code --version`) and `jq`.
 - Compose + export:

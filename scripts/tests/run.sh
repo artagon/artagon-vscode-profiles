@@ -219,12 +219,31 @@ for spec in install-profile-extensions import-profile-bundles manage-profile-cli
     || fail "Helper regex literal not found verbatim in $spec_path"
 done
 
-log "java-spring leaf overrides remain symlinks to java-spring-base.jsonc"
-for leaf in java-spring-crisp.jsonc java-spring-retina.jsonc; do
-  link="$ROOT/_overrides/$leaf"
-  [ -L "$link" ] || fail "Expected symlink at $link (was a regular file — pattern broken)"
-  target="$(readlink "$link")"
-  [ "$target" = "java-spring-base.jsonc" ] || fail "Expected $leaf -> java-spring-base.jsonc, got $target"
+log "all <stack>-{crisp,retina}.jsonc leaves remain symlinks to <stack>-base.jsonc"
+# The composer's filename-keyed base selection (compose-settings.sh:38-39)
+# makes the symlink trick load-bearing for ANY leaf <stack>-{crisp,retina}.jsonc
+# whose content is shared with <stack>-base.jsonc. Currently 10 such symlinks
+# across java-{gradle,maven,profile,spring} and rust-profile.
+for stack in java-gradle java-maven java-profile java-spring rust-profile; do
+  for variant in crisp retina; do
+    link="$ROOT/_overrides/${stack}-${variant}.jsonc"
+    [ -L "$link" ] || fail "Expected symlink at $link (was a regular file — pattern broken)"
+    target="$(readlink "$link")"
+    expected="${stack}-base.jsonc"
+    [ "$target" = "$expected" ] || fail "Expected $link -> $expected, got $target"
+  done
 done
+
+log "every merged profile has security.workspace.trust.untrustedFiles=prompt"
+# Contracted by openspec/changes/.../specs/secure-shared-defaults/spec.md.
+# A regression in _shared/editor-{crisp,retina}.jsonc would silently flip
+# trust back to "open" across all 22 profiles; this guard catches it before
+# the CI 'git diff' step.
+mismatched=()
+for merged in "$ROOT"/_merged/*.json; do
+  val="$(jq -r '."security.workspace.trust.untrustedFiles" // "MISSING"' "$merged")"
+  [ "$val" = "prompt" ] || mismatched+=("$(basename "$merged"):$val")
+done
+[ "${#mismatched[@]}" -eq 0 ] || fail "Workspace Trust value not 'prompt' in: ${mismatched[*]}"
 
 log "All script tests passed."
