@@ -6,25 +6,63 @@ SHARED="$ROOT/_shared"
 OVR="$ROOT/_overrides"
 MERGED="$ROOT/_merged"
 mkdir -p "$MERGED" "$PROFILES_DIR"
-# Collect override chain (parents first, then file), compatible with older bash and with cycle detection
+
+# Accepted shape for @extends values. Permits bare filenames or single-level subpaths
+# (e.g. "ai/copilot.jsonc"); rejects traversal (..), absolute paths (/), home (~),
+# backslashes, NUL, and anything else not made of [A-Za-z0-9._-] segments separated by /.
+EXTENDS_NAME_RE='^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)*\.jsonc$'
+
+# realpath shim — macOS does not ship GNU realpath in stock; fall back to python.
+resolve_real_path() {
+  local p="$1"
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$p"
+  else
+    python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$p"
+  fi
+}
+
+# Real-path of $OVR for containment checks.
+OVR_REAL="$(resolve_real_path "$OVR")"
+
+# Collect override chain (parents first, then file), compatible with older bash and with cycle detection.
+# Cycles are detected by resolved real path so symlinked overrides cannot trick the detector.
 collect_overrides() {
   local file="$1" stack="$2"
   [ -f "$file" ] || return 0
+  local real
+  real="$(resolve_real_path "$file")"
   case " $stack " in
-    *" $file "*)
-      echo "Error: detected @extends cycle: $stack -> $file" >&2
+    *" $real "*)
+      echo "Error: detected @extends cycle: $stack -> $real" >&2
       return 1
       ;;
   esac
   local parents=()
+  # Strict @extends parsing — let jq errors propagate so malformed values surface loudly.
   while IFS= read -r parent; do
     [ -n "$parent" ] && parents+=("$parent")
-  done < <(jq -r '."@extends"? // empty | (if type=="string" then . else .[] end)' "$file" 2>/dev/null || true)
-  local new_stack="$stack $file"
+  done < <(jq -r '."@extends"? // empty | (if type=="string" then . elif type=="array" then .[] else error("@extends must be string or array of strings") end)' "$file")
+  local new_stack="$stack $real"
   if [ "${#parents[@]}" -gt 0 ]; then
     for parent in "${parents[@]}"; do
+      # Lexical guard: reject anything not made of safe segments.
+      if [[ ! "$parent" =~ $EXTENDS_NAME_RE ]]; then
+        echo "Error: rejected @extends path '$parent' in $file (must match $EXTENDS_NAME_RE; no traversal, absolute paths, ~, backslashes, or NUL)" >&2
+        return 1
+      fi
       local parent_path="$OVR/$parent"
-      if [ -f "$parent_path" ]; then
+      # Containment guard: even safe-looking names must resolve inside _overrides/.
+      if [ -e "$parent_path" ]; then
+        local parent_real
+        parent_real="$(resolve_real_path "$parent_path")"
+        case "$parent_real" in
+          "$OVR_REAL"/*) ;;
+          *)
+            echo "Error: @extends '$parent' in $file resolves outside _overrides/ ($parent_real)" >&2
+            return 1
+            ;;
+        esac
         collect_overrides "$parent_path" "$new_stack" || return 1
       else
         echo "Warning: missing extends file $parent referenced by $file" >&2
@@ -69,8 +107,16 @@ merge_one() {
     temps+=("$tmp")
     inputs+=("$tmp")
   done
-  # Merge: base first, then override wins for conflicts
-  jq -s 'reduce .[] as $it ({}; . * $it)' "${inputs[@]}" > "$MERGED/$name.json"
+  # Merge: base first, then override wins for conflicts.
+  # Atomic write: produce content in a sibling temp file and rename so readers (VS Code via the
+  # profile settings.json symlink) never observe a truncated or partial file.
+  local out_tmp="$MERGED/$name.json.tmp.$$"
+  if ! jq -s 'reduce .[] as $it ({}; . * $it)' "${inputs[@]}" > "$out_tmp"; then
+    rm -f "$out_tmp" "${temps[@]}"
+    echo "Error: jq merge failed for $name; existing $MERGED/$name.json preserved" >&2
+    return 1
+  fi
+  mv -f "$out_tmp" "$MERGED/$name.json"
   rm -f "${temps[@]}"
   # Replace profile settings.json with repo-relative symlink to merged output
   local rel_target="../../_merged/$name.json"

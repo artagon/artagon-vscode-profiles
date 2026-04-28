@@ -189,11 +189,21 @@ sync_profile_cache() {
   fi
 }
 
+FAILED_PROFILES=()
 for p in "${PROFILES[@]}"; do
   sync_profile_cache "$p"
   ensure_extensions "$p"
   echo "Opening profile: $p"
-  code --profile "$p" --new-window || true
+  if ! code --profile "$p" --new-window; then
+    echo "Warning: 'code --profile $p --new-window' returned non-zero" >&2
+    FAILED_PROFILES+=("$p")
+  fi
 done
+
+if [ "${#FAILED_PROFILES[@]}" -gt 0 ]; then
+  printf '\nFailed to launch profiles:\n' >&2
+  for p in "${FAILED_PROFILES[@]}"; do printf '  - %s\n' "$p" >&2; done
+  exit 1
+fi
 
 echo "All profiles opened. Use Profiles: Switch Profile in VS Code to confirm."
