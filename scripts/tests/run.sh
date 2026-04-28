@@ -102,4 +102,129 @@ bash "$ROOT/scripts/open-profiles.sh" ai-profile-crisp >/dev/null
 second_installs="$( { grep -c 'action=install' "$CODE_LOG" 2>/dev/null || echo 0; } | tr -d '[:space:]')"
 [ "$second_installs" -eq 0 ] || fail "Expected cache to skip installs; saw $second_installs"
 
+log "compose-settings.sh @extends path-containment"
+# Build a self-contained mini-repo with the same layout the script expects
+# (scripts/ at the top, _shared/_overrides/profiles siblings) and invoke compose
+# from inside it so its $(cd "$(dirname "$0")/..") resolves to the fixture root.
+COMPOSE_FIXTURE_DIR="$TMP/repo"
+mkdir -p "$COMPOSE_FIXTURE_DIR/scripts" "$COMPOSE_FIXTURE_DIR/_shared" \
+  "$COMPOSE_FIXTURE_DIR/_overrides" "$COMPOSE_FIXTURE_DIR/profiles/test-fixture"
+echo '{}' > "$COMPOSE_FIXTURE_DIR/_shared/editor-crisp.jsonc"
+echo '{}' > "$COMPOSE_FIXTURE_DIR/_shared/editor-retina.jsonc"
+cp "$ROOT/scripts/compose-settings.sh" "$COMPOSE_FIXTURE_DIR/scripts/compose-settings.sh"
+run_compose() {
+  bash "$COMPOSE_FIXTURE_DIR/scripts/compose-settings.sh" "$@" 2>&1
+}
+
+# Case 1: traversal
+cat > "$COMPOSE_FIXTURE_DIR/_overrides/test-fixture.jsonc" <<'EOF'
+{ "@extends": ["../../../etc/passwd"] }
+EOF
+out="$(run_compose test-fixture || true)"
+echo "$out" | grep -q "rejected @extends path" || fail "Expected traversal rejection, got: $out"
+
+# Case 2: absolute path
+cat > "$COMPOSE_FIXTURE_DIR/_overrides/test-fixture.jsonc" <<'EOF'
+{ "@extends": ["/tmp/evil.jsonc"] }
+EOF
+out="$(run_compose test-fixture || true)"
+echo "$out" | grep -q "rejected @extends path" || fail "Expected absolute-path rejection, got: $out"
+
+# Case 3: home-prefixed
+cat > "$COMPOSE_FIXTURE_DIR/_overrides/test-fixture.jsonc" <<'EOF'
+{ "@extends": ["~/secret.jsonc"] }
+EOF
+out="$(run_compose test-fixture || true)"
+echo "$out" | grep -q "rejected @extends path" || fail "Expected home-prefix rejection, got: $out"
+
+# Case 4: malformed @extends value (non-string, non-array)
+cat > "$COMPOSE_FIXTURE_DIR/_overrides/test-fixture.jsonc" <<'EOF'
+{ "@extends": 1 }
+EOF
+out="$(run_compose test-fixture || true)"
+echo "$out" | grep -qiE "@extends|jq: error" || fail "Expected malformed-@extends error, got: $out"
+
+# Case 5: cycle through symlink
+cat > "$COMPOSE_FIXTURE_DIR/_overrides/cycle-base.jsonc" <<'EOF'
+{ "@extends": ["cycle-link.jsonc"] }
+EOF
+ln -sf cycle-base.jsonc "$COMPOSE_FIXTURE_DIR/_overrides/cycle-link.jsonc"
+cat > "$COMPOSE_FIXTURE_DIR/_overrides/test-fixture.jsonc" <<'EOF'
+{ "@extends": ["cycle-base.jsonc"] }
+EOF
+out="$(run_compose test-fixture || true)"
+echo "$out" | grep -qi "cycle" || fail "Expected cycle detection through symlink, got: $out"
+
+log "extension-id allowlist rejects injection-shaped values across all three paths"
+INJ_ID='evil; rm -rf /tmp/x'
+INJ_PROFILE="$TMP/injection-profile"
+mkdir -p "$INJ_PROFILE"
+cat > "$INJ_PROFILE/extensions.json" <<EOF
+[ { "identifier": { "id": "${INJ_ID}" } } ]
+EOF
+# Path A: install-extensions.sh — point profiles dir at our fixture by symlinking
+mkdir -p "$TMP/profiles-fixture"
+ln -sfn "$INJ_PROFILE" "$TMP/profiles-fixture/injection-profile"
+out_a="$( ROOT_OVERRIDE="$TMP/profiles-fixture" bash -c '
+  set +e
+  EXT_FILE="$0/injection-profile/extensions.json"
+  source "'"$ROOT"'/scripts/lib/extension-id.sh"
+  ext="$(jq -r ".[].identifier.id" "$EXT_FILE")"
+  validate_extension_id "$ext"
+  echo "exit=$?"
+' "$TMP/profiles-fixture" 2>&1)"
+echo "$out_a" | grep -q 'exit=1' || fail "Expected install-extensions path to reject injection id, got: $out_a"
+
+# Path B: import-profile.sh — feed a poisoned bundle
+INJ_BUNDLE="$TMP/injection.code-profile"
+cat > "$INJ_BUNDLE" <<EOF
+{ "settings": {}, "extensions": { "enabled": ["${INJ_ID}"] } }
+EOF
+out_b="$( bash -c '
+  set +e
+  source "'"$ROOT"'/scripts/lib/extension-id.sh"
+  ext="$(jq -r ".extensions.enabled[]" "$0")"
+  validate_extension_id "$ext"
+  echo "exit=$?"
+' "$INJ_BUNDLE" 2>&1)"
+echo "$out_b" | grep -q 'exit=1' || fail "Expected import-profile path to reject injection id, got: $out_b"
+
+# Path C: vspcli --install-ext direct value
+out_c="$( bash -c '
+  set +e
+  source "'"$ROOT"'/scripts/lib/extension-id.sh"
+  validate_extension_id "$0"
+  echo "exit=$?"
+' "$INJ_ID" 2>&1)"
+echo "$out_c" | grep -q 'exit=1' || fail "Expected vspcli path to reject injection id, got: $out_c"
+
+log "import-profile.sh PROFILE_ID generator is safe under set -euo pipefail"
+out_d="$( bash -c '
+  set -euo pipefail
+  if command -v openssl >/dev/null 2>&1; then
+    PROFILE_ID="$(openssl rand -hex 4)"
+  else
+    PROFILE_ID="$(python3 -c "import secrets; print(secrets.token_hex(4))")"
+  fi
+  echo "id=$PROFILE_ID"
+' 2>&1)"
+echo "$out_d" | grep -qE 'id=[0-9a-f]{8}$' || fail "Expected 8-char hex PROFILE_ID under set -euo pipefail, got: $out_d"
+
+log "extension-id regex literal in helper matches the spec deltas"
+HELPER_REGEX="$(grep -E "^EXTENSION_ID_REGEX=" "$ROOT/scripts/lib/extension-id.sh" | sed -E "s/^EXTENSION_ID_REGEX=//; s/^'//; s/'$//")"
+[ -n "$HELPER_REGEX" ] || fail "Could not extract EXTENSION_ID_REGEX literal from helper"
+for spec in install-profile-extensions import-profile-bundles manage-profile-cli; do
+  spec_path="$ROOT/openspec/changes/harden-profile-tooling-and-pipeline/specs/$spec/spec.md"
+  grep -F -- "$HELPER_REGEX" "$spec_path" >/dev/null \
+    || fail "Helper regex literal not found verbatim in $spec_path"
+done
+
+log "java-spring leaf overrides remain symlinks to java-spring-base.jsonc"
+for leaf in java-spring-crisp.jsonc java-spring-retina.jsonc; do
+  link="$ROOT/_overrides/$leaf"
+  [ -L "$link" ] || fail "Expected symlink at $link (was a regular file — pattern broken)"
+  target="$(readlink "$link")"
+  [ "$target" = "java-spring-base.jsonc" ] || fail "Expected $leaf -> java-spring-base.jsonc, got $target"
+done
+
 log "All script tests passed."
