@@ -77,7 +77,10 @@ fi
 
 hash_file() {
   local file="$1"
-  $HASH_CMD "$file" | awk '{print $1}'
+  # Quote $HASH_CMD so a future change to a flagged tool (e.g. "sha1sum --tag")
+  # doesn't word-split unsafely. Today the value is always a single command
+  # name, but the quoted shape is the right contract.
+  "$HASH_CMD" "$file" | awk '{print $1}'
 }
 
 # Parse CLI args: allow --skip-install flag and profiles list
