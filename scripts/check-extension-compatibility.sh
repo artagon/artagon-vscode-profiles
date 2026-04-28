@@ -190,13 +190,22 @@ check_installed_extensions() {
   local profile="$2"
   local listing
   listing=$(code --profile "$profile" --list-extensions --show-versions 2>/dev/null) || listing=""
-  local match
-  # Marketplace IDs are case-insensitive; match the `id@version` line, then split on '@'.
-  match=$(printf '%s\n' "$listing" | grep -i "^${ext_id}@" | head -n1)
-  if [[ -z "$match" ]]; then
+  # Marketplace IDs are case-insensitive. Use awk to split each "id@version"
+  # line on '@' and compare the id literally — avoids the bug where a regex
+  # 'ms-vscode.cmake-tools' matches 'ms-vscodeXcmake-tools' because '.' is
+  # any-char in regex.
+  local needle_lower
+  needle_lower=$(printf '%s' "$ext_id" | tr '[:upper:]' '[:lower:]')
+  local version
+  version=$(printf '%s\n' "$listing" | awk -F'@' -v n="$needle_lower" '
+    {
+      lid = tolower($1)
+      if (lid == n) { print $2; exit }
+    }')
+  if [[ -z "$version" ]]; then
     return 1
   fi
-  printf '%s\n' "${match#*@}"
+  printf '%s\n' "$version"
 }
 
 # Get all profiles

@@ -26,25 +26,38 @@ resolve_real_path() {
 # Real-path of $OVR for containment checks.
 OVR_REAL="$(resolve_real_path "$OVR")"
 
-# Collect override chain (parents first, then file), compatible with older bash and with cycle detection.
-# Cycles are detected by resolved real path so symlinked overrides cannot trick the detector.
+# Collect override chain (parents first, then file), compatible with older bash and with cycle
+# detection. Cycles are detected by resolved real path so symlinked overrides cannot trick the
+# detector. Ancestors are tracked in a global array (CYCLE_STACK) rather than a packed string
+# so paths containing spaces compare correctly. Each call pushes its real path, recurses, then
+# pops on return — depth-balanced via a single return path.
+CYCLE_STACK=()
 collect_overrides() {
-  local file="$1" stack="$2"
+  local file="$1"
   [ -f "$file" ] || return 0
   local real
   real="$(resolve_real_path "$file")"
-  case " $stack " in
-    *" $real "*)
-      echo "Error: detected @extends cycle: $stack -> $real" >&2
+  local i
+  for i in "${CYCLE_STACK[@]+"${CYCLE_STACK[@]}"}"; do
+    if [ "$i" = "$real" ]; then
+      echo "Error: detected @extends cycle ending at: $real" >&2
       return 1
-      ;;
-  esac
+    fi
+  done
+  CYCLE_STACK+=("$real")
+  local rc=0
+  _collect_inner "$file" || rc=$?
+  unset 'CYCLE_STACK[${#CYCLE_STACK[@]}-1]'
+  return $rc
+}
+
+_collect_inner() {
+  local file="$1"
   local parents=()
   # Strict @extends parsing — let jq errors propagate so malformed values surface loudly.
   while IFS= read -r parent; do
     [ -n "$parent" ] && parents+=("$parent")
   done < <(jq -r '."@extends"? // empty | (if type=="string" then . elif type=="array" then .[] else error("@extends must be string or array of strings") end)' "$file")
-  local new_stack="$stack $real"
   if [ "${#parents[@]}" -gt 0 ]; then
     for parent in "${parents[@]}"; do
       # Lexical guard: reject anything not made of safe segments.
@@ -64,7 +77,7 @@ collect_overrides() {
             return 1
             ;;
         esac
-        collect_overrides "$parent_path" "$new_stack" || return 1
+        collect_overrides "$parent_path" || return 1
       else
         echo "Warning: missing extends file $parent referenced by $file" >&2
       fi

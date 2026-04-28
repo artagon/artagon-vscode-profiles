@@ -77,10 +77,17 @@ existing_id="$(jq -r --arg name "$PROFILE" '(.userDataProfiles // [])[] | select
 if [ -n "$existing_id" ] && [ "$existing_id" != "null" ]; then
   PROFILE_ID="$existing_id"
 else
+  # PROFILE_ID needs a SIGPIPE-safe RNG; the previous tr | head -c idiom
+  # aborted under set -euo pipefail. Prefer openssl, fall back to python3.
+  # Both are common; if neither is present, fail with a clear message rather
+  # than letting bash exit 127 with raw shell error text.
   if command -v openssl >/dev/null 2>&1; then
     PROFILE_ID="$(openssl rand -hex 4)"
-  else
+  elif command -v python3 >/dev/null 2>&1; then
     PROFILE_ID="$(python3 -c 'import secrets; print(secrets.token_hex(4))')"
+  else
+    echo "import-profile: needs 'openssl' or 'python3' for PROFILE_ID generation; install one and retry" >&2
+    exit 1
   fi
   tmp="$(mktemp)"
   jq --arg name "$PROFILE" --arg loc "$PROFILE_ID" '
@@ -98,6 +105,14 @@ mv "$tmp_settings" "$TARGET_DIR/settings.json"
 echo "Imported settings into profile '$PROFILE' (cache dir: $TARGET_DIR)"
 
 EXTENSIONS=()
+# Materialize jq output first; otherwise a malformed extensions.enabled
+# (e.g. {"enabled": 1}) would silently fail inside the process substitution
+# and the loop would treat it as "no extensions" while still completing
+# settings import.
+EXT_LIST="$(jq -r '.extensions.enabled[]?' "$BUNDLE")" || {
+  echo "Error: failed to parse $BUNDLE with jq" >&2
+  exit 1
+}
 while IFS= read -r ext; do
   [ -z "$ext" ] && continue
   if ! validate_extension_id "$ext"; then
@@ -105,7 +120,7 @@ while IFS= read -r ext; do
     exit 1
   fi
   EXTENSIONS+=("$ext")
-done < <(jq -r '.extensions.enabled[]?' "$BUNDLE")
+done <<<"$EXT_LIST"
 FAILED_EXT=()
 if [ "${#EXTENSIONS[@]}" -gt 0 ]; then
   DELAY="${VSCODE_EXTENSION_INSTALL_DELAY:-1}"

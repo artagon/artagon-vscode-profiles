@@ -106,6 +106,13 @@ if [ ! -f "$EXT_FILE" ]; then
 fi
 
 EXT_IDS=()
+# Materialize jq output first so a parse/syntax failure produces a non-zero
+# exit instead of an empty pipe (which the loop would silently treat as
+# "no extensions" and exit 0). Process substitution swallows jq's status.
+EXT_LIST="$(jq -r '.[].identifier.id' "$EXT_FILE")" || {
+  echo "Error: failed to parse $EXT_FILE with jq" >&2
+  exit 1
+}
 while IFS= read -r ext; do
   [ -z "$ext" ] && continue
   if ! validate_extension_id "$ext"; then
@@ -113,7 +120,7 @@ while IFS= read -r ext; do
     exit 1
   fi
   EXT_IDS+=("$ext")
-done < <(jq -r '.[].identifier.id' "$EXT_FILE")
+done <<<"$EXT_LIST"
 
 if [ "${#EXT_IDS[@]}" -eq 0 ]; then
   echo "No extensions listed in $EXT_FILE" >&2
