@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/extension-id.sh
+source "$SCRIPT_DIR/lib/extension-id.sh"
+
 usage() {
   cat <<USAGE
 import-profile.sh - import a VS Code .code-profile bundle into a named profile
@@ -73,7 +77,11 @@ existing_id="$(jq -r --arg name "$PROFILE" '(.userDataProfiles // [])[] | select
 if [ -n "$existing_id" ] && [ "$existing_id" != "null" ]; then
   PROFILE_ID="$existing_id"
 else
-  PROFILE_ID="$(LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 8)"
+  if command -v openssl >/dev/null 2>&1; then
+    PROFILE_ID="$(openssl rand -hex 4)"
+  else
+    PROFILE_ID="$(python3 -c 'import secrets; print(secrets.token_hex(4))')"
+  fi
   tmp="$(mktemp)"
   jq --arg name "$PROFILE" --arg loc "$PROFILE_ID" '
     .userDataProfiles = ((.userDataProfiles // []) | map(select(.name != $name)) + [{name:$name, location:$loc}])
@@ -91,15 +99,29 @@ echo "Imported settings into profile '$PROFILE' (cache dir: $TARGET_DIR)"
 
 EXTENSIONS=()
 while IFS= read -r ext; do
-  [ -n "$ext" ] && EXTENSIONS+=("$ext")
-done < <(jq -r '.extensions.enabled[]?' "$BUNDLE" 2>/dev/null || true)
+  [ -z "$ext" ] && continue
+  if ! validate_extension_id "$ext"; then
+    echo "Error: invalid extension id in $BUNDLE; aborting before any install" >&2
+    exit 1
+  fi
+  EXTENSIONS+=("$ext")
+done < <(jq -r '.extensions.enabled[]?' "$BUNDLE")
+FAILED_EXT=()
 if [ "${#EXTENSIONS[@]}" -gt 0 ]; then
   DELAY="${VSCODE_EXTENSION_INSTALL_DELAY:-1}"
   for ext in "${EXTENSIONS[@]}"; do
     echo "Installing extension $ext for profile $PROFILE"
-    code --profile "$PROFILE" --install-extension "$ext" >/dev/null || true
+    if ! code --profile "$PROFILE" --install-extension "$ext" >/dev/null; then
+      echo "Warning: failed to install $ext" >&2
+      FAILED_EXT+=("$ext")
+    fi
     sleep "$DELAY"
   done
+fi
+if [ "${#FAILED_EXT[@]}" -gt 0 ]; then
+  printf '\nFailed installs for %s:\n' "$PROFILE"
+  for e in "${FAILED_EXT[@]}"; do printf '  - %s\n' "$e"; done
+  exit 1
 fi
 
 echo "Profile '$PROFILE' imported. Launch with: code --profile \"$PROFILE\" <folder>"

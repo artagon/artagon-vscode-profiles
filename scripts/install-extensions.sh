@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/extension-id.sh
+source "$SCRIPT_DIR/lib/extension-id.sh"
+
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required for install-extensions.sh" >&2
   exit 1
@@ -103,7 +107,12 @@ fi
 
 EXT_IDS=()
 while IFS= read -r ext; do
-  [ -n "$ext" ] && EXT_IDS+=("$ext")
+  [ -z "$ext" ] && continue
+  if ! validate_extension_id "$ext"; then
+    echo "Error: invalid extension id in $EXT_FILE; aborting before any install" >&2
+    exit 1
+  fi
+  EXT_IDS+=("$ext")
 done < <(jq -r '.[].identifier.id' "$EXT_FILE")
 
 if [ "${#EXT_IDS[@]}" -eq 0 ]; then
