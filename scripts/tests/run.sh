@@ -117,32 +117,42 @@ run_compose() {
 }
 
 # Case 1: traversal
+# Helper that asserts compose for a fixture exits non-zero AND emits a
+# pattern in its combined output. Earlier version only checked stderr,
+# which let a silent exit-zero malformed-@extends path slip through.
+assert_compose_rejects() {
+  local label="$1" pattern="$2"
+  set +e
+  local rc out
+  out="$(run_compose test-fixture)"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "$label: compose exited 0 (expected non-zero). Output: $out"
+  echo "$out" | grep -qiE "$pattern" || fail "$label: missing pattern '$pattern' in output: $out"
+}
+
 cat > "$COMPOSE_FIXTURE_DIR/_overrides/test-fixture.jsonc" <<'EOF'
 { "@extends": ["../../../etc/passwd"] }
 EOF
-out="$(run_compose test-fixture || true)"
-echo "$out" | grep -q "rejected @extends path" || fail "Expected traversal rejection, got: $out"
+assert_compose_rejects "traversal" "rejected @extends path"
 
 # Case 2: absolute path
 cat > "$COMPOSE_FIXTURE_DIR/_overrides/test-fixture.jsonc" <<'EOF'
 { "@extends": ["/tmp/evil.jsonc"] }
 EOF
-out="$(run_compose test-fixture || true)"
-echo "$out" | grep -q "rejected @extends path" || fail "Expected absolute-path rejection, got: $out"
+assert_compose_rejects "absolute path" "rejected @extends path"
 
 # Case 3: home-prefixed
 cat > "$COMPOSE_FIXTURE_DIR/_overrides/test-fixture.jsonc" <<'EOF'
 { "@extends": ["~/secret.jsonc"] }
 EOF
-out="$(run_compose test-fixture || true)"
-echo "$out" | grep -q "rejected @extends path" || fail "Expected home-prefix rejection, got: $out"
+assert_compose_rejects "home prefix" "rejected @extends path"
 
 # Case 4: malformed @extends value (non-string, non-array)
 cat > "$COMPOSE_FIXTURE_DIR/_overrides/test-fixture.jsonc" <<'EOF'
 { "@extends": 1 }
 EOF
-out="$(run_compose test-fixture || true)"
-echo "$out" | grep -qiE "@extends|jq: error" || fail "Expected malformed-@extends error, got: $out"
+assert_compose_rejects "malformed @extends value" "malformed @extends|@extends must be string or array"
 
 # Case 5: cycle through symlink
 cat > "$COMPOSE_FIXTURE_DIR/_overrides/cycle-base.jsonc" <<'EOF'
@@ -152,8 +162,7 @@ ln -sf cycle-base.jsonc "$COMPOSE_FIXTURE_DIR/_overrides/cycle-link.jsonc"
 cat > "$COMPOSE_FIXTURE_DIR/_overrides/test-fixture.jsonc" <<'EOF'
 { "@extends": ["cycle-base.jsonc"] }
 EOF
-out="$(run_compose test-fixture || true)"
-echo "$out" | grep -qi "cycle" || fail "Expected cycle detection through symlink, got: $out"
+assert_compose_rejects "cycle through symlink" "cycle"
 
 log "extension-id allowlist rejects injection-shaped values end-to-end across all three scripts"
 # These tests invoke the production scripts directly so removing a call-site
@@ -166,11 +175,14 @@ INJ_ID='evil; rm -rf /tmp/x'
 # real profiles/ tree and clean up after.
 INJ_PROFILE_NAME="__test_injection_profile__"
 INJ_PROFILE_DIR="$ROOT/profiles/$INJ_PROFILE_NAME"
+# Arm the cleanup trap BEFORE creating the fixture, so a failure between
+# mkdir and the original trap setup (e.g. a heredoc redirect failure) still
+# removes the fixture. Trap is harmless if the dir doesn't exist yet.
+trap 'rm -rf "$TMP" "$INJ_PROFILE_DIR"' EXIT
 mkdir -p "$INJ_PROFILE_DIR"
 cat > "$INJ_PROFILE_DIR/extensions.json" <<EOF
 [ { "identifier": { "id": "${INJ_ID}" } } ]
 EOF
-trap 'rm -rf "$TMP" "$INJ_PROFILE_DIR"' EXIT
 set +e
 out_a="$(bash "$ROOT/scripts/install-extensions.sh" "$INJ_PROFILE_NAME" 2>&1)"
 rc_a=$?

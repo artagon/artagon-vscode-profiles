@@ -54,10 +54,19 @@ collect_overrides() {
 _collect_inner() {
   local file="$1"
   local parents=()
-  # Strict @extends parsing — let jq errors propagate so malformed values surface loudly.
+  # Strict @extends parsing. Materialize jq's output to a string before the
+  # read loop so a non-zero jq exit (e.g. for malformed `@extends`) actually
+  # propagates instead of being swallowed by the process substitution. The
+  # earlier `done < <(jq ...)` form completed normally even when jq errored,
+  # which silently merged a profile that should have been rejected.
+  local extends_output
+  if ! extends_output="$(jq -r '."@extends"? // empty | (if type=="string" then . elif type=="array" then .[] else error("@extends must be string or array of strings") end)' "$file" 2>&1)"; then
+    echo "Error: malformed @extends in $file: $extends_output" >&2
+    return 1
+  fi
   while IFS= read -r parent; do
     [ -n "$parent" ] && parents+=("$parent")
-  done < <(jq -r '."@extends"? // empty | (if type=="string" then . elif type=="array" then .[] else error("@extends must be string or array of strings") end)' "$file")
+  done <<<"$extends_output"
   if [ "${#parents[@]}" -gt 0 ]; then
     for parent in "${parents[@]}"; do
       # Lexical guard: reject anything not made of safe segments.
