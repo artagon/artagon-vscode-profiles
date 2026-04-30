@@ -218,6 +218,30 @@ echo "$out_c" | grep -q 'rejected extension id' || fail "Expected 'rejected exte
 
 rm -rf "$INJ_PROFILE_DIR"
 
+log "PROFILE_ID generator falls back to python3 when openssl is broken"
+# Stub a broken `openssl` ahead of the real one on PATH and verify the
+# generator still produces an 8-char hex via the python3 fallback.
+STUB_DIR="$TMP/stub-openssl"
+mkdir -p "$STUB_DIR"
+cat > "$STUB_DIR/openssl" <<'EOF'
+#!/usr/bin/env bash
+echo "stub-openssl: simulated FIPS rejection" >&2
+exit 1
+EOF
+chmod +x "$STUB_DIR/openssl"
+out_pf="$( PATH="$STUB_DIR:$PATH" bash -c '
+  set -euo pipefail
+  PROFILE_ID=""
+  if command -v openssl >/dev/null 2>&1; then
+    PROFILE_ID="$(openssl rand -hex 4 2>/dev/null || true)"
+  fi
+  if [ -z "$PROFILE_ID" ] && command -v python3 >/dev/null 2>&1; then
+    PROFILE_ID="$(python3 -c "import secrets; print(secrets.token_hex(4))" 2>/dev/null || true)"
+  fi
+  echo "id=$PROFILE_ID"
+' 2>&1)"
+echo "$out_pf" | grep -qE 'id=[0-9a-f]{8}$' || fail "Expected python3 fallback to produce 8-char hex when openssl is broken, got: $out_pf"
+
 log "import-profile.sh PROFILE_ID generator is safe under set -euo pipefail"
 out_d="$( bash -c '
   set -euo pipefail

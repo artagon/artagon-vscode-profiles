@@ -13,18 +13,26 @@ mkdir -p "$MERGED" "$PROFILES_DIR"
 # level subdirs, and anything else not made of [A-Za-z0-9._-] segments.
 EXTENDS_NAME_RE='^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)?\.jsonc$'
 
-# realpath shim — macOS does not ship GNU realpath in stock; fall back to python.
+# realpath shim — macOS does not ship GNU realpath in stock; fall back to
+# python3 if available. If neither is present, fail with a clear, compose-
+# specific message rather than letting bash exit 127 with raw shell text.
 resolve_real_path() {
   local p="$1"
   if command -v realpath >/dev/null 2>&1; then
     realpath "$p"
-  else
+  elif command -v python3 >/dev/null 2>&1; then
     python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$p"
+  else
+    echo "compose-settings: needs 'realpath' or 'python3' for path resolution; install one and retry" >&2
+    return 1
   fi
 }
 
-# Real-path of $OVR for containment checks.
-OVR_REAL="$(resolve_real_path "$OVR")"
+# Real-path of $OVR for containment checks. Compute eagerly so a missing
+# resolver fails here with a clean message rather than mid-recursion.
+if ! OVR_REAL="$(resolve_real_path "$OVR")"; then
+  exit 1
+fi
 
 # Collect override chain (parents first, then file), compatible with older bash and with cycle
 # detection. Cycles are detected by resolved real path so symlinked overrides cannot trick the

@@ -78,15 +78,23 @@ if [ -n "$existing_id" ] && [ "$existing_id" != "null" ]; then
   PROFILE_ID="$existing_id"
 else
   # PROFILE_ID needs a SIGPIPE-safe RNG; the previous tr | head -c idiom
-  # aborted under set -euo pipefail. Prefer openssl, fall back to python3.
-  # Both are common; if neither is present, fail with a clear message rather
-  # than letting bash exit 127 with raw shell error text.
+  # aborted under set -euo pipefail. Try openssl first, then python3 — and
+  # fall back through if either is *broken*, not just absent. The earlier
+  # shape only checked `command -v`, so a present-but-degraded openssl
+  # (FIPS rejecting `rand`, missing entropy source, etc.) would abort under
+  # set -e before ever reaching python3.
+  PROFILE_ID=""
   if command -v openssl >/dev/null 2>&1; then
-    PROFILE_ID="$(openssl rand -hex 4)"
-  elif command -v python3 >/dev/null 2>&1; then
-    PROFILE_ID="$(python3 -c 'import secrets; print(secrets.token_hex(4))')"
-  else
-    echo "import-profile: needs 'openssl' or 'python3' for PROFILE_ID generation; install one and retry" >&2
+    PROFILE_ID="$(openssl rand -hex 4 2>/dev/null || true)"
+  fi
+  if [ -z "$PROFILE_ID" ] && command -v python3 >/dev/null 2>&1; then
+    PROFILE_ID="$(python3 -c 'import secrets; print(secrets.token_hex(4))' 2>/dev/null || true)"
+  fi
+  # Sanity-check shape — even a successful generator could in theory return
+  # something other than 8 lowercase hex chars (truncated entropy, locale
+  # weirdness, etc.). Keep the contract tight.
+  if [[ ! "$PROFILE_ID" =~ ^[0-9a-f]{8}$ ]]; then
+    echo "import-profile: needs working 'openssl rand' or python3 'secrets.token_hex' for PROFILE_ID generation; install or repair one and retry" >&2
     exit 1
   fi
   tmp="$(mktemp)"
