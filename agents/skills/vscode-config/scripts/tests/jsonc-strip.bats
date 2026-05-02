@@ -155,11 +155,36 @@ EOF
     [ "$parsed" = '{"a":1,"b":2}' ]
 }
 
-@test "handles mixed CR-only and LF line endings" {
-    # Most real files are either CRLF or LF, but git autocrlf misconfigurations
-    # can produce mixes. We only normalize CRLF -> LF; pure CR is rare and we don't fix it.
+@test "R1-10: pure-LF JSON input is accepted (smoke)" {
+    # Renamed from a misnamed "mixed CR-only and LF" test that only ever
+    # wrote LF bytes — false coverage flagged in R1 (CDX-005). The pure-LF
+    # smoke is still useful, so we keep it under an honest name and add the
+    # actual CR-bearing tests below.
     printf '{\n  "a": 1\n}' > "$TEST_TMP/lf.json"
+    [ "$(LC_ALL=C tr -cd '\r' < "$TEST_TMP/lf.json" | wc -c | tr -d ' ')" = "0" ]
     result="$(strip < "$TEST_TMP/lf.json")"
+    parsed="$(printf '%s' "$result" | jq -c '.')"
+    [ "$parsed" = '{"a":1}' ]
+}
+
+@test "R1-10: real CR bytes inside JSON whitespace are accepted" {
+    # Stripper must handle bare CR as JSON whitespace inside structural
+    # context (jq treats CR as whitespace). This test actually contains CR
+    # bytes — sanity-checked below — unlike the prior false-coverage test.
+    printf '{\r  "a": 1\r}' > "$TEST_TMP/cr-ws.json"
+    [ "$(LC_ALL=C tr -cd '\r' < "$TEST_TMP/cr-ws.json" | wc -c | tr -d ' ')" -gt 0 ]
+    result="$(strip < "$TEST_TMP/cr-ws.json")"
+    parsed="$(printf '%s' "$result" | jq -c '.' 2>/dev/null)"
+    [ "$parsed" = '{"a":1}' ]
+}
+
+@test "R1-10: CRLF line endings are accepted (real CR bytes)" {
+    # The most common Windows case. Earlier tests asserted via filename
+    # that "CRLF works"; this one verifies the file actually contains CR
+    # bytes and that stripper output round-trips through jq cleanly.
+    printf '{\r\n  "a": 1\r\n}' > "$TEST_TMP/crlf.json"
+    [ "$(LC_ALL=C tr -cd '\r' < "$TEST_TMP/crlf.json" | wc -c | tr -d ' ')" -gt 0 ]
+    result="$(strip < "$TEST_TMP/crlf.json")"
     parsed="$(printf '%s' "$result" | jq -c '.')"
     [ "$parsed" = '{"a":1}' ]
 }

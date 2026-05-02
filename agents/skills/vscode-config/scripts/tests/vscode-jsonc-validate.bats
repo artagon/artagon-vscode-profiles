@@ -299,7 +299,7 @@ EOF
 EOF
     run "$VALIDATE" "$TEST_TMP/mcp.json"
     assert_exit 2
-    assert_contains "http/sse servers require \"url\""
+    assert_contains "http servers require \"url\""
 }
 
 @test "mcp.json with invalid type exits 2" {
@@ -314,7 +314,23 @@ EOF
 EOF
     run "$VALIDATE" "$TEST_TMP/mcp.json"
     assert_exit 2
-    assert_contains "must be stdio, http, or sse"
+    assert_contains "must be stdio or http"
+}
+
+@test "R1-03: mcp.json with sse transport is rejected (deprecated by MCP 2025-03-26)" {
+    write_file "$TEST_TMP/mcp.json" <<'EOF'
+{
+  "servers": {
+    "legacySse": {
+      "type": "sse",
+      "url": "https://example.com/mcp"
+    }
+  }
+}
+EOF
+    run "$VALIDATE" "$TEST_TMP/mcp.json"
+    assert_exit 2
+    assert_contains "must be stdio or http"
 }
 
 # ---------- JSONC edge cases ----------
@@ -376,9 +392,131 @@ EOF
     assert_contains "raw NUL byte"
 }
 
-@test "accepts file with escaped \\u0000 (six-character JSON escape, not raw NUL)" {
-    # Real JSON-encoded U+0000 is six characters. The guard must accept this.
-    write_file "$TEST_TMP/escaped-nul.json" '{"a":" "}'
+@test "R1-11: accepts file with escaped \\u0000 (six-char JSON escape, not raw NUL)" {
+    # Real JSON-encoded U+0000 is six characters: backslash, u, 0, 0, 0, 0.
+    # The runtime guard must distinguish this (valid) from a raw 0x00 byte
+    # (invalid - silently truncated by command substitution).
+    # We use printf with explicit hex escape \\x5c to write the bare backslash,
+    # avoiding any shell or bats preprocessor interpretation that would
+    # collapse a literal backslash in the source string.
+    printf '{"a":"\x5cu0000"}' > "$TEST_TMP/escaped-nul.json"
+    # Sanity-check: the fixture must contain exactly one backslash and zero
+    # raw NUL bytes. If a future change re-introduces a NUL here, these
+    # assertions fire before the validator does.
+    [ "$(LC_ALL=C tr -cd '\\' < "$TEST_TMP/escaped-nul.json" | LC_ALL=C wc -c | tr -d ' ')" = "1" ]
+    [ "$(LC_ALL=C tr -cd '\0' < "$TEST_TMP/escaped-nul.json" | LC_ALL=C wc -c | tr -d ' ')" = "0" ]
     run "$VALIDATE" --kind settings "$TEST_TMP/escaped-nul.json"
     assert_exit 0
+}
+# ---------- R1 fixes: input-shape contracts (R1-02 validator side, R1-08) ----------
+
+@test "R1-02 (validator): recommendations with null entry exits 2 (documented), not 5 (raw jq)" {
+    write_file "$TEST_TMP/extensions.json" <<'EOF'
+{ "recommendations": ["dbaeumer.vscode-eslint", null] }
+EOF
+    run "$VALIDATE" --kind extensions "$TEST_TMP/extensions.json"
+    # Must be in the documented exit-code range 0|1|2|3|4 — NOT jq's exit 5.
+    assert_exit 2
+    assert_contains "recommendations entries must be strings"
+}
+
+@test "R1-02 (validator): recommendations with numeric entry exits 2 with actionable message" {
+    write_file "$TEST_TMP/extensions.json" <<'EOF'
+{ "recommendations": [42] }
+EOF
+    run "$VALIDATE" --kind extensions "$TEST_TMP/extensions.json"
+    assert_exit 2
+    assert_contains "recommendations entries must be strings"
+}
+
+@test "R1-02 (validator): recommendations with object entry exits 2 with actionable message" {
+    write_file "$TEST_TMP/extensions.json" <<'EOF'
+{ "recommendations": [{"id": "smuggled.thing"}] }
+EOF
+    run "$VALIDATE" --kind extensions "$TEST_TMP/extensions.json"
+    assert_exit 2
+    assert_contains "recommendations entries must be strings"
+}
+
+@test "R1-02 (validator): unwantedRecommendations with null entry exits 2" {
+    write_file "$TEST_TMP/extensions.json" <<'EOF'
+{ "unwantedRecommendations": [null] }
+EOF
+    run "$VALIDATE" --kind extensions "$TEST_TMP/extensions.json"
+    assert_exit 2
+    assert_contains "unwantedRecommendations entries must be strings"
+}
+
+# ---------- R1 fixes: parser false-positives (R1-06, R1-07, R1-08) ----------
+
+@test "R1-06: unterminated /* block comment is rejected" {
+    # Before R1: stripper silently swallows from /* through EOF; validator
+    # reports OK exit 0 for malformed JSONC. Now the awk END block detects
+    # the open in_block_comment flag.
+    printf '%s' '{"a":1} /* unterminated' > "$TEST_TMP/badcomment.json"
+    run "$VALIDATE" --kind settings "$TEST_TMP/badcomment.json"
+    [ "$status" -ne 0 ]
+    assert_contains "unterminated /* block comment"
+}
+
+@test "R1-07: escaped duplicate keys (\"a\" vs \"\\u0061\") are detected" {
+    # Before R1: detector compared raw source key text, so the two keys
+    # were considered distinct. jq still last-wins them, leaving a silent
+    # shadow. Now keys are decoded via jq fromjson before sort/uniq.
+    printf '{"a":1,"a":2}' > "$TEST_TMP/dupe-escape.json"
+    run "$VALIDATE" --kind settings "$TEST_TMP/dupe-escape.json"
+    assert_exit 3
+    assert_contains "duplicate top-level keys"
+    assert_contains "a"
+}
+
+@test "R1-08: wrong-shape tasks ('not array') exits 2 with schema error, not raw jq 5" {
+    write_file "$TEST_TMP/tasks.json" <<'EOF'
+{ "version": "2.0.0", "tasks": "not array" }
+EOF
+    run "$VALIDATE" --kind tasks "$TEST_TMP/tasks.json"
+    assert_exit 2
+    assert_contains "tasks.json must have a \"tasks\" array"
+}
+
+@test "R1-08: wrong-shape configurations ('not array') exits 2 with schema error" {
+    write_file "$TEST_TMP/launch.json" <<'EOF'
+{ "version": "0.2.0", "configurations": "not array" }
+EOF
+    run "$VALIDATE" --kind launch "$TEST_TMP/launch.json"
+    assert_exit 2
+    assert_contains "launch.json must have a \"configurations\" array"
+}
+
+@test "R1-17: duplicate-key warning shows occurrence count" {
+    printf '{"k":1,"k":2,"k":3,"k":4}' > "$TEST_TMP/multi-dup.json"
+    run "$VALIDATE" --kind settings "$TEST_TMP/multi-dup.json"
+    assert_exit 3
+    assert_contains "k (appears 4 times; 3 earlier values shadowed)"
+}
+
+# ---------- R1-12: locale-deterministic shell tooling ----------
+
+@test "R1-12: validates correctly under non-C locale (Turkish)" {
+    # Turkish dotless-i collation is the canonical "broke set ops" failure.
+    # If anyone removes `export LC_ALL=C` from the script, this fires.
+    write_file "$TEST_TMP/settings.json" <<'EOF'
+{
+  "INDEX": 1,
+  "index": 2,
+  "editor.tabSize": 4
+}
+EOF
+    LC_ALL=tr_TR.UTF-8 LANG=tr_TR.UTF-8 run "$VALIDATE" --kind settings "$TEST_TMP/settings.json"
+    assert_exit 0
+    assert_contains "OK"
+}
+
+@test "R1-13: validator NUL test already covers the wrapper layer" {
+    # Smoke that the NUL guard fires correctly here too — duplicated for clarity
+    # alongside R1-13 audit and profile-diff coverage.
+    printf '{"a":1}\0{"hidden":true}' > "$TEST_TMP/with-nul.json"
+    run "$VALIDATE" --kind settings "$TEST_TMP/with-nul.json"
+    [ "$status" -ne 0 ]
+    assert_contains "raw NUL byte"
 }

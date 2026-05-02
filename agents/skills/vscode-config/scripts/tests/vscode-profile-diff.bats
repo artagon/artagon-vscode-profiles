@@ -201,3 +201,35 @@ EOF
     run "$DIFF" "$TEST_TMP/crlf.json" "$TEST_TMP/lf.json"
     assert_exit 0
 }
+
+# ---------- R1-12: locale-deterministic ----------
+
+@test "R1-12: profile-diff set-ops behave identically under Turkish locale" {
+    write_file "$TEST_TMP/left.json" <<'EOF'
+{ "INDEX": 1, "index": 2, "editor.tabSize": 4 }
+EOF
+    write_file "$TEST_TMP/right.json" <<'EOF'
+{ "INDEX": 1, "index": 99 }
+EOF
+    LC_ALL=tr_TR.UTF-8 LANG=tr_TR.UTF-8 run "$DIFF" --json "$TEST_TMP/left.json" "$TEST_TMP/right.json"
+    # Should successfully diff (exit 1 = differs, 0 = identical, 2 = error)
+    [ "$status" -eq 1 ]
+}
+
+# ---------- R1-13: NUL-byte rejection on either side ----------
+
+@test "R1-13: profile-diff rejects NUL byte on left input" {
+    printf '{"a":1}\0{"hidden":true}' > "$TEST_TMP/left.json"
+    write_file "$TEST_TMP/right.json" '{"a":1}'
+    run "$DIFF" "$TEST_TMP/left.json" "$TEST_TMP/right.json"
+    [ "$status" -ne 0 ]
+    assert_contains "raw NUL byte"
+}
+
+@test "R1-13: profile-diff rejects NUL byte on right input" {
+    write_file "$TEST_TMP/left.json" '{"a":1}'
+    printf '{"a":1}\0{"hidden":true}' > "$TEST_TMP/right.json"
+    run "$DIFF" "$TEST_TMP/left.json" "$TEST_TMP/right.json"
+    [ "$status" -ne 0 ]
+    assert_contains "raw NUL byte"
+}

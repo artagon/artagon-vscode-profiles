@@ -123,14 +123,31 @@ if ! printf '%s' "$RIGHT_JSON" | jq -e 'type == "object"' >/dev/null; then
     exit 2
 fi
 
-# Compute the four sets via a single jq invocation that takes both inputs.
+# R1-09: write the stripped JSON to temp files BEFORE handing to jq, rather
+# than passing both documents via `--argjson l "$LEFT_JSON" --argjson r ...`.
+# `--argjson` has two failure modes for real-world VS Code config:
+#   1. ARG_MAX (1 MB on macOS) — moderately large profiles can hit the exec
+#      ceiling before jq even starts.
+#   2. Process-list visibility — settings.json files routinely contain
+#      workspace paths, MCP credentials, and private endpoints. argv is
+#      readable via `ps` and `/proc`. File inputs avoid both.
+LEFT_TMP="$(mktemp -t "vscode-profile-diff-left.XXXXXX")"
+RIGHT_TMP="$(mktemp -t "vscode-profile-diff-right.XXXXXX")"
+trap 'rm -f "$LEFT_TMP" "$RIGHT_TMP"' EXIT INT TERM
+printf '%s' "$LEFT_JSON" > "$LEFT_TMP"
+printf '%s' "$RIGHT_JSON" > "$RIGHT_TMP"
+# Compute the four sets via a single jq invocation that reads both inputs as
+# slurped JSON files (`-s` produces an array of inputs; `.[0]` and `.[1]`
+# index into them).
 DIFF_JSON="$(
-    jq -n \
-        --argjson l "$LEFT_JSON" \
-        --argjson r "$RIGHT_JSON" \
+    jq -n -s \
+        --slurpfile l "$LEFT_TMP" \
+        --slurpfile r "$RIGHT_TMP" \
         '
-        ($l | keys_unsorted) as $lk
-        | ($r | keys_unsorted) as $rk
+        ($l[0]) as $L
+        | ($r[0]) as $R
+        | ($L | keys_unsorted) as $lk
+        | ($R | keys_unsorted) as $rk
         | ($lk | unique) as $lku
         | ($rk | unique) as $rku
         | {
@@ -138,13 +155,13 @@ DIFF_JSON="$(
             only_right: ($rku - $lku | sort),
             changed: (
                 [$lku[] | select(. as $k | $rku | index($k))]
-                | map(select(($l[.]) != ($r[.])))
+                | map(select(($L[.]) != ($R[.])))
                 | sort
-                | map({key: ., left: $l[.], right: $r[.]})
+                | map({key: ., left: $L[.], right: $R[.]})
             ),
             identical: (
                 [$lku[] | select(. as $k | $rku | index($k))]
-                | map(select(($l[.]) == ($r[.])))
+                | map(select(($L[.]) == ($R[.])))
                 | sort
             )
           }

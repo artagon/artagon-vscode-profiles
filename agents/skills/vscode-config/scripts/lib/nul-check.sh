@@ -37,26 +37,30 @@
 # shellcheck shell=sh
 
 nul_check_file() {
-    nul_check_path="${1-}"
+    # R1-21: prefix all internal vars with underscore to avoid leaking into the
+    # caller's environment. POSIX sh has no `local`; without the prefix, a
+    # future wrapper that uses bare `path`/`total`/`stripped` would clobber
+    # state silently. Underscore prefix is the standard POSIX-portable mitigation.
+    _nck_path="${1-}"
 
-    if [ -z "$nul_check_path" ]; then
+    if [ -z "$_nck_path" ]; then
         echo "ERROR: nul_check_file: missing path argument" >&2
         return 2
     fi
 
-    if [ ! -r "$nul_check_path" ]; then
-        echo "ERROR: nul_check_file: not readable: $nul_check_path" >&2
+    if [ ! -r "$_nck_path" ]; then
+        echo "ERROR: nul_check_file: not readable: $_nck_path" >&2
         return 2
     fi
 
     # Count raw bytes vs. bytes-with-NULs-stripped. If they differ, the file
     # contains at least one NUL. LC_ALL=C forces byte semantics for `tr`. Both
     # `tr` and `wc -c` are byte-oriented and unaffected by C-string truncation.
-    nul_check_total=$(LC_ALL=C wc -c < "$nul_check_path" | tr -d ' ')
-    nul_check_stripped=$(LC_ALL=C tr -d '\0' < "$nul_check_path" | LC_ALL=C wc -c | tr -d ' ')
+    _nck_total=$(LC_ALL=C wc -c < "$_nck_path" | tr -d ' ')
+    _nck_stripped=$(LC_ALL=C tr -d '\0' < "$_nck_path" | LC_ALL=C wc -c | tr -d ' ')
 
-    if [ "$nul_check_total" != "$nul_check_stripped" ]; then
-        echo "ERROR: $nul_check_path: input contains raw NUL byte" >&2
+    if [ "$_nck_total" != "$_nck_stripped" ]; then
+        echo "ERROR: $_nck_path: input contains raw NUL byte" >&2
         echo "       JSON does not allow raw NULs; encode U+0000 as the six-character escape backslash-u-0-0-0-0." >&2
         return 1
     fi

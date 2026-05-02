@@ -106,6 +106,15 @@ BEGIN {
 }
 
 END {
+    # R1-06: detect unterminated `/*` block comments. The main loop opens
+    # `in_block_comment = 1` on `/*` and only resets it on `*/`. If EOF is
+    # reached while still inside a block comment, the file is malformed JSONC
+    # but the stripper would silently swallow everything from `/*` onward and
+    # the validator would report OK. Surface it.
+    if (in_block_comment) {
+        print "ERROR: jsonc-strip.awk: unterminated /* block comment at end of input" > "/dev/stderr"
+        exit 1
+    }
     # Strip trailing commas: a comma followed only by whitespace then } or ].
     # awk's gsub doesn't support backreferences, so do it character-by-character
     # over the buffered output: when we see a comma outside a string, peek ahead

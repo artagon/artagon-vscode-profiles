@@ -126,6 +126,26 @@ if ! printf '%s' "$STRIPPED" | jq empty 2>/dev/null; then
     exit 3
 fi
 
+# Input-shape contracts (R1-01/R1-02/R1-04). The audit is the policy gate; clean
+# exit 0 on attacker-controlled wrong-shape input would defeat the contract. Same
+# class of failure as the NUL-byte bypass — different vector. We require:
+#   - root is a JSON object (not [...])
+#   - recommendations + unwantedRecommendations, when present, are arrays of strings
+# `jq -e` exits 1 on false; we surface that as exit 1 (violation) with a clear
+# error so CI parsers don't see a swallowed jq stack trace.
+if ! printf '%s' "$STRIPPED" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    echo "ERROR: $FILE: extensions.json root must be a JSON object (got $(printf '%s' "$STRIPPED" | jq -r 'type'))" >&2
+    exit 1
+fi
+if ! printf '%s' "$STRIPPED" | jq -e '(.recommendations // []) | type == "array" and all(type == "string")' >/dev/null 2>&1; then
+    echo "ERROR: $FILE: \"recommendations\" must be an array of strings" >&2
+    exit 1
+fi
+if ! printf '%s' "$STRIPPED" | jq -e '(.unwantedRecommendations // []) | type == "array" and all(type == "string")' >/dev/null 2>&1; then
+    echo "ERROR: $FILE: \"unwantedRecommendations\" must be an array of strings" >&2
+    exit 1
+fi
+
 RECOMMENDED="$(printf '%s' "$STRIPPED" | jq -r '(.recommendations // []) | .[]' | sort -u)"
 UNWANTED="$(printf '%s' "$STRIPPED" | jq -r '(.unwantedRecommendations // []) | .[]' | sort -u)"
 

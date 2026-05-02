@@ -37,20 +37,39 @@ The shell tools SHALL behave identically under non-C locales (e.g. Turkish, with
 - **WHEN** `vscode-profile-diff` is invoked under `LC_ALL=tr_TR.UTF-8` against two profiles
 - **THEN** the diff sets (only-left, only-right, changed) match the C-locale output byte-for-byte
 
-### Requirement: NUL-byte rejection in JSONC stripper
-The shared `jsonc-strip.awk` SHALL reject any input containing raw NUL bytes, since shell command substitution silently truncates at the first NUL and would mask appended content from validation, audit, and diff tools.
+### Requirement: NUL-byte rejection at the wrapper layer
+The shell wrappers (`vscode-jsonc-validate`, `vscode-extensions-audit`, `vscode-profile-diff`) SHALL reject any input file containing raw NUL bytes BEFORE invoking `jsonc-strip.awk`, since POSIX shell command substitution silently truncates at the first NUL and would mask appended content from downstream validation, audit, and diff logic. Detection lives in `lib/nul-check.sh` (sourced by the wrappers) using a byte-count comparison via `tr -d '\0' | wc -c`, which is portable across `gawk`, `mawk`, and BSD `awk` (the latter two truncate `length()`/`substr()` at NUL).
 
-#### Scenario: Stripper rejects NUL byte
-- **WHEN** input containing a raw `\0` byte is piped to `jsonc-strip.awk`
-- **THEN** the stripper exits non-zero and emits an error message on stderr identifying the NUL-byte cause
-
-#### Scenario: Validator surfaces NUL-byte rejection
+#### Scenario: Validator rejects NUL byte
 - **WHEN** `vscode-jsonc-validate` is invoked on a file with a raw `\0` byte
-- **THEN** the validator exits non-zero and surfaces the underlying NUL-byte error rather than producing an "OK" verdict
+- **THEN** the validator exits non-zero and emits "ERROR: ... raw NUL byte" on stderr, before any awk command substitution runs
 
-#### Scenario: Audit surfaces NUL-byte rejection
+#### Scenario: Audit rejects NUL byte
 - **WHEN** `vscode-extensions-audit` is invoked on an `extensions.json` containing a raw `\0` byte before a `]` so that pre-NUL bytes parse as valid JSON
-- **THEN** the audit exits non-zero rather than reporting compliance based on only the pre-NUL bytes
+- **THEN** the audit exits non-zero with the same NUL-byte error message, rather than reporting compliance based only on the pre-NUL bytes
+
+#### Scenario: Profile-diff rejects NUL byte on either side
+- **WHEN** `vscode-profile-diff` is invoked with a raw `\0` byte in either the left or right input file
+- **THEN** the tool exits non-zero with the NUL-byte error identifying which file contained the byte
+
+### Requirement: Audit and validator input-shape contracts
+The shell tools SHALL confirm that their JSONC inputs match the expected JSON shape (object root, string-array `recommendations`, known MCP transport enum, well-typed `tasks`/`configurations` arrays) BEFORE running downstream value-level checks. Implicit success on shape mismatch is forbidden. Exit codes SHALL stay within each tool's documented range; raw `jq` exit codes SHALL NOT propagate to the caller.
+
+#### Scenario: Audit rejects array-root extensions.json
+- **WHEN** `vscode-extensions-audit` is invoked with an `extensions.json` whose JSONC root is a JSON array (rather than an object)
+- **THEN** the audit exits non-zero with a clear shape error, NOT exit 0 — even if the allowlist would otherwise be satisfied by zero recommendations
+
+#### Scenario: Validator rejects non-string recommendation entries
+- **WHEN** `vscode-jsonc-validate --kind extensions` is invoked on a file whose `recommendations` array contains `null`, a number, or an object
+- **THEN** the validator exits within its documented range (`0|1|2|3|4`) with a "recommendations entries must be strings" error, NOT a raw `jq` stack trace and exit `5`
+
+#### Scenario: MCP type enum tracks the current MCP protocol revision
+- **WHEN** `vscode-jsonc-validate --kind mcp` is invoked on a server entry whose `type` is not in the current MCP protocol's transport set (as of the 2025-03-26 revision: `stdio` and `http` only — `sse` was deprecated)
+- **THEN** the validator exits non-zero with a "must be ..." enum error and the validator + `references/per-project-files.md` agree on the canonical list
+
+#### Scenario: Wrong-shape tasks/configurations rejected within documented exit range
+- **WHEN** `vscode-jsonc-validate --kind tasks` is invoked on a file with `"tasks": "not array"` (or analogously for `--kind launch` with `"configurations": "not array"`)
+- **THEN** the validator exits with the documented schema-error code (2) and the schema_check error message, NOT a raw `jq` "string has no keys" trace and exit `5`
 
 ### Requirement: Documentation does not embed magic counts
 The skill body SHALL NOT include hardcoded test counts or other version-coupled magic numbers in narrative documentation, since they drift silently across changes.

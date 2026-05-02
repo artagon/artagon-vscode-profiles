@@ -10,7 +10,7 @@ VS Code is forked, rebuilt, and rebranded under several names. They share the fi
 | **VS Code Insiders** | Microsoft | `Code - Insiders` | `~/.vscode-insiders/extensions/` | Daily build, can run alongside Stable |
 | **Code-OSS** | Open-source upstream of VS Code (the MIT-licensed source) | `Code - OSS` | `~/.vscode-oss/extensions/` | Built from `microsoft/vscode` repo without proprietary additions |
 | **VSCodium** | Telemetry-free rebuild of Code-OSS | `VSCodium` | `~/.vscode-oss/extensions/` | Same binaries-from-source as Code-OSS, no Microsoft branding |
-| **Cursor** | Closed-source fork by Anysphere | `Cursor` | `~/.cursor/extensions/` | Adds AI features; uses Open VSX (transitioned mid-2025) plus Anysphere-published shims for popular extensions |
+| **Cursor** | Closed-source fork by Anysphere | `Cursor` | `~/.cursor/extensions/` | Adds AI features; maintains its own marketplace (Anysphere-curated, with Open VSX as one upstream source) plus Anysphere-published shims for popular extensions |
 | **Windsurf** | Closed-source fork by Codeium | `Windsurf` | `~/.windsurf/extensions/` | AI-focused fork; own marketplace |
 
 Other AI-focused forks exist (Trae, Kiro, Void, etc.) and follow the same general pattern — their own parent folder name, their own extensions dir — but the exact paths vary by version, so check `--user-data-dir` defaults rather than guessing.
@@ -21,7 +21,7 @@ The *parent folder name* (third column) is what replaces `Code` in all paths fro
 
 Two reasons configs don't trivially port between variants:
 
-1. **Marketplace differences** — Microsoft restricts the official VS Code Marketplace to its own builds. As of mid-2025, Cursor migrated to [Open VSX](https://open-vsx.org/) and started publishing Anysphere-maintained replacements for popular extensions. VSCodium and Code-OSS have always used Open VSX. Windsurf maintains its own catalog. Practical consequence: an extension recommendation that works in VS Code Stable may not be installable in any of these forks without a manual VSIX install — and the VSIX may be a different (forked or shimmed) build.
+1. **Marketplace differences** — Microsoft restricts the official VS Code Marketplace to its own builds. Cursor maintains its own catalog (Anysphere-curated, with [Open VSX](https://open-vsx.org/) as one upstream source) and publishes Anysphere-maintained replacements for popular extensions. VSCodium and Code-OSS have always used Open VSX. Windsurf maintains its own catalog. Practical consequence: an extension recommendation that works in VS Code Stable may not be installable in any of these forks without a manual VSIX install — and the VSIX may resolve to a different (forked or shimmed) build than the official Marketplace would have served.
 
 2. **Vendor-specific keys** — Cursor and Windsurf add their own settings keys to a regular `settings.json`. Examples:
    - Cursor: `cursor.cpp.disabledLanguages`, `cursor.general.enableAutoUpdate`, `cursor.aiPreview`
