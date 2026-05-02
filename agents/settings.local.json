@@ -13,7 +13,8 @@
       "Bash(openspec list:*)",
       "Bash(openspec show:*)",
       "Bash(cat:*)",
-      "Bash(jq:*)"
+      "Bash(jq:*)",
+      "mcp__mcp-registry__search_mcp_registry"
     ],
     "deny": [],
     "ask": []

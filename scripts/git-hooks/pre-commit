@@ -28,3 +28,31 @@ run "validating JSON fragments" bash "$ROOT/scripts/validate-json.sh"
 run "ensuring VS Code CLI is available" ensure_code_cli
 run "composing profile settings" bash "$ROOT/scripts/compose-settings.sh"
 run "exporting profile bundles" bash "$ROOT/scripts/export-profiles.sh"
+
+# If compose/export regenerated tracked files but the user did not stage those
+# changes, fail the commit with a clear message. Auto-staging silently would be
+# user-hostile (a doc-only commit could pull in unrelated regen). The CI gate
+# 'git diff --exit-code _merged/ exports/' fails for the same reason, so we want
+# the local hook to catch it first.
+# Match any non-clean porcelain line for _merged/ exports/. Column 1 is the
+# index status (A/M/D/R/C/?), column 2 is the worktree status (M/D/?). We
+# care about anything that would leave the next CI 'git diff --exit-code'
+# unhappy: untracked (??), unstaged-modify ( M), unstaged-delete ( D), and
+# also already-staged-but-modified-again (MM) etc. The regex below rejects
+# anything except a clean line.
+DIRTY=$(git -C "$ROOT" status --porcelain _merged/ exports/ | awk '$1 ~ /[?MDARC]/ || $2 ~ /[?MD]/' || true)
+if [ -n "$DIRTY" ]; then
+  cat >&2 <<EOF
+pre-commit: compose/export regenerated tracked files that are not staged.
+
+Affected:
+$DIRTY
+
+This usually means you edited _shared/ or _overrides/ but did not run
+'bash scripts/compose-settings.sh && bash scripts/export-profiles.sh' and
+stage the resulting _merged/ and exports/ changes.
+
+Run those two scripts, 'git add _merged/ exports/', and commit again.
+EOF
+  exit 1
+fi

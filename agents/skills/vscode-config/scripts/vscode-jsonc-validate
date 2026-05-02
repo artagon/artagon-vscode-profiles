@@ -1,0 +1,390 @@
+#!/bin/sh
+#
+# vscode-jsonc-validate — validate a VS Code JSONC config file.
+#
+# Checks:
+#   1. Strips JSONC comments + trailing commas, parses with jq (catches syntax errors).
+#   2. Detects duplicate top-level keys (silently shadowed by later occurrence).
+#   3. For known files (tasks.json, launch.json, extensions.json), verifies the
+#      required schema fields (e.g. tasks.json must declare "version": "2.0.0").
+#
+# Usage:
+#   vscode-jsonc-validate <file>
+#   vscode-jsonc-validate --kind <tasks|launch|extensions|settings|mcp|generic> <file>
+#
+# Exit codes:
+#   0 — valid
+#   1 — syntax error (JSONC unparseable)
+#   2 — schema error (wrong version, missing required field, etc.)
+#   3 — duplicate keys detected (warning-level; still exits non-zero so CI can catch)
+#   4 — usage error
+#
+# Output format:
+#   On success:  "OK: <file> (<kind>)"
+#   On failure:  one or more lines starting with "ERROR:" or "WARNING:" then a summary line.
+
+set -eu
+
+# Force C locale so `comm`, `sort`, etc. behave deterministically across systems.
+export LC_ALL=C
+
+# shellcheck disable=SC1007
+# `CDPATH= cd` is the deliberate "neutralize CDPATH for this one cd" idiom from
+# the Google Shell Style Guide; ShellCheck's SC1007 misreads it as an empty assign.
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+STRIPPER="${SCRIPT_DIR}/jsonc-strip.awk"
+
+# Source the shared NUL-byte guard. Done before any command substitution that
+# would silently truncate at the first NUL byte. See lib/nul-check.sh for why
+# this guard lives in shell rather than inside jsonc-strip.awk.
+# shellcheck source=./lib/nul-check.sh
+. "${SCRIPT_DIR}/lib/nul-check.sh"
+
+# Cleanup any temp files on exit. Invoked indirectly via `trap cleanup EXIT`.
+# `$TMPFILES` is an intentionally word-split list of mktemp paths; quoting
+# would break the multi-file rm. SC2329 (never-invoked) is wrong here because
+# the trap installs the call.
+TMPFILES=""
+# shellcheck disable=SC2329,SC2086
+cleanup() { [ -n "$TMPFILES" ] && rm -f $TMPFILES || true; }
+trap cleanup EXIT
+
+usage() {
+    cat >&2 <<EOF
+usage: vscode-jsonc-validate [--kind <tasks|launch|extensions|settings|mcp|generic>] <file>
+
+Validates a VS Code JSONC config file. Strips comments and trailing commas,
+parses with jq, and (when kind is known) checks required schema fields.
+
+If --kind is omitted, the script infers from the basename:
+  tasks.json -> tasks
+  launch.json -> launch
+  extensions.json -> extensions
+  settings.json -> settings
+  mcp.json -> mcp
+  anything else -> generic
+
+Examples:
+  vscode-jsonc-validate .vscode/settings.json
+  vscode-jsonc-validate --kind tasks build-config.json
+EOF
+    exit 4
+}
+
+KIND=""
+FILE=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --kind)
+            shift
+            [ $# -gt 0 ] || usage
+            KIND="$1"
+            ;;
+        --kind=*)
+            KIND="${1#--kind=}"
+            ;;
+        -h|--help)
+            usage
+            ;;
+        --)
+            shift
+            FILE="${1:-}"
+            break
+            ;;
+        -*)
+            echo "ERROR: unknown option: $1" >&2
+            usage
+            ;;
+        *)
+            if [ -z "$FILE" ]; then
+                FILE="$1"
+            else
+                echo "ERROR: extra positional argument: $1" >&2
+                usage
+            fi
+            ;;
+    esac
+    shift
+done
+
+[ -n "$FILE" ] || usage
+[ -f "$FILE" ] || { echo "ERROR: file not found: $FILE" >&2; exit 4; }
+[ -f "$STRIPPER" ] || { echo "ERROR: stripper not found: $STRIPPER" >&2; exit 4; }
+command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required" >&2; exit 4; }
+command -v awk >/dev/null 2>&1 || { echo "ERROR: awk is required" >&2; exit 4; }
+
+if [ -z "$KIND" ]; then
+    base="$(basename -- "$FILE")"
+    case "$base" in
+        tasks.json)        KIND="tasks" ;;
+        launch.json)       KIND="launch" ;;
+        extensions.json)   KIND="extensions" ;;
+        settings.json)     KIND="settings" ;;
+        mcp.json)          KIND="mcp" ;;
+        *)                 KIND="generic" ;;
+    esac
+fi
+
+# Reject raw NUL bytes BEFORE the awk command substitution silently truncates
+# them. POSIX `$()` collapses everything past a NUL, which on `set -eu` shells
+# does not propagate as an error — see scripts/lib/nul-check.sh.
+nul_check_file "$FILE" || exit 1
+
+# Strip JSONC and parse with jq. Wrap in an explicit failure handler because
+# `set -eu` does NOT fail the script when the right-hand side of a command
+# substitution exits non-zero (POSIX behavior; bash needs `inherit_errexit`).
+if ! STRIPPED="$(awk -f "$STRIPPER" < "$FILE")"; then
+    echo "ERROR: $FILE: jsonc-strip.awk failed; see prior stderr for details" >&2
+    exit 1
+fi
+
+# Empty or whitespace-only files produce a confusing "not a JSON object" message.
+# Detect this case explicitly.
+if [ -z "$(printf '%s' "$STRIPPED" | tr -d '[:space:]')" ]; then
+    echo "ERROR: $FILE is empty or contains only whitespace/comments"
+    exit 1
+fi
+
+JQERR="$(mktemp -t jsonc-validate-jqerr.XXXXXX)"
+TMPFILES="$TMPFILES $JQERR"
+if ! printf '%s' "$STRIPPED" | jq empty 2>"$JQERR"; then
+    echo "ERROR: $FILE is not valid JSONC"
+    sed 's/^/  /' "$JQERR" >&2 || true
+    exit 1
+fi
+
+EXIT=0
+
+# Duplicate-key detection.
+#
+# Approach: jq parses the stripped JSONC and naturally collapses duplicate keys
+# (last-wins). We compare the count of keys in the parsed object to the count
+# of `"key":` patterns at object depth 1 in the source. If the source has more
+# than jq sees, at least one duplicate was collapsed.
+#
+# An earlier draft tried to do the duplicate scan in awk alone (emit every
+# "depth:key" string and post-filter). It over-counted — every string literal,
+# key or value, was reported — so we fell back to the jq comparison below.
+# The dead awk pass has been removed; the working detector follows.
+if printf '%s' "$STRIPPED" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    PARSED_KEY_COUNT="$(printf '%s' "$STRIPPED" | jq 'keys | length')"
+    # R1-07: extract keys via the awk source scanner BUT also re-decode each
+    # extracted key text through jq's `fromjson` so that `"a"` and `"a"`
+    # collide for sort/uniq purposes. Without the decode pass, escaped keys
+    # bypass the duplicate detector even though jq itself last-wins them.
+    #
+    # The awk pass yields raw source key text (one per line); we wrap each in
+    # quotes and feed it to `jq -Rr fromjson`, which decodes JSON string
+    # escapes. `tojson` on the way back gives us a canonical form so equal
+    # keys collide regardless of how they were spelled.
+    SOURCE_KEY_RAW="$(printf '%s' "$STRIPPED" | awk '
+        BEGIN { depth = 0; in_str = 0; esc = 0; cur_str = ""; collecting = 0; count = 0 }
+        {
+            line = (NR > 1 ? "\n" : "") $0
+            n = length(line)
+            for (i = 1; i <= n; i++) {
+                c = substr(line, i, 1)
+                if (in_str) {
+                    if (esc) { esc = 0; cur_str = cur_str c; continue }
+                    if (c == "\\") { esc = 1; cur_str = cur_str c; continue }
+                    if (c == "\"") {
+                        in_str = 0
+                        # Look ahead past whitespace for a colon.
+                        j = i + 1
+                        while (j <= n) {
+                            d = substr(line, j, 1)
+                            if (d == " " || d == "\t" || d == "\n" || d == "\r") { j++; continue }
+                            break
+                        }
+                        if (j <= n && substr(line, j, 1) == ":" && depth == 1) {
+                            count++
+                            print cur_str
+                        }
+                        cur_str = ""
+                        continue
+                    }
+                    cur_str = cur_str c
+                    continue
+                }
+                if (c == "\"") { in_str = 1; cur_str = ""; continue }
+                if (c == "{" || c == "[") depth++
+                else if (c == "}" || c == "]") depth--
+            }
+        }
+    ')"
+    # Decode each raw key through jq.fromjson; if all keys are valid JSON
+    # strings we get one canonical key per line. If decoding fails for any
+    # reason, fall back to the raw source text — better to under-detect
+    # than to crash on an exotic key.
+    SOURCE_KEY_COUNT="$(printf '%s\n' "$SOURCE_KEY_RAW" | grep -v '^$' \
+        | awk '{ printf "\"%s\"\n", $0 }' \
+        | jq -Rr 'fromjson? // empty' 2>/dev/null \
+        | sort)"
+    if [ -z "$SOURCE_KEY_COUNT" ]; then
+        # Decoder produced nothing useful; fall back to raw source text so the
+        # detector continues to work for the common (non-escape-key) case.
+        SOURCE_KEY_COUNT="$(printf '%s\n' "$SOURCE_KEY_RAW" | grep -v '^$' | sort)"
+    fi
+    SOURCE_KEY_TOTAL="$(printf '%s\n' "$SOURCE_KEY_COUNT" | grep -c . || true)"
+    if [ "$PARSED_KEY_COUNT" -ne "$SOURCE_KEY_TOTAL" ]; then
+        DUPES="$(printf '%s\n' "$SOURCE_KEY_COUNT" | uniq -d)"
+        if [ -n "$DUPES" ]; then
+            # R1-17: count occurrences so the user knows N-1 values were
+            # silently shadowed, not just "this key is duplicated".
+            echo "WARNING: duplicate top-level keys in $FILE (last value wins, earlier ones are silently shadowed):"
+            printf '%s\n' "$SOURCE_KEY_COUNT" | uniq -c | awk '$1 > 1 { printf "  %s (appears %d times; %d earlier value%s shadowed)\n", $2, $1, $1-1, ($1-1 == 1 ? "" : "s") }'
+            EXIT=3
+        fi
+    fi
+fi
+
+# Schema checks per kind.
+schema_check() {
+    expr="$1"
+    msg="$2"
+    if ! printf '%s' "$STRIPPED" | jq -e "$expr" >/dev/null 2>&1; then
+        echo "ERROR: $FILE: $msg"
+        EXIT=2
+    fi
+}
+
+case "$KIND" in
+    tasks)
+        schema_check 'type == "object"' 'tasks.json must be a JSON object'
+        schema_check '.version == "2.0.0"' 'tasks.json must declare "version": "2.0.0"'
+        schema_check '.tasks | type == "array"' 'tasks.json must have a "tasks" array'
+        # R1-08: stop here if shape failed — running jq's `to_entries[]` on a
+        # non-array value exits 5 and overrides our documented EXIT=2 schema
+        # error. The deeper per-entry checks only make sense when the shape is
+        # already known good.
+        if [ "$EXIT" -eq 0 ]; then
+            # Each task needs a label and one of (command, type=process|shell, dependsOn).
+            BAD_TASKS="$(printf '%s' "$STRIPPED" | jq -r '
+                .tasks // [] | to_entries[]
+                | select((.value.label // "") == "")
+                | "  task[\(.key)]: missing or empty \"label\""
+            ')"
+            if [ -n "$BAD_TASKS" ]; then
+                echo "ERROR: $FILE: tasks must each have a label:"
+                printf '%s\n' "$BAD_TASKS"
+                EXIT=2
+            fi
+        fi
+        ;;
+    launch)
+        schema_check 'type == "object"' 'launch.json must be a JSON object'
+        schema_check '.version == "0.2.0"' 'launch.json must declare "version": "0.2.0"'
+        schema_check '.configurations | type == "array"' 'launch.json must have a "configurations" array'
+        # R1-08: same shape-gate as `tasks` above.
+        if [ "$EXIT" -eq 0 ]; then
+            BAD_CONFIGS="$(printf '%s' "$STRIPPED" | jq -r '
+                .configurations // [] | to_entries[]
+                | . as $c
+                | [
+                    (if (.value.name // "") == "" then "  config[\(.key)]: missing \"name\"" else empty end),
+                    (if (.value.type // "") == "" then "  config[\(.key)]: missing \"type\"" else empty end),
+                    (if (.value.request // "") == "" then "  config[\(.key)]: missing \"request\"" else empty end),
+                    (if ((.value.request // "") | IN("launch", "attach")) | not then "  config[\(.key)]: \"request\" must be \"launch\" or \"attach\" (got \"\(.value.request // "")\")" else empty end)
+                  ]
+                | .[]
+            ')"
+            if [ -n "$BAD_CONFIGS" ]; then
+                echo "ERROR: $FILE: launch configurations have missing/invalid fields:"
+                printf '%s\n' "$BAD_CONFIGS"
+                EXIT=2
+            fi
+        fi
+        ;;
+    extensions)
+        schema_check 'type == "object"' 'extensions.json must be a JSON object'
+        # Both arrays optional but if present must be arrays of strings.
+        # The all(type == "string") check is what closes the R1-02/R1-04 surface:
+        # without it, `null`/`42`/`{...}` entries fell through to the BAD_IDS jq
+        # `test()` regex which type-errors and exits 5 (outside our 0|1|2|3|4
+        # contract). We assert it BEFORE the BAD_IDS pass so the schema error is
+        # what the user sees.
+        schema_check '(.recommendations // []) | type == "array"' 'recommendations must be an array'
+        schema_check '(.recommendations // []) | all(type == "string")' 'recommendations entries must be strings'
+        schema_check '(.unwantedRecommendations // []) | type == "array"' 'unwantedRecommendations must be an array'
+        schema_check '(.unwantedRecommendations // []) | all(type == "string")' 'unwantedRecommendations entries must be strings'
+        # R1-02/R1-08: bail out before BAD_IDS regex pass if shape failed —
+        # `test()` on non-string elements exits 5 and overrides our EXIT=2
+        # contract. Every BAD_IDS code path below assumes string elements.
+        if [ "$EXIT" -eq 0 ]; then
+            # Check ID format (publisher.name) for both lists.
+            BAD_IDS="$(printf '%s' "$STRIPPED" | jq -r '
+                (
+                    ((.recommendations // []) | map({list: "recommendations", id: .})) +
+                    ((.unwantedRecommendations // []) | map({list: "unwantedRecommendations", id: .}))
+                )
+                | map(select((.id | test("^[A-Za-z0-9][A-Za-z0-9_-]*\\.[A-Za-z0-9][A-Za-z0-9_-]*$")) | not))
+                | .[]
+                | "  \(.list): \"\(.id)\" is not a valid <publisher>.<name> ID"
+            ')"
+            if [ -n "$BAD_IDS" ]; then
+                echo "ERROR: $FILE: invalid extension IDs:"
+                printf '%s\n' "$BAD_IDS"
+                EXIT=2
+            fi
+            # Logical contradiction: an ID in both lists.
+            CONFLICTS="$(printf '%s' "$STRIPPED" | jq -r '
+                ((.recommendations // []) - ((.recommendations // []) - (.unwantedRecommendations // [])))
+                | .[]
+                | "  \"\(.)\" appears in both recommendations and unwantedRecommendations"
+            ')"
+            if [ -n "$CONFLICTS" ]; then
+                echo "WARNING: $FILE: contradictory entries:"
+                printf '%s\n' "$CONFLICTS"
+                [ "$EXIT" -eq 0 ] && EXIT=3
+            fi
+        fi
+        ;;
+    mcp)
+        schema_check 'type == "object"' 'mcp.json must be a JSON object'
+        schema_check '.servers | type == "object"' 'mcp.json must have a "servers" object'
+        # R1-08: same shape-gate; jq's `to_entries[]` on a non-object exits 5.
+        if [ "$EXIT" -eq 0 ]; then
+            # R1-03: drop "sse" from the transport allowlist. The MCP 2025-03-26
+            # protocol revision deprecated `sse` in favor of streamable HTTP;
+            # current VS Code follows the spec and only registers `stdio` and
+            # `http`. Accepting `sse` here would mislead users into shipping
+            # configs that fail at runtime. The reference doc at
+            # `references/per-project-files.md` already says "stdio or http".
+            BAD_SERVERS="$(printf '%s' "$STRIPPED" | jq -r '
+                .servers // {} | to_entries[]
+                | . as $s
+                | [
+                    (if ($s.value.type // "stdio") | IN("stdio", "http") | not
+                     then "  server[\($s.key)]: \"type\" must be stdio or http (got \"\($s.value.type // "stdio")\")"
+                     else empty end),
+                    (if ($s.value.type // "stdio") == "stdio" and ($s.value.command // "") == ""
+                     then "  server[\($s.key)]: stdio servers require \"command\""
+                     else empty end),
+                    (if ($s.value.type // "stdio") == "http" and ($s.value.url // "") == ""
+                     then "  server[\($s.key)]: http servers require \"url\""
+                     else empty end)
+                  ]
+                | .[]
+            ')"
+            if [ -n "$BAD_SERVERS" ]; then
+                echo "ERROR: $FILE: MCP server configuration issues:"
+                printf '%s\n' "$BAD_SERVERS"
+                EXIT=2
+            fi
+        fi
+        ;;
+    settings|generic)
+        # Settings has no top-level required fields; just verify it's an object.
+        schema_check 'type == "object"' "$KIND must be a JSON object"
+        ;;
+    *)
+        echo "ERROR: unknown kind: $KIND" >&2
+        exit 4
+        ;;
+esac
+
+if [ "$EXIT" -eq 0 ]; then
+    echo "OK: $FILE ($KIND)"
+fi
+exit "$EXIT"

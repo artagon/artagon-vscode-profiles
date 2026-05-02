@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # Pinned to actions/checkout v6.0.2 commit SHA to mitigate supply-chain
+        # risk from a moved tag. Update the SHA when bumping versions.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install jq and openssl
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq openssl
+
+      - name: Regenerate merged settings and exports
+        run: |
+          bash scripts/compose-settings.sh
+          bash scripts/export-profiles.sh
+
+      - name: Assert merged and exports are in sync with sources
+        run: |
+          git diff --exit-code _merged/ exports/
+
+      - name: Validate JSON fragments
+        run: bash scripts/validate-json.sh
+
+      - name: Run script test suite
+        run: bash scripts/tests/run.sh

@@ -43,10 +43,33 @@ Shared Themes & Icons
 - Icon themes installed by default: Material Icon Theme (pkief.material-icon-theme), vscode-icons (vscode-icons-team.vscode-icons), Catppuccin Icons (catppuccin.catppuccin-vsc-icons).
 - `workbench.colorTheme` and `workbench.iconTheme` defaults live in `_shared/editor-*.jsonc`; individual profiles override in `_overrides/<profile>.jsonc` when specialization is needed.
 - Rendering defaults (state-of-the-art readability):
-  - Fonts: JetBrains Mono (preferred) with fallbacks (JetBrainsMono Nerd Font, Cascadia Code, IBM Plex Mono, SF Mono, system monospace) and ligatures/variable axes enabled.
-  - GPU: terminal + editor leverage VS Code's GPU pipeline (`terminal.integrated.gpuAcceleration=on`, renderer auto) plus minimum contrast ratio for legibility.
+  - Fonts: JetBrains Mono (preferred) with professional fallback chain: JetBrainsMono Nerd Font, Monaspace Neon (GitHub), Geist Mono (Vercel), Berkeley Mono, Fira Code, Cascadia Code (Microsoft), Intel One Mono, IBM Plex Mono, SFMono-Regular (macOS), monospace. Ligatures and variable font axes enabled. To customize the font, edit `editor.fontFamily` and `terminal.integrated.fontFamily` in `_shared/editor-crisp.jsonc` and/or `_shared/editor-retina.jsonc`.
+  - GPU: terminal + editor leverage VS Code's GPU pipeline (`terminal.integrated.gpuAcceleration=on`) plus minimum contrast ratio for legibility.
   - Font smoothing: crisp profile forces `workbench.fontAliasing=antialiased`; retina uses `auto` so macOS/Wayland HiDPI pick subpixel AA.
   - Inline docs & IntelliSense: hover previews, inline suggestions, code lens, parameter hints, detailed suggestion UI are enabled globally (see `_shared/editor-*.jsonc`).
+- Notification suppression (all profiles):
+  - VS Code update popups disabled (`update.mode=manual`, `update.showReleaseNotes=false`).
+  - Extension update popups disabled (`extensions.autoCheckUpdates=false`, `extensions.autoUpdate=true`).
+  - Welcome/walkthrough/tip popups disabled (`workbench.tips.enabled=false`, `workbench.welcomePage.walkthroughs.openOnInstall=false`).
+
+Customizing Fonts
+- All font settings live in `_shared/editor-crisp.jsonc` (non-HiDPI) and `_shared/editor-retina.jsonc` (HiDPI). Edit the `editor.fontFamily` and `terminal.integrated.fontFamily` keys.
+- The font stack uses CSS-style fallback: the first installed font wins. Install any of the listed fonts and it will be used automatically. The current priority order:
+  1. JetBrains Mono — Best overall coding font: variable weight, ligatures, wide glyph set. Free.
+  2. JetBrainsMono Nerd Font — Patched variant with file-type icons/glyphs for terminal.
+  3. Monaspace Neon — GitHub's texture-healing monospace family (2024). Excellent for dense code. Free.
+  4. Geist Mono — Vercel's modern coding font. Clean, minimal, excellent letter spacing. Free.
+  5. Berkeley Mono — Premium personal-use coding font. Retro terminal aesthetic. Paid.
+  6. Fira Code — Popular open-source ligature font. Wider spacing. Free.
+  7. Cascadia Code — Microsoft's default terminal font. Includes Nerd Font variants. Free.
+  8. Intel One Mono — Intel's accessibility-first coding font. Higher x-height. Free.
+  9. IBM Plex Mono — IBM's corporate open-source mono. Clean and neutral. Free.
+  10. SFMono-Regular — macOS system monospace. Good on Apple hardware.
+  11. monospace — System default fallback.
+- To use a different primary font, move it to the front of the font family string.
+- Example (switch to Monaspace Neon as primary):
+  - `"editor.fontFamily": "'Monaspace Neon', 'JetBrains Mono', ..."` in both `_shared/editor-*.jsonc` files.
+- After editing, recompose: `bash scripts/compose-settings.sh`
 
 Profiles
 - cpp-clangd — Clangd workspace with LLVM toolchain, CMake Tools, clang-tidy, CodeLLDB, Better C++ Syntax, Resource Monitor, SonarLint, GitLens, shared themes/icons.
@@ -56,8 +79,10 @@ Profiles
 - java-gradle-crisp / java-gradle-retina — Gradle-first Java (profile base plus Gradle language/completion extensions, Lombok/Checkstyle/PMD/XML/YAML).
 - java-maven-crisp / java-maven-retina — Maven-first Java (profile base plus Maven dependency explorer, Lombok/Checkstyle/PMD/XML/YAML).
 - java-spring-crisp / java-spring-retina — Spring Boot–focused profiles (Java Pack + Debug, Spring Boot dashboard, Spring Initializr/Cloud, Lombok, Checkstyle, PMD, Maven + Gradle helpers, XML/YAML, Docker, SonarLint).
-- rust-profile-crisp / rust-profile-retina — Rust Analyzer, CodeLLDB, Dependi, Even Better TOML, Cargo tooling, plus shared productivity extensions. Requires `rustup component add rust-src rustfmt clippy` on each machine.
-- ai-profile-crisp / ai-profile-retina — Shared AI assistant workspace (Copilot, Copilot Chat, Claude Code, Gemini AI Studio, Continue, Codeium, Tabnine, YAML/GitHub Actions helpers) with the chat command center enabled by default.
+- rust-profile-crisp / rust-profile-retina — Rust Analyzer with full IntelliSense (custom postfix snippets, chaining hints, lifetime elision hints, semantic token styling for mutable/unsafe/consuming), CodeLLDB, Dependi, rust-syntax, rust-doc-viewer, crates-io, coverage gutters, Even Better TOML. AI: Copilot + Claude Code + Codex + Continue. Requires `rustup component add rust-src rustfmt clippy`.
+- ai-profile-crisp / ai-profile-retina — Shared AI assistant workspace (Copilot, Copilot Chat) with the chat command center enabled by default.
+- ai-plus-crisp / ai-plus-retina — Experimental "try more AI" bundle: Copilot + Cody + Continue.
+- AI Assistants (per profile): Language profiles (Java, Rust, C++, Web) now include Copilot, Claude Code (`anthropic.claude-code`), Codex (`openai.chatgpt`), and Continue (`Continue.continue`). AI fragment configs live in `_overrides/ai/` (copilot.jsonc, claude-code.jsonc, codex.jsonc, continue.jsonc, cody.jsonc).
 
 Tooling Notes
 - Java

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/extension-id.sh
+source "$SCRIPT_DIR/lib/extension-id.sh"
+
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required for install-extensions.sh" >&2
   exit 1
@@ -21,7 +25,8 @@ PROFILE=""
 GROUP_FILTER=()
 
 normalize_group() {
-  local g="${1,,}"
+  local g
+  g="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   case "$g" in
     ai) echo "AI" ;;
     cmake) echo "CMake" ;;
@@ -72,9 +77,11 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 GROUP_ARGS=()
-for g in "${GROUP_FILTER[@]}"; do
-  GROUP_ARGS+=("--group" "$g")
-done
+if [ "${#GROUP_FILTER[@]}" -gt 0 ]; then
+  for g in "${GROUP_FILTER[@]}"; do
+    GROUP_ARGS+=("--group" "$g")
+  done
+fi
 
 if [ "$PROFILE" = "all" ]; then
   ANY_FAILED=0
@@ -82,8 +89,10 @@ if [ "$PROFILE" = "all" ]; then
     [ -d "$dir" ] || continue
     name="$(basename "$dir")"
     echo ">>> Installing extensions for $name"
-    if ! bash "$0" "$name" "${GROUP_ARGS[@]}"; then
-      ANY_FAILED=1
+    if [ "${#GROUP_ARGS[@]}" -gt 0 ]; then
+      bash "$0" "$name" "${GROUP_ARGS[@]}" || ANY_FAILED=1
+    else
+      bash "$0" "$name" || ANY_FAILED=1
     fi
   done
   exit "$ANY_FAILED"
@@ -96,7 +105,22 @@ if [ ! -f "$EXT_FILE" ]; then
   exit 1
 fi
 
-mapfile -t EXT_IDS < <(jq -r '.[].identifier.id' "$EXT_FILE")
+EXT_IDS=()
+# Materialize jq output first so a parse/syntax failure produces a non-zero
+# exit instead of an empty pipe (which the loop would silently treat as
+# "no extensions" and exit 0). Process substitution swallows jq's status.
+EXT_LIST="$(jq -r '.[].identifier.id' "$EXT_FILE")" || {
+  echo "Error: failed to parse $EXT_FILE with jq" >&2
+  exit 1
+}
+while IFS= read -r ext; do
+  [ -z "$ext" ] && continue
+  if ! validate_extension_id "$ext"; then
+    echo "Error: invalid extension id in $EXT_FILE; aborting before any install" >&2
+    exit 1
+  fi
+  EXT_IDS+=("$ext")
+done <<<"$EXT_LIST"
 
 if [ "${#EXT_IDS[@]}" -eq 0 ]; then
   echo "No extensions listed in $EXT_FILE" >&2
@@ -122,7 +146,7 @@ should_install_group() {
 group_for_extension() {
   local ext="$1"
   case "$ext" in
-    github.copilot|github.copilot-chat|anthropic.claude-code|googlecloudtools.cloudcode|continue.continue|codeium.codeium|tabnine.tabnine-vscode)
+    github.copilot|github.copilot-chat|anthropic.claude-code|openai.chatgpt|googlecloudtools.cloudcode|Continue.continue|continue.continue|codeium.codeium|tabnine.tabnine-vscode|sourcegraph.cody-ai|sourcegraph.amp)
       echo "AI"
       ;;
     ms-vscode.cmake-tools|twxs.cmake)

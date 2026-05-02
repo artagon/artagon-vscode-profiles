@@ -21,97 +21,7 @@
   },
   {
     "identifier": {
-      "id": "eamodio.gitlens"
-    }
-  },
-  {
-    "identifier": {
-      "id": "editorconfig.editorconfig"
-    }
-  },
-  {
-    "identifier": {
       "id": "enkia.tokyo-night"
-    }
-  },
-  {
-    "identifier": {
-      "id": "esbenp.prettier-vscode"
-    }
-  },
-  {
-    "identifier": {
-      "id": "foxundermoon.shell-format"
-    }
-  },
-  {
-    "identifier": {
-      "id": "gabrielbb.vscode-lombok"
-    }
-  },
-  {
-    "identifier": {
-      "id": "github.vscode-github-actions"
-    }
-  },
-  {
-    "identifier": {
-      "id": "github.vscode-pull-request-github"
-    }
-  },
-  {
-    "identifier": {
-      "id": "mikestead.dotenv"
-    }
-  },
-  {
-    "identifier": {
-      "id": "ms-azuretools.vscode-docker"
-    }
-  },
-  {
-    "identifier": {
-      "id": "ms-vsliveshare.vsliveshare"
-    }
-  },
-  {
-    "identifier": {
-      "id": "mutantdino.resourcemonitor"
-    }
-  },
-  {
-    "identifier": {
-      "id": "oderwat.indent-rainbow"
-    }
-  },
-  {
-    "identifier": {
-      "id": "pkief.material-icon-theme"
-    }
-  },
-  {
-    "identifier": {
-      "id": "pmd.pmd"
-    }
-  },
-  {
-    "identifier": {
-      "id": "redhat.java"
-    }
-  },
-  {
-    "identifier": {
-      "id": "redhat.vscode-xml"
-    }
-  },
-  {
-    "identifier": {
-      "id": "redhat.vscode-yaml"
-    }
-  },
-  {
-    "identifier": {
-      "id": "richardwillis.vscode-gradle"
     }
   },
   {
@@ -121,32 +31,27 @@
   },
   {
     "identifier": {
-      "id": "shengchen.vscode-checkstyle"
+      "id": "zhuangtongfa.Material-theme"
     }
   },
   {
     "identifier": {
-      "id": "sonarsource.sonarlint-vscode"
+      "id": "pkief.material-icon-theme"
     }
   },
   {
     "identifier": {
-      "id": "streetsidesoftware.code-spell-checker"
+      "id": "vscode-icons-team.vscode-icons"
     }
   },
   {
     "identifier": {
-      "id": "timonwong.shellcheck"
+      "id": "redhat.java"
     }
   },
   {
     "identifier": {
-      "id": "usernamehw.errorlens"
-    }
-  },
-  {
-    "identifier": {
-      "id": "vscjava.vscode-gradle"
+      "id": "vscjava.vscode-java-pack"
     }
   },
   {
@@ -161,11 +66,6 @@
   },
   {
     "identifier": {
-      "id": "vscjava.vscode-java-pack"
-    }
-  },
-  {
-    "identifier": {
       "id": "vscjava.vscode-java-test"
     }
   },
@@ -176,17 +76,122 @@
   },
   {
     "identifier": {
-      "id": "vscode-icons-team.vscode-icons"
+      "id": "vscjava.vscode-gradle"
     }
   },
   {
     "identifier": {
-      "id": "zhuangtongfa.Material-theme"
+      "id": "richardwillis.vscode-gradle"
+    }
+  },
+  {
+    "identifier": {
+      "id": "gabrielbb.vscode-lombok"
+    }
+  },
+  {
+    "identifier": {
+      "id": "shengchen.vscode-checkstyle"
+    }
+  },
+  {
+    "identifier": {
+      "id": "pmd.pmd"
+    }
+  },
+  {
+    "identifier": {
+      "id": "redhat.vscode-xml"
+    }
+  },
+  {
+    "identifier": {
+      "id": "eamodio.gitlens"
+    }
+  },
+  {
+    "identifier": {
+      "id": "github.vscode-github-actions"
+    }
+  },
+  {
+    "identifier": {
+      "id": "github.vscode-pull-request-github"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ms-azuretools.vscode-docker"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ms-vsliveshare.vsliveshare"
+    }
+  },
+  {
+    "identifier": {
+      "id": "foxundermoon.shell-format"
+    }
+  },
+  {
+    "identifier": {
+      "id": "timonwong.shellcheck"
+    }
+  },
+  {
+    "identifier": {
+      "id": "redhat.vscode-yaml"
+    }
+  },
+  {
+    "identifier": {
+      "id": "mikestead.dotenv"
+    }
+  },
+  {
+    "identifier": {
+      "id": "editorconfig.editorconfig"
+    }
+  },
+  {
+    "identifier": {
+      "id": "oderwat.indent-rainbow"
+    }
+  },
+  {
+    "identifier": {
+      "id": "mutantdino.resourcemonitor"
+    }
+  },
+  {
+    "identifier": {
+      "id": "sonarsource.sonarlint-vscode"
+    }
+  },
+  {
+    "identifier": {
+      "id": "streetsidesoftware.code-spell-checker"
+    }
+  },
+  {
+    "identifier": {
+      "id": "usernamehw.errorlens"
     }
   },
   {
     "identifier": {
       "id": "fill-labs.dependi"
+    }
+  },
+  {
+    "identifier": {
+      "id": "tamasfe.even-better-toml"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ryanluker.vscode-coverage-gutters"
     }
   },
   {
@@ -201,7 +206,17 @@
   },
   {
     "identifier": {
-      "id": "tamasfe.even-better-toml"
+      "id": "anthropic.claude-code"
+    }
+  },
+  {
+    "identifier": {
+      "id": "openai.chatgpt"
+    }
+  },
+  {
+    "identifier": {
+      "id": "Continue.continue"
     }
   }
 ]

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Default TMPDIR before set -u nominal lookups would fail under stripped envs.
+: "${TMPDIR:=/tmp}"
+
 if ! command -v jq >/dev/null 2>&1; then
   echo "validate-json: jq is required but not found in PATH" >&2
   exit 1
@@ -11,13 +14,14 @@ SHARED="$ROOT/_shared"
 OVR="$ROOT/_overrides"
 PROFILES_DIR="$ROOT/profiles"
 
-mapfile -t FILES < <(
-  {
-    find "$SHARED" -type f -name '*.jsonc' 2>/dev/null
-    find "$OVR" -type f -name '*.jsonc' 2>/dev/null
-    find "$PROFILES_DIR" -type f -name 'extensions.json' 2>/dev/null
-  } | sort
-)
+FILES=()
+while IFS= read -r f; do
+  [ -n "$f" ] && FILES+=("$f")
+done < <({
+  find "$SHARED" -type f -name '*.jsonc' 2>/dev/null
+  find "$OVR" -type f -name '*.jsonc' 2>/dev/null
+  find "$PROFILES_DIR" -type f -name 'extensions.json' 2>/dev/null
+} | sort)
 
 if [ "${#FILES[@]}" -eq 0 ]; then
   echo "validate-json: no JSON/JSONC files found to validate" >&2

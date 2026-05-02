@@ -45,6 +45,8 @@ USAGE
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT_DIR="$ROOT/scripts"
+# shellcheck source=lib/extension-id.sh
+source "$SCRIPT_DIR/lib/extension-id.sh"
 
 list_profiles() {
   find "$ROOT/profiles" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort
@@ -71,6 +73,9 @@ install_single_extension() {
   local profile="$1" ext="$2"
   if ! command -v code >/dev/null 2>&1; then
     echo "VS Code CLI 'code' not found" >&2
+    exit 1
+  fi
+  if ! validate_extension_id "$ext"; then
     exit 1
   fi
   echo "Installing $ext for profile $profile"

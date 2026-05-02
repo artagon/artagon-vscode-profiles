@@ -29,3 +29,9 @@
 
 ## External Dependencies
 [Document key external services, APIs, or systems]
+
+## JMH Benchmarking Guidance
+- Use JMH for performance and allocation comparisons; prefer fixed-length chains or `@OperationsPerInvocation` for per-op normalization.
+- Keep allocation noise out of hot loops by reusing preallocated functions and isolating allocation-heavy transforms into dedicated benchmarks.
+- Capture allocation data with `-prof gc` and optionally `-prof stack` or JFR for deeper analysis.
+- For artagon-uri benchmarks, run suite tasks like `./gradlew jmhOptPrimitive jmhEither jmhResult jmhResultEitherCompare`.

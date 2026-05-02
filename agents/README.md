@@ -48,10 +48,12 @@ Compose settings from fragments using `compose-settings.sh`:
   - `scripts/compose-settings.sh && scripts/export-profiles.sh`
 
 ## Rendering Defaults
-- Fonts: JetBrains Mono (preferred) with Nerd Font/Cascadia Code/IBM Plex Mono/SF Mono fallbacks, ligatures + variable axes enabled.
-- GPU: hardware acceleration forced for terminals/editors with automatic renderer fallback and contrast ratio safeguards.
+- Fonts: JetBrains Mono (primary) with professional fallback chain: JetBrainsMono Nerd Font, Monaspace Neon (GitHub), Geist Mono (Vercel), Berkeley Mono, Fira Code, Cascadia Code (Microsoft), Intel One Mono, IBM Plex Mono, SFMono-Regular (macOS), monospace. Ligatures + variable axes enabled.
+- To customize fonts: edit `editor.fontFamily` and `terminal.integrated.fontFamily` in `_shared/editor-crisp.jsonc` and/or `_shared/editor-retina.jsonc`, then recompose with `bash scripts/compose-settings.sh`.
+- GPU: hardware acceleration forced for terminals/editors with contrast ratio safeguards.
 - Font antialiasing: crisp profiles force `antialiased`; retina leaves `auto` for HiDPI.
 - Inline docs & IntelliSense: hover previews, inline suggestions, code lens, parameter hints, linked editing, and IntelliSense detail panes enabled by default.
+- Notifications suppressed: VS Code update popups, extension update popups, welcome pages, walkthroughs, and tips are all disabled globally.
 
 ## Java JDK via jenv
 - Java profiles now use `${command:jenv.javaHome}` to resolve the active JDK.
@@ -68,8 +70,10 @@ Compose settings from fragments using `compose-settings.sh`:
 - Convenience symlinks: `~/.config/vscode/.agents`, `.claude`, `.gemini` -> `~/.config/vscode/agents`
 
 ## AI Assistants
-- Default: GitHub Copilot and GitHub Copilot Chat only.
-- Other assistants (Claude, Gemini, Continue, Codeium, Tabnine) are intentionally excluded from profiles.
+- AI-only profiles (ai-profile): GitHub Copilot + Copilot Chat only.
+- AI-plus profiles (ai-plus): Copilot + Cody (Sourcegraph) + Continue.
+- Language profiles (Java, Rust, C++, Web): include Copilot, Claude Code (`anthropic.claude-code`), Codex (`openai.chatgpt`), and Continue (`Continue.continue`).
+- AI fragment configs in `_overrides/ai/`: copilot.jsonc, claude-code.jsonc, codex.jsonc, continue.jsonc, cody.jsonc.
 
 ## Maintenance
 - Migrate/ensure links: `xdg-migrate vscode`

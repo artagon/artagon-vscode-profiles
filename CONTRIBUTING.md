@@ -6,6 +6,15 @@ Thanks for helping improve these VS Code profiles! This repo is structured for r
 - VS Code CLI on PATH (`code --version`)
 - `jq` installed
 
+### Git Hooks (recommended)
+Run the idempotent installer once after cloning:
+
+```sh
+bash scripts/install-hooks.sh
+```
+
+It sets `core.hooksPath = scripts/git-hooks` only when no other value is configured. If you already use husky/pre-commit/lefthook/etc., the script refuses to overwrite your config and prints what it would have done — integrate manually.
+
 ### Workflow
 1. Validate JSON after any edit:
    - `bash scripts/validate-json.sh`

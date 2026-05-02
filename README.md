@@ -4,6 +4,7 @@ This repository tracks all Visual Studio Code profiles, shared settings, and hel
 
 ## About
 
+[![CI](https://github.com/Artagon/artagon-vscode-profiles/actions/workflows/ci.yml/badge.svg)](https://github.com/Artagon/artagon-vscode-profiles/actions/workflows/ci.yml)
 [![OS macOS](https://img.shields.io/badge/os-macOS-000000?logo=apple&logoColor=white)](#)
 [![OS Linux](https://img.shields.io/badge/os-Linux-0b7261?logo=linux&logoColor=white)](#)
 [![OS Windows](https://img.shields.io/badge/os-Windows-0078D4?logo=windows&logoColor=white)](#)
@@ -14,6 +15,17 @@ This repository tracks all Visual Studio Code profiles, shared settings, and hel
 - Web/Astro (TypeScript/JS + HTML/CSS), Java via jenv, Rust, and C/C++ stacks pre‑configured.
 - AI policy: GitHub Copilot + Copilot Chat only (no other assistants).
 - Scripts for validate/compose/export/open/install; exports ready for “Profiles: Import Profile”.
+
+## Behavior Change Notice
+
+Starting with the `harden-profile-tooling-and-pipeline` change:
+
+- **Workspace Trust:** All shipped profiles default `security.workspace.trust.untrustedFiles` to `"prompt"` (was `"open"`). The first time you open an untrusted folder under a managed profile, VS Code will show its Workspace Trust prompt before running language servers, tasks, debug launches, or formatters defined in the workspace. This is the recommended secure default — accept the prompt to proceed normally.
+- **`@extends` chains:** The composer now only accepts bare filenames or a single sub-directory under `_overrides/` (e.g. `ai/copilot.jsonc`). Multi-level paths like `ai/sub/copilot.jsonc`, traversal segments, absolute paths, leading `~`, backslashes, and NUL bytes are rejected. If you previously authored a deeper chain, flatten it to a single level or move the fragment.
+- **Pre-commit hook:** After running `bash scripts/install-hooks.sh`, commits that touch `_shared/` or `_overrides/` must also stage the regenerated `_merged/` and `exports/` artifacts. The hook will refuse a commit that leaves regenerated files unstaged, with a clear "run X, stage Y" message.
+- **Extension identifiers:** Marketplace IDs in `extensions.json` and imported `.code-profile` bundles are validated against an allowlist regex before installation. Identifiers with shell metacharacters, embedded whitespace, or quote characters are rejected — this is a hardening step, not a feature change. If you maintain a custom `extensions.json`, ensure each `.identifier.id` matches `<publisher>.<extension>` shape.
+
+See [CHANGELOG.md](./CHANGELOG.md) for the complete list of changes.
 
 ## Quick Start (First‑Time Users)
 - Requirements: VS Code CLI on PATH (`code --version`) and `jq`.

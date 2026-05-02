@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+#
+# vscode-profile-diff — diff two VS Code settings/keybindings JSONC files at the key level.
+#
+# Standard diff(1) output is too noisy for JSONC because key order doesn't matter
+# and comments shouldn't count. This tool:
+#   1. Strips JSONC comments and trailing commas from both files.
+#   2. Parses with jq.
+#   3. Reports four sets:
+#        - Keys ONLY in left file (would be removed)
+#        - Keys ONLY in right file (would be added)
+#        - Keys in BOTH but with different values (would change)
+#        - Keys in BOTH with identical values (silent unless --verbose)
+#   4. For settings.json, also reports language-specific override blocks separately.
+#
+# Useful for: profile migration, cross-variant migration (VS Code → Cursor), audit of
+# settings drift between team members.
+#
+# Usage:
+#   vscode-profile-diff <left.json> <right.json>
+#   vscode-profile-diff --verbose <left.json> <right.json>
+#   vscode-profile-diff --json <left.json> <right.json>     # machine-readable
+#
+# Exit codes:
+#   0 — identical (no differences)
+#   1 — files differ
+#   2 — usage / parse error
+
+set -euo pipefail
+
+# Force C locale so set operations on key names are byte-stable across systems.
+export LC_ALL=C
+
+# shellcheck disable=SC1007
+# `CDPATH= cd` is the deliberate "neutralize CDPATH for this one cd" idiom from
+# the Google Shell Style Guide; ShellCheck's SC1007 misreads it as an empty assign.
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+STRIPPER="${SCRIPT_DIR}/jsonc-strip.awk"
+
+# Source the shared NUL-byte guard. Done before any command substitution that
+# would silently truncate at the first NUL byte. See lib/nul-check.sh for why
+# this guard lives in shell rather than inside jsonc-strip.awk.
+# shellcheck source=./lib/nul-check.sh
+. "${SCRIPT_DIR}/lib/nul-check.sh"
+
+usage() {
+    cat >&2 <<EOF
+usage: vscode-profile-diff [--verbose|-v] [--json] <left.json> <right.json>
+
+Diffs two JSONC settings files at the key level (ignoring whitespace, comments,
+and key ordering).
+
+  --verbose, -v   Also list keys with identical values.
+  --json          Output a JSON object with arrays: only_left, only_right,
+                  changed, identical (always populated, even if --verbose off).
+
+Exit 0 = identical, 1 = differ, 2 = error.
+EOF
+    exit 2
+}
+
+VERBOSE=0
+JSON_OUT=0
+LEFT=""
+RIGHT=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -v|--verbose) VERBOSE=1 ;;
+        --json)       JSON_OUT=1 ;;
+        -h|--help)    usage ;;
+        --)           shift; LEFT="${1:-}"; shift; RIGHT="${1:-}"; break ;;
+        -*)           echo "ERROR: unknown option: $1" >&2; usage ;;
+        *)
+            if   [ -z "$LEFT" ];  then LEFT="$1"
+            elif [ -z "$RIGHT" ]; then RIGHT="$1"
+            else echo "ERROR: extra argument: $1" >&2; usage; fi
+            ;;
+    esac
+    shift
+done
+
+[ -n "$LEFT" ] && [ -n "$RIGHT" ] || usage
+[ -f "$LEFT" ]  || { echo "ERROR: left file not found: $LEFT"   >&2; exit 2; }
+[ -f "$RIGHT" ] || { echo "ERROR: right file not found: $RIGHT" >&2; exit 2; }
+
+command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required" >&2; exit 2; }
+[ -f "$STRIPPER" ] || { echo "ERROR: stripper not found: $STRIPPER" >&2; exit 2; }
+
+# Reject raw NUL bytes in BOTH inputs BEFORE the awk command substitutions
+# silently truncate them. See scripts/lib/nul-check.sh for the rationale.
+nul_check_file "$LEFT" || exit 2
+nul_check_file "$RIGHT" || exit 2
+
+# Wrap each command substitution in an explicit failure handler — `set -euo
+# pipefail` does NOT fail the script when the right-hand side of a command
+# substitution exits non-zero (POSIX behavior; bash needs `inherit_errexit`).
+if ! LEFT_JSON="$(awk -f "$STRIPPER" < "$LEFT")"; then
+    echo "ERROR: $LEFT: jsonc-strip.awk failed; see prior stderr for details" >&2
+    exit 2
+fi
+if ! RIGHT_JSON="$(awk -f "$STRIPPER" < "$RIGHT")"; then
+    echo "ERROR: $RIGHT: jsonc-strip.awk failed; see prior stderr for details" >&2
+    exit 2
+fi
+
+if ! printf '%s' "$LEFT_JSON" | jq empty 2>/dev/null; then
+    echo "ERROR: $LEFT is not valid JSONC" >&2
+    exit 2
+fi
+if ! printf '%s' "$RIGHT_JSON" | jq empty 2>/dev/null; then
+    echo "ERROR: $RIGHT is not valid JSONC" >&2
+    exit 2
+fi
+
+# Both must be objects.
+if ! printf '%s' "$LEFT_JSON" | jq -e 'type == "object"' >/dev/null; then
+    echo "ERROR: $LEFT is not a JSON object" >&2
+    exit 2
+fi
+if ! printf '%s' "$RIGHT_JSON" | jq -e 'type == "object"' >/dev/null; then
+    echo "ERROR: $RIGHT is not a JSON object" >&2
+    exit 2
+fi
+
+# R1-09: write the stripped JSON to temp files BEFORE handing to jq, rather
+# than passing both documents via `--argjson l "$LEFT_JSON" --argjson r ...`.
+# `--argjson` has two failure modes for real-world VS Code config:
+#   1. ARG_MAX (1 MB on macOS) — moderately large profiles can hit the exec
+#      ceiling before jq even starts.
+#   2. Process-list visibility — settings.json files routinely contain
+#      workspace paths, MCP credentials, and private endpoints. argv is
+#      readable via `ps` and `/proc`. File inputs avoid both.
+LEFT_TMP="$(mktemp -t "vscode-profile-diff-left.XXXXXX")"
+RIGHT_TMP="$(mktemp -t "vscode-profile-diff-right.XXXXXX")"
+trap 'rm -f "$LEFT_TMP" "$RIGHT_TMP"' EXIT INT TERM
+printf '%s' "$LEFT_JSON" > "$LEFT_TMP"
+printf '%s' "$RIGHT_JSON" > "$RIGHT_TMP"
+# Compute the four sets via a single jq invocation that reads both inputs as
+# slurped JSON files (`-s` produces an array of inputs; `.[0]` and `.[1]`
+# index into them).
+DIFF_JSON="$(
+    jq -n -s \
+        --slurpfile l "$LEFT_TMP" \
+        --slurpfile r "$RIGHT_TMP" \
+        '
+        ($l[0]) as $L
+        | ($r[0]) as $R
+        | ($L | keys_unsorted) as $lk
+        | ($R | keys_unsorted) as $rk
+        | ($lk | unique) as $lku
+        | ($rk | unique) as $rku
+        | {
+            only_left:  ($lku - $rku | sort),
+            only_right: ($rku - $lku | sort),
+            changed: (
+                [$lku[] | select(. as $k | $rku | index($k))]
+                | map(select(($L[.]) != ($R[.])))
+                | sort
+                | map({key: ., left: $L[.], right: $R[.]})
+            ),
+            identical: (
+                [$lku[] | select(. as $k | $rku | index($k))]
+                | map(select(($L[.]) == ($R[.])))
+                | sort
+            )
+          }
+        '
+)"
+
+if [ "$JSON_OUT" -eq 1 ]; then
+    printf '%s\n' "$DIFF_JSON"
+    # Determine exit code from the data.
+    if printf '%s' "$DIFF_JSON" | jq -e '
+        (.only_left | length == 0) and
+        (.only_right | length == 0) and
+        (.changed | length == 0)
+    ' >/dev/null; then
+        exit 0
+    else
+        exit 1
+    fi
+fi
+
+ONLY_LEFT="$(printf '%s' "$DIFF_JSON"  | jq -r '.only_left[]')"
+ONLY_RIGHT="$(printf '%s' "$DIFF_JSON" | jq -r '.only_right[]')"
+CHANGED_COUNT="$(printf '%s' "$DIFF_JSON" | jq '.changed | length')"
+IDENTICAL_COUNT="$(printf '%s' "$DIFF_JSON" | jq '.identical | length')"
+
+DIFFERED=0
+
+if [ -n "$ONLY_LEFT" ]; then
+    DIFFERED=1
+    echo "Only in $LEFT (would be removed):"
+    printf '%s\n' "$ONLY_LEFT" | sed 's/^/  - /'
+fi
+
+if [ -n "$ONLY_RIGHT" ]; then
+    DIFFERED=1
+    echo "Only in $RIGHT (would be added):"
+    printf '%s\n' "$ONLY_RIGHT" | sed 's/^/  + /'
+fi
+
+if [ "$CHANGED_COUNT" -gt 0 ]; then
+    DIFFERED=1
+    echo "Changed values:"
+    printf '%s' "$DIFF_JSON" | jq -r '
+        .changed[]
+        | "  ~ \(.key)\n      left:  \(.left | tojson)\n      right: \(.right | tojson)"
+    '
+fi
+
+if [ "$VERBOSE" -eq 1 ] && [ -n "$(printf '%s' "$DIFF_JSON" | jq -r '.identical[]')" ]; then
+    echo "Identical:"
+    printf '%s' "$DIFF_JSON" | jq -r '.identical[]' | sed 's/^/  = /'
+fi
+
+if [ "$DIFFERED" -eq 0 ]; then
+    echo "No differences (${IDENTICAL_COUNT} key(s) match)."
+    exit 0
+fi
+
+# Summary line
+ONLY_LEFT_COUNT="$(printf '%s\n' "$ONLY_LEFT"  | grep -c . || true)"
+ONLY_RIGHT_COUNT="$(printf '%s\n' "$ONLY_RIGHT" | grep -c . || true)"
+echo
+echo "Summary: ${ONLY_LEFT_COUNT} removed, ${ONLY_RIGHT_COUNT} added, ${CHANGED_COUNT} changed, ${IDENTICAL_COUNT} identical."
+exit 1

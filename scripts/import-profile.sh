@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/extension-id.sh
+source "$SCRIPT_DIR/lib/extension-id.sh"
+
 usage() {
   cat <<USAGE
 import-profile.sh - import a VS Code .code-profile bundle into a named profile
@@ -73,7 +77,26 @@ existing_id="$(jq -r --arg name "$PROFILE" '(.userDataProfiles // [])[] | select
 if [ -n "$existing_id" ] && [ "$existing_id" != "null" ]; then
   PROFILE_ID="$existing_id"
 else
-  PROFILE_ID="$(LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 8)"
+  # PROFILE_ID needs a SIGPIPE-safe RNG; the previous tr | head -c idiom
+  # aborted under set -euo pipefail. Try openssl first, then python3 — and
+  # fall back through if either is *broken*, not just absent. The earlier
+  # shape only checked `command -v`, so a present-but-degraded openssl
+  # (FIPS rejecting `rand`, missing entropy source, etc.) would abort under
+  # set -e before ever reaching python3.
+  PROFILE_ID=""
+  if command -v openssl >/dev/null 2>&1; then
+    PROFILE_ID="$(openssl rand -hex 4 2>/dev/null || true)"
+  fi
+  if [ -z "$PROFILE_ID" ] && command -v python3 >/dev/null 2>&1; then
+    PROFILE_ID="$(python3 -c 'import secrets; print(secrets.token_hex(4))' 2>/dev/null || true)"
+  fi
+  # Sanity-check shape — even a successful generator could in theory return
+  # something other than 8 lowercase hex chars (truncated entropy, locale
+  # weirdness, etc.). Keep the contract tight.
+  if [[ ! "$PROFILE_ID" =~ ^[0-9a-f]{8}$ ]]; then
+    echo "import-profile: needs working 'openssl rand' or python3 'secrets.token_hex' for PROFILE_ID generation; install or repair one and retry" >&2
+    exit 1
+  fi
   tmp="$(mktemp)"
   jq --arg name "$PROFILE" --arg loc "$PROFILE_ID" '
     .userDataProfiles = ((.userDataProfiles // []) | map(select(.name != $name)) + [{name:$name, location:$loc}])
@@ -89,14 +112,39 @@ jq '.settings // {}' "$BUNDLE" > "$tmp_settings"
 mv "$tmp_settings" "$TARGET_DIR/settings.json"
 echo "Imported settings into profile '$PROFILE' (cache dir: $TARGET_DIR)"
 
-mapfile -t EXTENSIONS < <(jq -r '.extensions.enabled[]?' "$BUNDLE" 2>/dev/null || true)
+EXTENSIONS=()
+# Materialize jq output first; otherwise a malformed extensions.enabled
+# (e.g. {"enabled": 1}) would silently fail inside the process substitution
+# and the loop would treat it as "no extensions" while still completing
+# settings import.
+EXT_LIST="$(jq -r '.extensions.enabled[]?' "$BUNDLE")" || {
+  echo "Error: failed to parse $BUNDLE with jq" >&2
+  exit 1
+}
+while IFS= read -r ext; do
+  [ -z "$ext" ] && continue
+  if ! validate_extension_id "$ext"; then
+    echo "Error: invalid extension id in $BUNDLE; aborting before any install" >&2
+    exit 1
+  fi
+  EXTENSIONS+=("$ext")
+done <<<"$EXT_LIST"
+FAILED_EXT=()
 if [ "${#EXTENSIONS[@]}" -gt 0 ]; then
   DELAY="${VSCODE_EXTENSION_INSTALL_DELAY:-1}"
   for ext in "${EXTENSIONS[@]}"; do
     echo "Installing extension $ext for profile $PROFILE"
-    code --profile "$PROFILE" --install-extension "$ext" >/dev/null || true
+    if ! code --profile "$PROFILE" --install-extension "$ext" >/dev/null; then
+      echo "Warning: failed to install $ext" >&2
+      FAILED_EXT+=("$ext")
+    fi
     sleep "$DELAY"
   done
+fi
+if [ "${#FAILED_EXT[@]}" -gt 0 ]; then
+  printf '\nFailed installs for %s:\n' "$PROFILE"
+  for e in "${FAILED_EXT[@]}"; do printf '  - %s\n' "$e"; done
+  exit 1
 fi
 
 echo "Profile '$PROFILE' imported. Launch with: code --profile \"$PROFILE\" <folder>"
