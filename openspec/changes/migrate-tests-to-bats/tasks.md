@@ -1,8 +1,8 @@
 ## 1. CI bootstrap (both runners green + linting)
 
-- [ ] 1.1 Add `bats-core/bats-action@3.0.0` install step to `.github/workflows/ci.yml` ahead of the existing `bash scripts/tests/run.sh` step.
+- [ ] 1.1 Add `bats-core/bats-action` install step to `.github/workflows/ci.yml` ahead of the existing `bash scripts/tests/run.sh` step. **Pin to a full commit SHA**, not a tag (e.g., `bats-core/bats-action@<full-40-char-sha> # v3.0.0`). Matches the existing CI pattern at `actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2`. Resolve the SHA from the bats-action release notes at the time of implementation.
 - [ ] 1.2 Add `bats scripts/tests/bats/` invocation step after the install. Suite is empty at this point — the step is a no-op pass and proves the CI integration works.
-- [ ] 1.3 Add a `shellcheck` CI step that lints every `*.sh` under `scripts/` plus every `*.bash` helper under `scripts/tests/bats/helpers/`. Use `ludeeus/action-shellcheck@master` or equivalent. Configure to pass `--severity=warning` initially; tighten to `--severity=style` post-migration. The shellcheck step is a permanent addition (does not get removed alongside `run.sh` in §5).
+- [ ] 1.3 Add a `shellcheck` CI step that lints every `*.sh` under `scripts/` plus every `*.bash` helper under `scripts/tests/bats/helpers/`. Use `ludeeus/action-shellcheck` **pinned to a full commit SHA**, not `@master` (which is a moving target — `@master` is forbidden by the repo's supply-chain convention). Configure to pass `--severity=warning` initially; tighten to `--severity=style` post-migration. The shellcheck step is a permanent addition (does not get removed alongside `run.sh` in §5).
 - [ ] 1.4 Verify CI is green on a draft PR: `run.sh`, empty bats step, and shellcheck all pass.
 
 ## 2. Test layout and helpers
@@ -30,9 +30,9 @@ For each `.bats` file: write the file, run `bats <file>` locally, confirm it pas
 
 ## 4. Parity checkpoint (mechanized + manual)
 
-- [ ] 4.1 Produce `openspec/changes/migrate-tests-to-bats/parity.md`: a table with one row per numbered assertion 1–14 from `specs/test-suite/spec.md` "Coverage parity" requirement, mapping each to `scripts/tests/bats/<file>:<test-name>`. Cross-check against `run.sh` line numbers.
-- [ ] 4.2 Write the parity verifier per the spec's "Mechanized parity verification" requirement. **Format constraint**: `parity.md` MUST use a fixed-shape line format (e.g., one assertion per line, `^N\. <file>:<test-name>$`) so the verifier can parse with a single regex and not reinvent markdown-table parsing. **Implementation choice**: prefer `scripts/tests/check-parity.sh` (bash) only if it stays under the shell-authoring 100-line threshold; otherwise write `scripts/tests/check-parity.py` (Python 3, stdlib only — no new dependency). Either way: must exit non-zero on any miss, must obey `#!/usr/bin/env bash` or `#!/usr/bin/env python3` shebang, must clear `shellcheck`/`ruff` respectively. Add a CI step that runs this verifier ahead of `bats scripts/tests/bats/`. (Removed in §5 when `run.sh` is deleted.)
-- [ ] 4.3 Manual review: a maintainer confirms the table semantically captures every `run.sh` assertion (the verifier proves *file+name resolve*; only a human can confirm the *test logic* matches the original). This is the gate for §5.
+- [ ] 4.1 Produce `openspec/changes/migrate-tests-to-bats/parity.md` as a **fixed-shape line file** — NOT a markdown table. One assertion per line in the form `^N\. <file>:<test-name>$` (where N is the assertion number 1–14 from `specs/test-suite/spec.md` "Coverage parity"). Lines may be preceded by free-form prose (commentary, headings); the verifier ignores any line not matching the regex. This format makes the file both human-readable and trivially machine-parseable without reinventing markdown-table parsing. Cross-check entries against `run.sh` line numbers.
+- [ ] 4.2 Write the parity verifier per the spec's "Mechanized parity verification" requirement. **Implementation**: `scripts/tests/check-parity.sh` (bash). Single bash file under the shell-authoring 100-line threshold — straightforward grep + per-row check is well inside that budget. Must obey `#!/usr/bin/env bash`, set the strict-mode preamble, exit non-zero on any miss, and clear `shellcheck` (per the §1.3 CI step). The repo currently has no Python tooling (no `pyproject.toml`, no ruff config); a Python verifier would force adding ruff + a Python CI step, which is scope creep. Keep it bash. Add a CI step that runs this verifier ahead of `bats scripts/tests/bats/`. (Removed in §5 when `run.sh` is deleted.)
+- [ ] 4.3 Manual review: a maintainer confirms the parity file semantically captures every `run.sh` assertion (the verifier proves *file+name resolve*; only a human can confirm the *test logic* matches the original). This is the gate for §5.
 - [ ] 4.4 Verify bats suite passes under `--jobs 4` (parallel-safety check) at least once locally; do not enable in CI yet.
 
 ## 4b. Timing constraint
@@ -55,4 +55,4 @@ For each `.bats` file: write the file, run `bats <file>` locally, confirm it pas
 ## 7. Validate the change
 
 - [ ] 7.1 Run `openspec validate migrate-tests-to-bats --strict` and resolve any findings.
-- [ ] 7.2 Open the PR; ensure the parity table at §4.1 is linked in the description.
+- [ ] 7.2 Open the PR; ensure `parity.md` from §4.1 is linked in the description.

@@ -26,16 +26,28 @@ prerequisite in `README.md` and `CONTRIBUTING.md`.
 Tests MUST live under `scripts/tests/bats/` with one `.bats` file per
 logical concern. Shared fixtures, mocks, and assertion helpers MUST live
 under `scripts/tests/bats/helpers/` and be loaded via bats's `load`
-directive. Tests MUST NOT depend on writeable state outside their per-test
-`$BATS_TEST_TMPDIR`, except for the read-only repository tree itself.
+directive.
+
+Tests MUST scope new state to their per-test `$BATS_TEST_TMPDIR`
+whenever feasible. Some production scripts under test
+(`compose-settings.sh`, `export-profiles.sh`) intentionally write to
+the working tree (`_merged/`, `exports/`, profile symlinks); tests that
+exercise those scripts MAY allow them to write to the working tree, but
+the suite as a whole MUST leave the working tree in the same state it
+started in — verified by `git status --porcelain` returning empty after
+the suite runs to completion. This means either (a) tests run scripts
+against a temp repo copy under `$BATS_TEST_TMPDIR`, or (b) tests run
+scripts against the live repo and either teardown reverts the writes
+or `git checkout -- <paths>` restores them. Either approach is
+permitted; the test author chooses.
 
 #### Scenario: Test isolation leaves no residue in the working tree
 
 - **WHEN** the bats suite runs to completion (pass or fail) from a clean
   working tree
-- **THEN** `git status --porcelain` shows no new or modified files outside
-  the source-controlled set — i.e., all per-test mutations were scoped to
-  `$BATS_TEST_TMPDIR` and cleaned up on teardown
+- **THEN** `git status --porcelain` shows no new or modified files
+  outside the source-controlled set — regardless of which isolation
+  strategy individual tests used (temp copy vs live + restore)
 
 #### Scenario: Helper reuse
 
@@ -102,13 +114,16 @@ corresponding bats test (or a documented superseding test):
 
 The migration MUST include an executable parity verifier — not only a
 manual review — for the duration of the side-by-side period. The
-verifier reads `openspec/changes/migrate-tests-to-bats/parity.md`,
-parses each numbered row's bats `file:test-name` reference, and asserts
-that the file exists and contains a `@test` declaration with that exact
-name. The verifier MUST exit non-zero on any mismatch. CI MUST run the
-verifier on every PR while the migration is in flight. The verifier and
-its CI step are removed in the same commit that deletes
-`scripts/tests/run.sh`.
+parity file `openspec/changes/migrate-tests-to-bats/parity.md` MUST
+use a fixed-shape line format (one assertion per line matching
+`^N\. <file>:<test-name>$`, where N is 1–14). Lines that don't match
+the regex are ignored as commentary. The verifier reads `parity.md`,
+extracts each numbered line's bats `file:test-name` reference, and
+asserts that the file exists and contains a `@test` declaration with
+that exact name. The verifier MUST exit non-zero on any mismatch. CI
+MUST run the verifier on every PR while the migration is in flight.
+The verifier and its CI step are removed in the same commit that
+deletes `scripts/tests/run.sh`.
 
 #### Scenario: Verifier catches a missing bats test
 
@@ -118,9 +133,9 @@ its CI step are removed in the same commit that deletes
 - **THEN** the verifier exits non-zero with a message naming the
   missing pair, and CI fails
 
-#### Scenario: Verifier passes on a complete table
+#### Scenario: Verifier passes on a complete parity file
 
-- **WHEN** every numbered row in `parity.md` resolves to an existing
+- **WHEN** every numbered line in `parity.md` resolves to an existing
   `@test` in the named bats file
 - **THEN** the verifier exits 0
 
