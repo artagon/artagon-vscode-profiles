@@ -57,8 +57,8 @@ established by these rules:
    `akamud.vscode-theme-onedark`, `dracula-theme.theme-dracula`,
    `vscode-icons-team.vscode-icons`).
 3. When the value cannot be mapped to an extension ID, the system
-   SHALL leave the key in place (no removal); a value rtk does not
-   recognise is presumed to be a built-in theme name VS Code will
+   SHALL leave the key in place (no removal); a value the script does
+   not recognise is presumed to be a built-in theme name VS Code will
    resolve normally.
 
 #### Scenario: Settings imported

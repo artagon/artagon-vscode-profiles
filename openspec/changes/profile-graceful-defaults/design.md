@@ -213,9 +213,12 @@ behaviour reverts to today's silent-bug status quo.
 
 ## Open Questions
 
-- *Should the script print which keys were stripped?* Bias toward
-  yes — print to stderr like the existing failure list. This makes
-  the silent rewrite visible. Will codify in tasks.md.
+- *Should the script print which keys were stripped?* Resolved: yes,
+  print to stderr. This makes the silent rewrite visible. The current
+  final-failure summary at `import-profile.sh:144-148` is on stdout
+  (an inconsistency with the per-extension warnings at line 138 which
+  use `>&2`); `tasks.md §2.0` corrects that so the new theme-strip
+  notices and the existing failure summary share stderr.
 - *Should the label-to-ID map live in a separate file?* Bias toward
   no — too small to deserve a file. If it grows past 30 entries,
   reconsider.
