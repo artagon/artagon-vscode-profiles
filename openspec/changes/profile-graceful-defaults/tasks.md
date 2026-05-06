@@ -25,19 +25,25 @@
 
 ## 4. Regression tests
 
-Writing tests follows the `artagon-shell:shell-testing` skill: test the CLI contract (exit code + stdout/stderr + filesystem state), use per-test temp dirs, no network, assert specific exit codes (`-eq N` not `-ne 0`).
+Writing tests follows `artagon-shell:shell-testing` and `wshobson-shell-scripting--bats-testing-patterns`: test the CLI contract (exit code + stdout/stderr + filesystem state), use per-test temp dirs, mock external deps, assert specific exit codes (`-eq N` not `-ne 0`), one assertion per test, descriptive test names.
 
-- [ ] 4.1 Choose the test surface: if PR #3 (`migrate-tests-to-bats`) has merged at the time of implementation, write the test as `scripts/tests/bats/import-profile.bats`. Otherwise add it to `scripts/tests/run.sh`. Document the choice as the first line of the test file/section.
+- [ ] 4.0 **Test infrastructure**:
+  - **Skip gates**: each test file's `setup_file` (bats) or `setup` (run.sh) checks for `jq` and `code` — if either is missing, `skip "jq/code required"`. Mirrors the wshobson skill's "Testing with Dependencies" pattern.
+  - **Fixture directory**: create `scripts/tests/fixtures/import-profile/` (or `scripts/tests/bats/fixtures/import-profile/` for the bats path) with named `.code-profile` files: `with-tokyo-night.code-profile`, `with-tokyo-night-and-iconv.code-profile`, `with-builtin-theme.code-profile`, `with-explicit-id-theme.code-profile`. Tests reference these by name rather than building bundles inline via heredoc.
+  - **Parallel-safety**: `FAILING_EXTS` is a process env var; if bats runs `--jobs N` two tests using different `FAILING_EXTS` values can race the mocked `code`'s reads. Tag the bats file with `# bats file_tags=:no-parallel` (bats 1.10+) to force sequential execution within this file. Other bats files in the suite remain parallelizable. Document this constraint at the top of the file.
+  - **Teardown env hygiene**: each test's `teardown` MUST `unset FAILING_EXTS VSCODE_USER_DIR` to prevent leakage into the next test. Add this to `helpers/setup.bash` if a shared teardown is more ergonomic.
 
-- [ ] 4.2 Mock contract for the `code` CLI stub. Both test surfaces need an `code` mock that fails specific extension installs.
-  - **Bats path**: extend `helpers/mock-code-cli.bash` (from PR #3) to support a `FAILING_EXTS` env var: a comma- or newline-separated list of extension IDs. When `code --install-extension <id>` is called for an `<id>` in that list, the stub exits non-zero (specifically exit 1) and writes nothing to the install log. Otherwise behaves as today.
-  - **run.sh path**: extend the inline `code` stub at `run.sh:15-47` with the same `FAILING_EXTS` semantics. The existing log-line contract (`action=install profile=<n> ext=<id>`) is preserved on success; failures get a `action=install_failed profile=<n> ext=<id> exit=1` line.
+- [ ] 4.1 Choose the test surface: if PR #3 (`migrate-tests-to-bats`) has merged at the time of implementation, write tests as `scripts/tests/bats/import-profile.bats`. Otherwise add to `scripts/tests/run.sh`. Document the choice as the first line of the test file/section.
+
+- [ ] 4.2 Mock contract for the `code` CLI stub. Both test surfaces need a `code` mock that fails specific extension installs.
+  - **Bats path**: extend `helpers/mock-code-cli.bash` (from PR #3) to support a `FAILING_EXTS` env var: a comma- or newline-separated list of extension IDs. When `code --install-extension <id>` is called for an `<id>` in that list, the stub exits 1 and writes a `action=install_failed profile=<n> ext=<id> exit=1` log line. Otherwise behaves as today.
+  - **run.sh path**: extend the inline `code` stub at `run.sh:15-47` with the same `FAILING_EXTS` semantics.
 
 - [ ] 4.3 Per-test temp isolation:
-  - **Bats path**: every test uses `$BATS_TEST_TMPDIR` for `VSCODE_USER_DIR` and the bundle path. Bats auto-cleans this per-test; tests are parallel-safe.
-  - **run.sh path**: each new assertion gets its own `local sandbox; sandbox=$(mktemp -d -p "$TMP" import-profile-XXXX)` — a subdirectory under the existing run-wide `$TMP`. Parallel-unsafe but matches existing run.sh style; the bats migration fixes parallel-safety later.
+  - **Bats path**: every test uses `$BATS_TEST_TMPDIR` for `VSCODE_USER_DIR` and bundle copies. Bats auto-cleans this per-test.
+  - **run.sh path**: each new assertion gets its own `local sandbox; sandbox=$(mktemp -d -p "$TMP" import-profile-XXXX)` — subdirectory under the existing run-wide `$TMP`. Parallel-unsafe but matches existing run.sh style; the bats migration fixes parallel-safety later.
 
-- [ ] 4.4 **Test: failed color-theme install strips the key** (the core regression).
+- [ ] 4.4 **Test: `import-profile.sh strips workbench.colorTheme when its extension fails to install`** (the core regression).
   - Fixture: a `.code-profile` bundle in `<sandbox>/bundle.code-profile` with `settings = { "workbench.colorTheme": "Tokyo Night" }` and `extensions.enabled = ["enkia.tokyo-night", "github.copilot"]` (one theme, one decoy).
   - Setup: `FAILING_EXTS=enkia.tokyo-night`.
   - Run: `VSCODE_USER_DIR=<sandbox>/vscode FAILING_EXTS=enkia.tokyo-night bash scripts/import-profile.sh test-profile <sandbox>/bundle.code-profile`.
@@ -46,24 +52,24 @@ Writing tests follows the `artagon-shell:shell-testing` skill: test the CLI cont
     2. The post-import `settings.json` (`<sandbox>/vscode/profiles/<id>/settings.json`) does NOT contain a `workbench.colorTheme` key. Verify with `jq -e 'has("workbench.colorTheme")' <file>` returning false.
     3. Stderr (`$output` in bats `run`, or captured separately in run.sh) contains the substring `"removed workbench.colorTheme (extension enkia.tokyo-night failed to install)"`.
 
-- [ ] 4.5 **Test: failed icon-theme install strips the icon-theme key but not the color-theme key**.
-  - Fixture: `settings = { "workbench.colorTheme": "Tokyo Night", "workbench.iconTheme": "material-icon-theme" }` and `extensions.enabled = ["enkia.tokyo-night", "pkief.material-icon-theme"]`.
-  - Setup: `FAILING_EXTS=pkief.material-icon-theme` (color-theme installs OK; icon-theme fails).
-  - Assert: `workbench.iconTheme` key is removed; `workbench.colorTheme` is preserved.
+- [ ] 4.5 **Test: `import-profile.sh strips workbench.iconTheme but preserves workbench.colorTheme when only the icon-theme extension fails`**.
+  - Fixture: `with-tokyo-night-and-iconv.code-profile` — `settings = { "workbench.colorTheme": "Tokyo Night", "workbench.iconTheme": "material-icon-theme" }` and `extensions.enabled = ["enkia.tokyo-night", "pkief.material-icon-theme"]`.
+  - Setup: `FAILING_EXTS=pkief.material-icon-theme`.
+  - Assert: `workbench.iconTheme` is absent from the post-import settings; `workbench.colorTheme` is preserved.
 
-- [ ] 4.6 **Test: built-in theme value (unrecognised by the map) is NEVER stripped** (covers the "Theme value is unrecognised" spec scenario).
-  - Fixture: `settings = { "workbench.colorTheme": "Default Dark Modern" }` and `extensions.enabled = ["github.copilot"]`.
-  - Setup: `FAILING_EXTS=github.copilot` (a non-theme extension fails).
-  - Assert: `workbench.colorTheme` is preserved (value isn't in the resolution map; presumed built-in). Script still exits 1 because some install failed. No "removed workbench.colorTheme" stderr line.
+- [ ] 4.6 **Test: `import-profile.sh preserves a built-in theme name when an unrelated extension fails`** (covers the "Theme value is unrecognised" spec scenario).
+  - Fixture: `with-builtin-theme.code-profile` — `settings = { "workbench.colorTheme": "Default Dark Modern" }` and `extensions.enabled = ["github.copilot"]`.
+  - Setup: `FAILING_EXTS=github.copilot`.
+  - Assert: `workbench.colorTheme` is preserved (value not in the resolution map; presumed built-in). Script exits 1 because the install failed. No "removed workbench.colorTheme" line on stderr.
 
-- [ ] 4.7 **Test: happy path is byte-identical** (the inverse — guards against the rewrite firing on success).
-  - Fixture: same as §4.4 but `FAILING_EXTS=` (empty).
-  - Assert: post-import `<vscode>/profiles/<id>/settings.json` is **byte-equal** to the bundle's `settings` block (extracted via `jq '.settings'` and compared). `[ "$status" -eq 0 ]`. No "removed" stderr lines.
+- [ ] 4.7 **Test: `import-profile.sh produces a byte-identical settings.json on the happy path`** (the inverse — guards against the rewrite firing when no extensions failed).
+  - Fixture: `with-tokyo-night.code-profile`. `FAILING_EXTS=` empty.
+  - Assert: post-import `<vscode>/profiles/<id>/settings.json` is byte-equal to the bundle's `settings` block (extracted via `jq '.settings'` and compared). `[ "$status" -eq 0 ]`. No "removed" stderr lines.
 
-- [ ] 4.8 **Test: theme extension explicit-ID form resolves** (covers spec rule 1: `<publisher>.<name>` accepted directly without label-table lookup).
-  - Fixture: `settings = { "workbench.colorTheme": "enkia.tokyo-night" }` (the explicit form, not the label).
+- [ ] 4.8 **Test: `import-profile.sh strips a theme key whose value is an explicit publisher.name extension ID`** (covers spec rule 1).
+  - Fixture: `with-explicit-id-theme.code-profile` — `settings = { "workbench.colorTheme": "enkia.tokyo-night" }`.
   - Setup: `FAILING_EXTS=enkia.tokyo-night`.
-  - Assert: key is stripped (the explicit-ID form took the "rule 1" path in `resolve_theme_to_ext_id`).
+  - Assert: key is stripped. This proves the explicit-ID form took the "rule 1" path in `resolve_theme_to_ext_id` (no label-table lookup needed).
 
 ## 5. Shell-authoring conventions (all script edits)
 
