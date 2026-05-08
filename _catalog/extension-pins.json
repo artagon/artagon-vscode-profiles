@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "comment": "VSIX pin manifest. See scripts/lib/vsix-pin.sh and openspec/changes/harden-extension-supply-chain/. Each pin entry: { version, sha256 (hex of marketplace VSIX), vsix_url (direct download). } Bypass: ARTAGON_VSCODE_BYPASS_PINS=1.",
+  "pins": {}
+}

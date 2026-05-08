@@ -1,0 +1,13 @@
+// UX preset: crisp
+// Mechanically derived from `_shared/editor-{crisp,retina}.jsonc` — every key whose
+// value differs between the two. CI gate enforces both presets carry identical key sets.
+{
+  "workbench.colorTheme": "Tokyo Night",
+  "workbench.preferredDarkColorTheme": "Tokyo Night",
+  "workbench.iconTheme": "material-icon-theme",
+  "workbench.fontAliasing": "auto",
+  "workbench.tree.indent": 14,
+  "terminal.integrated.fontSize": 15,
+  "editor.fontSize": 15,
+  "editor.lineHeight": 1.65
+}

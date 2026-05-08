@@ -14,7 +14,7 @@ This repository tracks all Visual Studio Code profiles, shared settings, and hel
 - Portable, profile‑based VS Code setup with crisp/retina shared baselines and per‑profile overrides.
 - Web/Astro (TypeScript/JS + HTML/CSS), Java via jenv, Rust, and C/C++ stacks pre‑configured.
 - AI policy: GitHub Copilot + Copilot Chat only (no other assistants).
-- Scripts for validate/compose/export/open/install; exports ready for “Profiles: Import Profile”.
+- Scripts for validate/compose/export/open/install; bundles imported via `scripts/import-profile.sh` (the VS Code UI import does NOT install missing extensions).
 
 ## Behavior Change Notice
 
@@ -27,14 +27,69 @@ Starting with the `harden-profile-tooling-and-pipeline` change:
 
 See [CHANGELOG.md](./CHANGELOG.md) for the complete list of changes.
 
-## Quick Start (First‑Time Users)
+## Quick Start — Import a Profile Bundle
+
+```bash
+bash scripts/import-profile.sh <profile-name> exports/<profile>.code-profile
+```
+
+> **Do not import via the VS Code UI** (Settings → Profiles → Import). The UI import only *enables* extensions that are already installed; it does NOT install missing ones, so themes and icon themes silently fall back to a degraded look. `import-profile.sh` installs every listed extension before VS Code reads the profile.
+
+If a theme or icon-theme extension fails to install (e.g., offline / marketplace down), `import-profile.sh` strips the dangling `workbench.colorTheme` / `workbench.iconTheme` keys before VS Code first reads the profile, so the workbench loads its built-in default theme instead of silently failing on a missing theme name.
+
+## Quick Start (workspace-aware, recommended)
+
+Per the `workspace-toolchain-and-ux-layering` change, `vspcli --detect`
+infers the toolchain from a project root and writes
+`.vscode/{extensions,settings,tasks}.json`:
+
+```bash
+# In any project root with Cargo.toml / package.json+astro.config / pom.xml / etc.
+bash scripts/vspcli --detect --target=workspace --ux=crisp .
+
+# Polyglot stack — both layers compose:
+bash scripts/vspcli --detect --target=workspace --ux=retina /path/to/tauri-repo
+```
+
+Resulting files:
+- `.vscode/extensions.json` — base + toolchain layer recommendations.
+- `.vscode/settings.json` — `_shared/editor-base.jsonc` + UX preset
+  (`_shared/ux/{crisp,retina}.jsonc`) + rust-analyzer hover settings
+  (when rust detected) + rtk terminal profile (`rtk-fish`/`rtk-bash`).
+- `.vscode/tasks.json` — `cargo doc` + strict-docs tasks (when rust detected).
+
+UX overrides on top of (or in lieu of) `--ux`:
+`--font="JetBrains Mono"`, `--font-size=14`, `--theme="GitHub Light"`,
+`--icon-theme=catppuccin-icons`. Skip rtk wiring with `--no-rtk`
+(useful in Restricted Mode / Codespaces).
+
+**Workspace Trust**: on first open of any workspace this CLI configures,
+VS Code prompts for Workspace Trust. Click Trust — the rtk-fish terminal
+profile and the automation profile are silently dropped in Restricted
+Mode. The fish/bash init scripts emit
+`"rtk wrappers active — workspace trust granted"` on first interactive
+shell so you can verify.
+
+**rtk enforcement caveats** (per design.md Decision 6):
+1. `automationProfile` only chooses the shell, not the prefix — tasks
+   in `.vscode/tasks.json` written by the CLI start every `command` with
+   `rtk` literally.
+2. `"type": "process"` tasks bypass the shell entirely (no aliases,
+   no rtk).
+3. Aliases don't propagate into subshells launched from a script
+   (e.g., `bash build.sh` in a task hits raw `cargo`).
+4. `VAR=val cmd` syntax is bash-only; on fish use `rtk env VAR=val cmd`.
+5. `unwantedRecommendations` is suppression, not enforcement.
+
+## Profile Toolkit
+
 - Requirements: VS Code CLI on PATH (`code --version`) and `jq`.
 - Compose + export:
   - `bash scripts/compose-settings.sh && bash scripts/export-profiles.sh`
 - Open a profile without installing extensions (registers it):
-  - `scripts/open-profiles.sh --skip-install web-astro-crisp`
+  - `scripts/open-profiles.sh --skip-install web-astro`
 - Install extensions for a profile:
-  - `bash scripts/install-extensions.sh web-astro-crisp`
+  - `bash scripts/install-extensions.sh web-astro`
 - Tip: `vspcli --open-profiles --skip-install <profiles...>` to open multiple at once.
 
 ### Profiles Overview
@@ -45,6 +100,11 @@ See [CHANGELOG.md](./CHANGELOG.md) for the complete list of changes.
 - AI bundle: `ai-profile-(crisp|retina)` with GitHub Copilot + Copilot Chat only.
 
 ## Profile Matrix
+
+The `(crisp|retina)` in profile names below denotes a **UX preset**
+applied at the workspace layer (`vspcli --detect --ux=<look>`), not
+a separate profile directory. `CR` / `RT` columns link to the
+crisp / retina export bundles.
 
 | Profile | Stack | Extensions | Export (CR/RT) | Notes |
 |---|---|---|---|---|
@@ -61,7 +121,7 @@ See [CHANGELOG.md](./CHANGELOG.md) for the complete list of changes.
 
 ### Downloadable Profile Bundles
 
-Click an Export badge to download the `.code-profile` bundle for easy import in VS Code (Profiles → Import Profile).
+Click an Export badge to download the `.code-profile` bundle, then import it via `bash scripts/import-profile.sh <name> <downloaded-file>`. Avoid the VS Code UI import — it does not install missing extensions.
 
 | Profile | Export |
 |---|---|
@@ -800,7 +860,7 @@ Paths and purpose:
 | `_merged/` | Generated merged settings | Do not edit; created by composer |
 | `profiles/` | Profile manifests | `extensions.json` + `settings.json` symlink into `_merged/` |
 | `scripts/` | Tooling scripts + CLI | compose/export/validate/open/install, git hooks, tests, `vspcli` |
-| `exports/` | Portable bundles | Import via VS Code “Profiles: Import Profile” |
+| `exports/` | Portable bundles | Import via `scripts/import-profile.sh` (UI import does not install missing extensions) |
 | `agents/` | Docs for maintainers/LLMs | Architecture + maintenance workflow |
 | `branding/` | Social preview assets | `social-preview.svg` (export PNG, upload in repo settings) |
 | `.github/` | Repo metadata | Issue/PR templates, CODEOWNERS, FUNDING |
@@ -820,8 +880,8 @@ Scripts quick reference:
 ## Standalone install (non-XDG environments)
 1. Clone the repo wherever it is convenient (no need for `~/.config`). Example: `git clone https://… ~/src/vscode-profiles`.
 2. From that directory, run `bash scripts/validate-json.sh` and `bash scripts/compose-settings.sh` to refresh `_merged/` and recreate the relative `profiles/*/settings.json` links.
-3. Export the profiles you need via `bash scripts/export-profiles.sh` so coworkers can import `exports/<profile>.code-profile` directly inside VS Code (Profiles: Import Profile).
-4. Optionally run `bash scripts/install-extensions.sh <profile>` first so VS Code installs the declared extensions before importing.
+3. Export the profiles you need via `bash scripts/export-profiles.sh` so coworkers can import `exports/<profile>.code-profile` via `bash scripts/import-profile.sh <name> exports/<profile>.code-profile`.
+4. The VS Code UI import (Settings → Profiles → Import) does NOT install missing extensions; recipients should use `scripts/import-profile.sh` instead. If you must seed extensions out of band, `bash scripts/install-extensions.sh <profile>` covers it.
 5. Use CLI helpers via absolute paths (e.g., `~/src/vscode-profiles/scripts/vspcli --list`) or add the repo’s `scripts/` directory to `$PATH`. No additional environment variables or host-level symlinks are required.
 
 ## Common Tasks

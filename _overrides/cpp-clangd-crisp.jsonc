@@ -1,4 +1,0 @@
-{
-  "@extends": ["cpp-clangd-base.jsonc"]
-}
-

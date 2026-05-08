@@ -1,0 +1,26 @@
+{
+  "_comment": "Canonical CLI-emitted Rust doc tasks per design.md Decision 7 + 23. Pinned for BATS rust-docs-settings.bats. The bare-cargo form lives in docs/rust.md §11 (general-audience reference).",
+  "tasks": [
+    {
+      "label": "rust: doc",
+      "type": "shell",
+      "command": "rtk cargo doc --workspace --all-features --no-deps",
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "rust: doc strict",
+      "type": "shell",
+      "command": "rtk env RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps",
+      "problemMatcher": "$rustc"
+    }
+  ],
+  "settings": {
+    "rust-analyzer.hover.actions.enable": true,
+    "rust-analyzer.hover.documentation.enable": true,
+    "rust-analyzer.hover.links.enable": true,
+    "rust-analyzer.signatureInfo.documentation.enable": true,
+    "editor.hover.enabled": true,
+    "editor.hover.delay": 300,
+    "editor.parameterHints.enabled": true
+  }
+}

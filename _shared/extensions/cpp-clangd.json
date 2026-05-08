@@ -1,0 +1,52 @@
+[
+  {
+    "identifier": {
+      "id": "fill-labs.dependi"
+    }
+  },
+  {
+    "identifier": {
+      "id": "jeff-hykin.better-cpp-syntax"
+    }
+  },
+  {
+    "identifier": {
+      "id": "llvm-vs-code-extensions.vscode-clangd"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ms-vscode.cmake-tools"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ms-vscode.cpptools"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ms-vsliveshare.vsliveshare"
+    }
+  },
+  {
+    "identifier": {
+      "id": "notskm.clang-tidy"
+    }
+  },
+  {
+    "identifier": {
+      "id": "timonwong.shellcheck"
+    }
+  },
+  {
+    "identifier": {
+      "id": "twxs.cmake"
+    }
+  },
+  {
+    "identifier": {
+      "id": "vadimcn.vscode-lldb"
+    }
+  }
+]

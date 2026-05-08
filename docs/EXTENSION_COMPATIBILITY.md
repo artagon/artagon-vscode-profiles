@@ -2,6 +2,8 @@
 
 This guide explains how to detect and handle incompatible VS Code extensions in your profiles.
 
+> **CLI integration**: as of the `workspace-toolchain-and-ux-layering` change, `vspcli --detect --target=workspace` runs this checker automatically before writing `.vscode/extensions.json`. Default mode is `--check-compat=warn` (stderr notice; install proceeds). Set `--check-compat=block` to abort on any incompatibility, or `--check-compat=off` to skip the check entirely. The standalone invocation below is preserved for ad-hoc audits.
+
 ## Quick Start
 
 ### Check All Profiles

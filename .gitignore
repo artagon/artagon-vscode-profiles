@@ -9,3 +9,7 @@ User/sync/
 
 # Per-machine state — never commit
 .cache/
+.claude/settings.local.json
+.claude/settings.json
+.gemini/settings.local.json
+.gemini/settings.json

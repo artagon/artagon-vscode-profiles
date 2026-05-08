@@ -1,0 +1,7 @@
+// UX preset: default (no UX tweaks)
+// Apply with `vspcli --detect --target=workspace --ux=default <PATH>` when
+// you want toolchain-driven settings (rust hover, rtk profile) but NO
+// font/theme/icon-theme overlay — the workspace inherits the user's
+// VS Code User-scope settings + VS Code's built-in defaults for those keys.
+{
+}

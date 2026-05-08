@@ -1,0 +1,13 @@
+// UX preset: retina
+// Mechanically derived from `_shared/editor-{crisp,retina}.jsonc` — every key whose
+// value differs between the two. CI gate enforces both presets carry identical key sets.
+{
+  "workbench.colorTheme": "Catppuccin Mocha",
+  "workbench.preferredDarkColorTheme": "Catppuccin Mocha",
+  "workbench.iconTheme": "catppuccin-icons",
+  "workbench.fontAliasing": "antialiased",
+  "workbench.tree.indent": 16,
+  "terminal.integrated.fontSize": 14,
+  "editor.fontSize": 14,
+  "editor.lineHeight": 1.6
+}
