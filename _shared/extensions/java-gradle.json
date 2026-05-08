@@ -1,0 +1,87 @@
+[
+  {
+    "identifier": {
+      "id": "editorconfig.editorconfig"
+    }
+  },
+  {
+    "identifier": {
+      "id": "fill-labs.dependi"
+    }
+  },
+  {
+    "identifier": {
+      "id": "gabrielbb.vscode-lombok"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ms-vsliveshare.vsliveshare"
+    }
+  },
+  {
+    "identifier": {
+      "id": "naco-siren.gradle-language"
+    }
+  },
+  {
+    "identifier": {
+      "id": "pmd.pmd"
+    }
+  },
+  {
+    "identifier": {
+      "id": "redhat.java"
+    }
+  },
+  {
+    "identifier": {
+      "id": "redhat.vscode-xml"
+    }
+  },
+  {
+    "identifier": {
+      "id": "richardwillis.vscode-gradle"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ryanluker.vscode-coverage-gutters"
+    }
+  },
+  {
+    "identifier": {
+      "id": "shengchen.vscode-checkstyle"
+    }
+  },
+  {
+    "identifier": {
+      "id": "timonwong.shellcheck"
+    }
+  },
+  {
+    "identifier": {
+      "id": "vscjava.vscode-gradle"
+    }
+  },
+  {
+    "identifier": {
+      "id": "vscjava.vscode-java-debug"
+    }
+  },
+  {
+    "identifier": {
+      "id": "vscjava.vscode-java-dependency"
+    }
+  },
+  {
+    "identifier": {
+      "id": "vscjava.vscode-java-pack"
+    }
+  },
+  {
+    "identifier": {
+      "id": "vscjava.vscode-java-test"
+    }
+  }
+]

@@ -291,3 +291,22 @@ done
 [ "${#mismatched[@]}" -eq 0 ] || fail "Workspace Trust value not 'prompt' in: ${mismatched[*]}"
 
 log "All script tests passed."
+
+# --- BATS suite ---
+log "==> Running BATS suite (scripts/tests/bats/*.bats)..."
+if ! command -v bats >/dev/null 2>&1; then
+  log "WARN: bats not on PATH; skipping BATS suite (install: brew install bats-core)"
+  exit 0
+fi
+
+bats_files=("$ROOT"/scripts/tests/bats/*.bats)
+if [ ${#bats_files[@]} -eq 0 ]; then
+  log "no BATS files under scripts/tests/bats/"
+  exit 0
+fi
+
+if ! bats "${bats_files[@]}"; then
+  fail "BATS suite failed"
+fi
+
+log "All BATS tests passed."

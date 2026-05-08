@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased — `workspace-toolchain-and-ux-layering`
+
+### Changed (BREAKING — catalog reshape)
+
+- Profile catalog collapsed from 22 dirs to 11. `<flavor>-{crisp,retina}` directories renamed to `<flavor>` (e.g., `rust-profile-crisp` → `rust`, `web-astro-crisp` → `astro`, `ai-profile-crisp` → `ai`). The 11 surviving flavors: `rust`, `astro`, `java-maven`, `java-gradle`, `java-spring`, `cpp-clangd`, `cpp-intellisense`, `ai`, `ai-plus`, `github-workflows`, `general`. Run `vspcli --migrate-catalog` once to perform the rename + regenerate `_merged/`, `exports/`, and `_overrides/`.
+- UX (font, color theme, icon theme) moved from profile baseline (`_shared/editor-{crisp,retina}.jsonc`) to a workspace overlay (`_shared/ux/{crisp,retina}.jsonc`). Apply via `vspcli --detect --target=workspace --ux=<crisp|retina>` or raw `--font/--font-size/--theme/--icon-theme` flags. Profiles themselves are now UX-agnostic.
+- Non-UX shared keys (telemetry, update mode, autoFetch, format-on-save, GPU acceleration, ~65 total) extracted to `_shared/editor-base.jsonc` and merged into every `_merged/<flavor>.json`.
+- AI extensions consolidated into `_shared/extensions/{ai,ai-plus}.json` only. Toolchain layers (`rust.json`, `cpp-clangd.json`, etc.) no longer ship Copilot/Claude/Continue. Users wanting AI in non-AI workspaces pass `--toolchain rust --toolchain ai`.
+
+### Added
+
+- `vspcli --detect [PATH]` — workspace toolchain detection from signals (`Cargo.toml` → rust, `package.json` + `astro.config.*` → astro, `pom.xml` → java-maven, `build.gradle*` + `*Application.java`@SpringBootApplication → java-spring, `CMakeLists.txt` + `.clangd` → cpp-clangd, etc.). Stacks polyglot layers; `--toolchain <flavor>` overrides; `--no-detect` disables; `--json` emits structured output.
+- `vspcli --detect --target=workspace [--ux=PRESET] [--font=...] [--no-rtk]` writes `.vscode/{extensions,settings,tasks}.json`: extensions as `recommendations` (set-union with existing), settings = editor-base + UX overlay + rust hover (when rust detected) + rtk terminal profile, tasks = rust doc tasks (when rust detected).
+- `_shared/extensions/{base,<flavor>}.json` — layered extension lists. `scripts/lib/compose-extensions.sh` produces the composed install list (base + each toolchain layer, deduplicated).
+- `scripts/lib/jsonc-merge.sh` — key-level JSONC merge helper. Strips comments via `scripts/lib/jsonc-strip.awk`, deep-merges via `jq`, preserves the leading file-comment block as a string prefix on write-back. Interior comments are NOT preserved (documented non-goal); `.bak` sibling written on first merge into a comment-bearing file.
+- `scripts/lib/legacy-profile-name.sh` — resolves `<flavor>-{crisp,retina}` legacy names to `<flavor>` plus implied `--ux=<look>`. Sourced from `vspcli` and `install-extensions.sh` so direct script callers also get the soft-landing. Rate-limited deprecation warning (once per process tree); `ARTAGON_VSCODE_DEPRECATION_ACK=1` suppresses; `ARTAGON_VSCODE_DEPRECATION_SUMMARY=1` defers to an end-of-run summary.
+- `_shared/rtk/rtk-init.{fish,bash}` — function-based wrappers routing common commands (`rg`, `grep`, `find`, `git`, `cargo`, `npm`, etc.) through `rtk <cmd>`. Sourced by VS Code's `rtk-fish` / `rtk-bash` terminal profiles. Process-local re-wrap guard (children get their own wrappers when rtk is on PATH there). Workspace Trust diagnostic line printed on interactive shell start.
+- Rust API documentation auto-wired for any rust-detected workspace: rust-analyzer hover/signature settings (per `docs/rust.md` §2) written to `.vscode/settings.json`; two `cargo doc` tasks (rtk-prefixed) written to `.vscode/tasks.json`. The "Documentation Policy" block (per `docs/rust.md` §12) is appended (between sentinels) to `AGENTS.md`, `CLAUDE.md`, `CODEX.md`, `GEMINI.md` via `scripts/lib/apply-rust-policy.sh`. CI staleness gate prevents drift.
+- `scripts/migrate-catalog.sh` (`vspcli --migrate-catalog`): one-shot, idempotent migration. Modes: default (run), `--doctor` (detect partial state), `--finalize` (remove deprecation symlinks post-deprecation). `mkdir`-based lock prevents concurrent invocations; backup written to `.cache/migrate-catalog-backup-<pid>/`. Legacy bundle filenames (`exports/<flavor>-{crisp,retina}.code-profile`) replaced with symlinks to canonical `<flavor>.code-profile` so external bookmarks continue to resolve through the deprecation window.
+- **Curated theme + font picks** (research-driven, all on Open VSX so Cursor/Windsurf-compatible): added 7 new theme/icon extensions to `_shared/extensions/base.json` — `GitHub.github-vscode-theme` (official GitHub palettes), `mvllow.rose-pine` (Rosé Pine + Moon + Dawn), `fawwazfirdaus.poimandres-darker` (Pmndrs/Theatre.js community), `monokai.theme-monokai-pro-vscode` (free filter-octagon variant), `teabyii.ayu` (Light/Mirage/Dark), `liviuschera.noctis` (12 variants in one package), `miguelsolorio.symbols` (minimal line-art icons by VS Code core engineer). Existing themes preserved (Tokyo Night, Catppuccin, Dracula, One Dark Pro, Night Owl, Material Icon Theme, Catppuccin Icons, vscode-icons).
+- **Updated font fallback chains** in `_shared/editor-base.jsonc` to add modern free fonts: `editor.fontFamily` now `'JetBrains Mono', 'Monaspace Neon', 'Fira Code', 'Cascadia Code', 'Iosevka', 'IBM Plex Mono', Menlo, monospace` (Monaspace adds GitHub Next's texture-healing tech; IBM Plex Mono adds CJK fallback). `terminal.integrated.fontFamily` adds Nerd Font variants for Monaspace/FiraCode/CaskaydiaCove/Iosevka. Paid fonts (Berkeley Mono, MonoLisa, Operator Mono, Comic Code) deliberately NOT in defaults — opt-in via `--font` flag with documented marketplace vendors.
+- **Added `--ux=default` preset** alongside crisp/retina. Empty `_shared/ux/default.jsonc` overlays no keys, so the workspace inherits the user's VS Code User-scope settings + VS Code's built-in defaults for font/theme/iconTheme. Use when toolchain-driven settings (rust hover, rtk profile) are wanted but UX should be left untouched.
+
+### Deprecated
+
+- Legacy profile names (`<flavor>-crisp`, `<flavor>-retina`) resolve to `<flavor>` + implied `--ux=<look>` for one release with rate-limited deprecation warning. Removed in the release after.
+- `java-profile` flavor dropped; legacy `java-profile-{crisp,retina}` aliases to `java-maven`.
+
 ## Unreleased — `harden-profile-tooling-and-pipeline`
 
 ### Security (BREAKING)

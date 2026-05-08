@@ -53,7 +53,8 @@ list_profiles() {
 }
 
 profiles_space_list() {
-  list_profiles | paste -sd ' '
+  # macOS BSD paste requires a file arg; use tr for portability.
+  list_profiles | tr '\n' ' ' | sed 's/ $//'
 }
 
 open_profile() {
@@ -138,25 +139,37 @@ print_completion() {
 _vspcli_completions() {
   local cur prev
   COMPREPLY=()
-  cur="${COMP_WORDS[COMP_CWORD]:-}"
-  prev="${COMP_WORDS[COMP_CWORD-1]:-}"
-  local opts="--help --list --open --install --install-ext --install-groups --compose --export --open-profiles --skip-install --profile-import"
+  cur="\${COMP_WORDS[COMP_CWORD]:-}"
+  prev="\${COMP_WORDS[COMP_CWORD-1]:-}"
+  local opts="--help --list --open --install --install-ext --install-groups --compose --export --open-profiles --skip-install --profile-import --detect --target --ux --font --font-size --theme --icon-theme --migrate-catalog --toolchain --no-detect --no-rtk --check-compat --dry-run"
   local profiles="$profiles"
-  if [[ $cur == -* ]]; then
-    COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
+  if [[ \$cur == -* ]]; then
+    COMPREPLY=( \$(compgen -W "\$opts" -- "\$cur") )
     return 0
   fi
-  case $prev in
+  case \$prev in
     --open)
-      COMPREPLY=( $(compgen -W "$profiles" -- "$cur") )
+      COMPREPLY=( \$(compgen -W "\$profiles" -- "\$cur") )
       return 0
       ;;
-    --install|--install-ext|--install-groups)
-      COMPREPLY=( $(compgen -W "$profiles" -- "$cur") )
+    --install|--install-ext|--install-groups|--toolchain)
+      COMPREPLY=( \$(compgen -W "\$profiles" -- "\$cur") )
+      return 0
+      ;;
+    --ux)
+      COMPREPLY=( \$(compgen -W "crisp retina default" -- "\$cur") )
+      return 0
+      ;;
+    --target)
+      COMPREPLY=( \$(compgen -W "workspace profile global" -- "\$cur") )
+      return 0
+      ;;
+    --check-compat)
+      COMPREPLY=( \$(compgen -W "block warn off" -- "\$cur") )
       return 0
       ;;
     --compose|--export|--open-profiles|--profile-import)
-      COMPREPLY=( $(compgen -W "$profiles" -- "$cur") )
+      COMPREPLY=( \$(compgen -W "\$profiles" -- "\$cur") )
       return 0
       ;;
   esac
@@ -218,6 +231,76 @@ fi
 action_taken=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --detect)
+      shift
+      detect_args=()
+      install_args=()
+      target=""
+      workspace_path=""
+      no_install=0
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --toolchain)
+            detect_args+=("--toolchain" "$2"); shift 2 ;;
+          --toolchain=*)
+            detect_args+=("--toolchain" "${1#*=}"); shift ;;
+          --no-detect|--json)
+            detect_args+=("$1"); shift ;;
+          --target=*)
+            target="${1#*=}"; shift ;;
+          --target)
+            target="$2"; shift 2 ;;
+          --ux=*|--font=*|--font-size=*|--theme=*|--icon-theme=*|--check-compat=*)
+            install_args+=("$1"); shift ;;
+          --ux|--font|--font-size|--theme|--icon-theme|--check-compat)
+            install_args+=("$1" "$2"); shift 2 ;;
+          --no-rtk|--dry-run)
+            install_args+=("$1"); shift ;;
+          --no-install)
+            no_install=1; shift ;;
+          -*)
+            break ;;
+          *)
+            if [[ -z "$workspace_path" ]]; then
+              workspace_path="$1"
+              detect_args+=("$1")
+            fi
+            shift
+            ;;
+        esac
+      done
+      detected=$(bash "$SCRIPT_DIR/detect-toolchain.sh" "${detect_args[@]}")
+      detect_status=$?
+      if [[ $detect_status -ne 0 ]]; then
+        exit $detect_status
+      fi
+      if [[ -z "$target" ]] || [[ $no_install -eq 1 ]]; then
+        # Detection-only: emit toolchain list and stop.
+        echo "$detected"
+      elif [[ "$target" == "workspace" ]]; then
+        ws="${workspace_path:-$PWD}"
+        # Pass detected toolchains as positional args.
+        # shellcheck disable=SC2086
+        bash "$SCRIPT_DIR/install-workspace.sh" "$ws" "${install_args[@]}" $detected
+      else
+        echo "error: --target=$target not yet wired into --detect (workspace only this round)" >&2
+        exit 4
+      fi
+      action_taken=1
+      ;;
+    --migrate-catalog)
+      shift
+      mc_args=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --doctor|--finalize) mc_args+=("$1"); shift ;;
+          -*) break ;;
+          *) shift ;;
+        esac
+      done
+      bash "$SCRIPT_DIR/migrate-catalog.sh" "${mc_args[@]}"
+      action_taken=1
+      ;;
     -l|--list)
       list_profiles
       action_taken=1

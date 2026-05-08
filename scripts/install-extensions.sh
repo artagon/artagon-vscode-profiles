@@ -2,8 +2,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALL_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=lib/extension-id.sh
 source "$SCRIPT_DIR/lib/extension-id.sh"
+# shellcheck source=lib/vsix-pin.sh
+source "$SCRIPT_DIR/lib/vsix-pin.sh"
+INSTALL_PINS_FILE="$(pins_file_path "$INSTALL_REPO_ROOT")"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required for install-extensions.sh" >&2
@@ -23,6 +27,8 @@ fi
 
 PROFILE=""
 GROUP_FILTER=()
+TARGET="profile"   # profile | global (workspace handled by install-workspace.sh)
+DRY_RUN=0
 
 normalize_group() {
   local g
@@ -41,6 +47,28 @@ normalize_group() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --target=*)
+      TARGET="${1#*=}"
+      case "$TARGET" in
+        profile|global) ;;
+        workspace) echo "Use install-workspace.sh for --target=workspace" >&2; exit 4 ;;
+        *) echo "Unknown --target=$TARGET (valid: profile, global)" >&2; exit 4 ;;
+      esac
+      shift
+      ;;
+    --target)
+      TARGET="$2"
+      case "$TARGET" in
+        profile|global) ;;
+        workspace) echo "Use install-workspace.sh for --target=workspace" >&2; exit 4 ;;
+        *) echo "Unknown --target $TARGET (valid: profile, global)" >&2; exit 4 ;;
+      esac
+      shift 2
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
     --group|--groups)
       if [ "$#" -lt 2 ]; then
         echo "Error: $1 requires a value" >&2
@@ -75,6 +103,19 @@ if [ -z "$PROFILE" ]; then
 fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Source legacy-name shim (per design.md Decision 21) so direct script
+# callers also resolve `<flavor>-{crisp,retina}` names with deprecation
+# warning. Best-effort: shim missing → behave as before.
+if [ -f "$ROOT/scripts/lib/legacy-profile-name.sh" ]; then
+  # shellcheck source=lib/legacy-profile-name.sh
+  . "$ROOT/scripts/lib/legacy-profile-name.sh"
+  resolved=$(resolve_legacy_profile_name "$PROFILE")
+  if [ -n "$resolved" ]; then
+    # resolved="<flavor> <ux>"; strip ux for install path (UX is workspace-applied)
+    PROFILE="${resolved%% *}"
+  fi
+fi
 
 GROUP_ARGS=()
 if [ "${#GROUP_FILTER[@]}" -gt 0 ]; then
@@ -186,10 +227,51 @@ install_group() {
       printf '\n=== %s extensions ===\n' "$group"
       printed=1
     fi
-    echo "Installing $entry_ext for profile $PROFILE"
-    if ! code --profile "$PROFILE" --install-extension "$entry_ext" >/dev/null; then
-      echo "Warning: failed to install $entry_ext" >&2
-      FAILED_EXTS+=("$entry_ext")
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+      if [ "$TARGET" = "global" ]; then
+        echo "DRY-RUN: would install $entry_ext globally (no --profile flag)"
+      else
+        echo "DRY-RUN: would install $entry_ext into profile $PROFILE"
+      fi
+      continue
+    fi
+
+    install_target="$entry_ext"
+    if ! bypass_pins_active; then
+      pin_data="$(lookup_pin "$entry_ext" "$INSTALL_PINS_FILE")"
+      if [ -n "$pin_data" ]; then
+        pin_sha256="$(printf '%s' "$pin_data" | sed -n '2p')"
+        pin_url="$(printf '%s' "$pin_data" | sed -n '3p')"
+        : "${VSIX_CACHE_DIR:=$(mktemp -d -t vsix-pin-XXXXXX)}"
+        # Lazy trap install — only when we actually create the cache dir.
+        if [ "${_vsix_cache_trapped:-0}" != "1" ]; then
+          # shellcheck disable=SC2064
+          trap "rm -rf '$VSIX_CACHE_DIR'" EXIT
+          _vsix_cache_trapped=1
+        fi
+        vsix_path="$VSIX_CACHE_DIR/${entry_ext}.vsix"
+        if fetch_and_verify_vsix "$entry_ext" "$pin_url" "$pin_sha256" "$vsix_path"; then
+          install_target="$vsix_path"
+        else
+          FAILED_EXTS+=("$entry_ext")
+          sleep "$DELAY"
+          continue
+        fi
+      fi
+    fi
+    if [ "$TARGET" = "global" ]; then
+      echo "Installing $entry_ext globally"
+      if ! code --install-extension "$install_target" >/dev/null; then
+        echo "Warning: failed to install $entry_ext" >&2
+        FAILED_EXTS+=("$entry_ext")
+      fi
+    else
+      echo "Installing $entry_ext for profile $PROFILE"
+      if ! code --profile "$PROFILE" --install-extension "$install_target" >/dev/null; then
+        echo "Warning: failed to install $entry_ext" >&2
+        FAILED_EXTS+=("$entry_ext")
+      fi
     fi
     sleep "$DELAY"
   done

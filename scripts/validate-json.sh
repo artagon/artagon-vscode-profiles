@@ -28,13 +28,36 @@ if [ "${#FILES[@]}" -eq 0 ]; then
   exit 0
 fi
 
+STRIP_AWK="$ROOT/scripts/lib/jsonc-strip.awk"
+
 failed=0
 for file in "${FILES[@]}"; do
-  if ! jq . "$file" >/dev/null 2>"$TMPDIR/validate-json.err.$$"; then
-    echo "validate-json: FAILED: $file" >&2
-    cat "$TMPDIR/validate-json.err.$$" >&2 || true
-    failed=1
-  fi
+  case "$file" in
+    *.jsonc)
+      # JSONC: strip comments + trailing commas before piping to jq.
+      if [ -f "$STRIP_AWK" ]; then
+        if ! awk -f "$STRIP_AWK" "$file" | jq . >/dev/null 2>"$TMPDIR/validate-json.err.$$"; then
+          echo "validate-json: FAILED: $file" >&2
+          cat "$TMPDIR/validate-json.err.$$" >&2 || true
+          failed=1
+        fi
+      else
+        # Fallback: try jq directly (will fail if comments present).
+        if ! jq . "$file" >/dev/null 2>"$TMPDIR/validate-json.err.$$"; then
+          echo "validate-json: FAILED: $file (no jsonc-strip.awk available)" >&2
+          cat "$TMPDIR/validate-json.err.$$" >&2 || true
+          failed=1
+        fi
+      fi
+      ;;
+    *)
+      if ! jq . "$file" >/dev/null 2>"$TMPDIR/validate-json.err.$$"; then
+        echo "validate-json: FAILED: $file" >&2
+        cat "$TMPDIR/validate-json.err.$$" >&2 || true
+        failed=1
+      fi
+      ;;
+  esac
 done
 rm -f "$TMPDIR/validate-json.err.$$" 2>/dev/null || true
 

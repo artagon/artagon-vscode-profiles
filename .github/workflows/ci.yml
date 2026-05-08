@@ -17,10 +17,10 @@ jobs:
         # risk from a moved tag. Update the SHA when bumping versions.
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install jq and openssl
+      - name: Install jq, openssl, bats, fish
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y jq openssl
+          sudo apt-get install -y jq openssl bats fish
 
       - name: Regenerate merged settings and exports
         run: |

@@ -1,0 +1,128 @@
+{
+  "workbench.colorTheme": "Tokyo Night",
+  "workbench.preferredDarkColorTheme": "Tokyo Night",
+  "workbench.iconTheme": "material-icon-theme",
+  "workbench.fontAliasing": "auto",
+  "workbench.list.smoothScrolling": true,
+  "workbench.tree.indent": 14,
+  "workbench.tree.renderIndentGuides": "always",
+  "workbench.tree.expandMode": "doubleClick",
+  "workbench.sideBar.location": "right",
+  "window.commandCenter": true,
+  "window.titleBarStyle": "custom",
+  "window.nativeTabs": true,
+  "window.autoDetectHighContrast": true,
+  "update.mode": "manual",
+  "update.showReleaseNotes": false,
+  "extensions.autoUpdate": true,
+  "extensions.ignoreRecommendations": true,
+  "extensions.autoCheckUpdates": false,
+  "workbench.startupEditor": "none",
+  "workbench.tips.enabled": false,
+  "workbench.welcomePage.walkthroughs.openOnInstall": false,
+  "terminal.integrated.gpuAcceleration": "on",
+  "terminal.integrated.smoothScrolling": true,
+  "terminal.integrated.fontFamily": "'JetBrainsMono Nerd Font', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Iosevka', Menlo, monospace",
+  "terminal.integrated.fontSize": 15,
+  "terminal.integrated.lineHeight": 1.2,
+  "terminal.integrated.minimumContrastRatio": 4.5,
+  "editor.fontFamily": "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Iosevka', Menlo, monospace",
+  "editor.fontLigatures": true,
+  "editor.fontVariations": true,
+  "editor.fontSize": 15,
+  "editor.lineHeight": 1.65,
+  "editor.fontWeight": "500",
+  "editor.cursorSmoothCaretAnimation": "on",
+  "editor.cursorBlinking": "expand",
+  "editor.smoothScrolling": true,
+  "editor.hover.enabled": true,
+  "editor.hover.delay": 200,
+  "editor.hover.showDefinitionPreview": true,
+  "editor.guides.bracketPairs": true,
+  "editor.guides.highlightActiveIndentation": true,
+  "editor.guides.indentation": true,
+  "editor.linkedEditing": true,
+  "editor.renderLineHighlight": "all",
+  "editor.renderWhitespace": "selection",
+  "editor.minimap.enabled": true,
+  "editor.minimap.renderCharacters": false,
+  "editor.inlineSuggest.enabled": true,
+  "editor.codeLens": true,
+  "editor.inlayHints.enabled": "on",
+  "editor.quickSuggestions": {
+    "other": true,
+    "comments": false,
+    "strings": true
+  },
+  "editor.quickSuggestionsDelay": 50,
+  "editor.suggest.preview": true,
+  "editor.suggest.showStatusBar": true,
+  "editor.suggest.localityBonus": true,
+  "editor.suggest.shareSuggestSelections": true,
+  "editor.parameterHints.enabled": true,
+  "editor.parameterHints.cycle": true,
+  "editor.stickyTabStops": true,
+  "editor.tabSize": 2,
+  "editor.bracketPairColorization.enabled": true,
+  "editor.accessibilitySupport": "off",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "git.autofetch": true,
+  "git.confirmSync": false,
+  "security.workspace.trust.untrustedFiles": "prompt",
+  "breadcrumbs.enabled": true,
+  "explorer.confirmDragAndDrop": false,
+  "explorer.compactFolders": false,
+  "explorer.decorations.colors": true,
+  "explorer.decorations.badges": true,
+  "telemetry.telemetryLevel": "off",
+  "$schema": "https://json.schemastore.org/vscode-settings",
+  "java.import.gradle.enabled": true,
+  "java.import.maven.enabled": true,
+  "java.test.defaultConfig": "SpringBoot",
+  "java.test.config": {
+    "name": "SpringBoot",
+    "workingDirectory": "${workspaceFolder}",
+    "vmArgs": [
+      "-ea",
+      "-Dspring.profiles.active=test",
+      "-Dspring.test.constructor.autowire.mode=all"
+    ],
+    "args": []
+  },
+  "java.test.editor.enableShortcuts": true,
+  "spring-boot.ls.java.home": "${command:jenv.javaHome}",
+  "spring-boot.ls.java.vmargs": [
+    "-Xms256m",
+    "-Xmx2G"
+  ],
+  "spring.initializr.serviceUrl": "https://start.spring.io",
+  "files.associations": {
+    "*.jsp": "jsp",
+    "application*.yml": "yaml",
+    "application*.yaml": "yaml",
+    "bootstrap*.yml": "yaml"
+  },
+  "yaml.customTags": [
+    "!Ref",
+    "!Sub"
+  ],
+  "yaml.schemas": {
+    "https://json.schemastore.org/spring-configuration-metadata.json": [
+      "application*.yml",
+      "application*.yaml",
+      "bootstrap*.yml"
+    ]
+  },
+  "[yaml]": {
+    "editor.defaultFormatter": "redhat.vscode-yaml",
+    "editor.formatOnSave": true
+  },
+  "[properties]": {
+    "editor.defaultFormatter": "vscode.json-language-features"
+  },
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml",
+    "editor.formatOnSave": true
+  }
+}

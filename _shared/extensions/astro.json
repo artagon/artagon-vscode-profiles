@@ -1,0 +1,67 @@
+[
+  {
+    "identifier": {
+      "id": "astro-build.astro-vscode"
+    }
+  },
+  {
+    "identifier": {
+      "id": "bradlc.vscode-tailwindcss"
+    }
+  },
+  {
+    "identifier": {
+      "id": "christian-kohler.npm-intellisense"
+    }
+  },
+  {
+    "identifier": {
+      "id": "christian-kohler.path-intellisense"
+    }
+  },
+  {
+    "identifier": {
+      "id": "clinyong.vscode-css-modules"
+    }
+  },
+  {
+    "identifier": {
+      "id": "dbaeumer.vscode-eslint"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ecmel.vscode-html-css"
+    }
+  },
+  {
+    "identifier": {
+      "id": "eg2.vscode-npm-script"
+    }
+  },
+  {
+    "identifier": {
+      "id": "esbenp.prettier-vscode"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ms-vsliveshare.vsliveshare"
+    }
+  },
+  {
+    "identifier": {
+      "id": "naumovs.color-highlight"
+    }
+  },
+  {
+    "identifier": {
+      "id": "pranaygp.vscode-css-peek"
+    }
+  },
+  {
+    "identifier": {
+      "id": "stylelint.vscode-stylelint"
+    }
+  }
+]

@@ -1,0 +1,17 @@
+[
+  {
+    "identifier": {
+      "id": "editorconfig.editorconfig"
+    }
+  },
+  {
+    "identifier": {
+      "id": "esbenp.prettier-vscode"
+    }
+  },
+  {
+    "identifier": {
+      "id": "timonwong.shellcheck"
+    }
+  }
+]

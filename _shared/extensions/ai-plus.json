@@ -1,0 +1,22 @@
+[
+  {
+    "identifier": {
+      "id": "continue.continue"
+    }
+  },
+  {
+    "identifier": {
+      "id": "github.copilot"
+    }
+  },
+  {
+    "identifier": {
+      "id": "github.copilot-chat"
+    }
+  },
+  {
+    "identifier": {
+      "id": "sourcegraph.cody-ai"
+    }
+  }
+]

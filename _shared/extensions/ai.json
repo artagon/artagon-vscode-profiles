@@ -1,0 +1,12 @@
+[
+  {
+    "identifier": {
+      "id": "github.copilot"
+    }
+  },
+  {
+    "identifier": {
+      "id": "github.copilot-chat"
+    }
+  }
+]

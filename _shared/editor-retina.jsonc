@@ -35,7 +35,7 @@
   "editor.fontVariations": true,
   "editor.fontSize": 14,
   "editor.lineHeight": 1.6,
-  "editor.fontWeight": "400",
+  "editor.fontWeight": "500",
   "editor.cursorSmoothCaretAnimation": "on",
   "editor.cursorBlinking": "expand",
   "editor.smoothScrolling": true,

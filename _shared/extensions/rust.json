@@ -1,0 +1,47 @@
+[
+  {
+    "identifier": {
+      "id": "BarbossHack.crates-io"
+    }
+  },
+  {
+    "identifier": {
+      "id": "JScearcy.rust-doc-viewer"
+    }
+  },
+  {
+    "identifier": {
+      "id": "dustypomerleau.rust-syntax"
+    }
+  },
+  {
+    "identifier": {
+      "id": "fill-labs.dependi"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ms-vsliveshare.vsliveshare"
+    }
+  },
+  {
+    "identifier": {
+      "id": "rust-lang.rust-analyzer"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ryanluker.vscode-coverage-gutters"
+    }
+  },
+  {
+    "identifier": {
+      "id": "timonwong.shellcheck"
+    }
+  },
+  {
+    "identifier": {
+      "id": "vadimcn.vscode-lldb"
+    }
+  }
+]
