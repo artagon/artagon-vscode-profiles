@@ -1,0 +1,37 @@
+// Gradle workspace settings (disables Maven import, configures Gradle Build Server + JUnit).
+{
+  "java.project.resourceFilters": ["\\.gradle", "build"],
+  "java.gradle.buildServer.enabled": "on",
+  "java.gradle.buildServer.openBuildOutput": "openOnBuildFailure",
+  "java.import.gradle.enabled": true,
+  "java.import.gradle.wrapper.enabled": true,
+  "java.import.gradle.annotationProcessing.enabled": true,
+  "java.import.gradle.offline.enabled": false,
+  "java.import.maven.enabled": false,
+  "gradle.autoDetect": "on",
+  "gradle.reuseTerminals": "task",
+  "java.test.config": {
+    "name": "GradleJUnit",
+    "workingDirectory": "${workspaceFolder}",
+    "vmArgs": ["-ea"],
+    "args": []
+  },
+  "java.test.defaultConfig": "GradleJUnit",
+  "files.watcherExclude": {
+    "**/build/**": true,
+    "**/.gradle/**": true
+  },
+  "search.exclude": {
+    "**/build/**": true,
+    "**/.gradle/**": true
+  },
+  "[groovy]": {
+    "editor.tabSize": 4
+  },
+  "[gradle]": {
+    "editor.tabSize": 4
+  },
+  "[gradle-kotlin-dsl]": {
+    "editor.tabSize": 4
+  }
+}

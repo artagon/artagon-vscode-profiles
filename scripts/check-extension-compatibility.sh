@@ -1,341 +1,512 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-# check-extension-compatibility.sh
-# Checks VS Code extensions for compatibility with the current VS Code version.
+# check-extension-compatibility.sh — Marketplace & VS Code engine compatibility audit.
+# Pure Bash 3.2 + jq + curl.
 #
 # Exit codes:
-#   0  clean run, no findings
-#   1  findings present (incompatible or unknown extensions)
-#   2  CLI misuse (unknown flag, missing dependency, version detection failure)
+#   0 — all audited extensions are compatible
+#   1 — one or more extensions are incompatible or NOT_FOUND
+#   2 — usage error, missing dependency, or failed VS Code version discovery
+set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VSCODE_VERSION="${VSCODE_VERSION:-$(code --version 2>/dev/null | head -n1 || echo "unknown")}"
-CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/vscode-extension-check"
-CACHE_TTL=3600  # 1 hour cache
+SCRIPT_ROOT="$(CDPATH='' cd -- "$(dirname -- "${0}")/.." && pwd -P)"
+ROOT="${VSPCLI_ROOT:-${SCRIPT_ROOT}}"
+LIB_DIR="${SCRIPT_ROOT}/scripts/lib"
+# shellcheck source=scripts/lib/common.sh
+source "${LIB_DIR}/common.sh"
+# shellcheck source=scripts/lib/module-resolver.sh
+source "${LIB_DIR}/module-resolver.sh"
 
-log() { printf '%s\n' "$*"; }
-warn() { printf '\033[33mWARNING:\033[0m %s\n' "$*" >&2; }
-error() { printf '\033[31mERROR:\033[0m %s\n' "$*" >&2; }
-success() { printf '\033[32m✓\033[0m %s\n' "$*"; }
+API_URL="https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery"
+JSON_MODE=0
+MARKETPLACE_ONLY=0
+CHECK_ALL=0
+EXTENSIONS_FILE=""
+VSCODE_VER_OVERRIDE=""
+PROFILES=()
 
 usage() {
-  cat <<EOF
-Usage: $(basename "$0") [OPTIONS] [PROFILE...]
-
-Check VS Code extension compatibility with current VS Code version.
-
-OPTIONS:
-  --all                 Check all profiles
-  --json                Output results as JSON
-  --verbose, -v         Show detailed information
-  --no-cache            Skip cache, fetch fresh data
-  --marketplace-only    Only check Marketplace API (skip installed extensions)
-  --help, -h            Show this help message
-
-EXAMPLES:
-  $(basename "$0") --all
-  $(basename "$0") java-profile-crisp web-astro-crisp
-  $(basename "$0") --json github-workflows-crisp
-
-REQUIREMENTS:
-  - VS Code CLI: code --version
-  - jq: For JSON processing
-  - curl: For Marketplace API queries
+  cat <<'EOF'
+Usage: check-extension-compatibility.sh [options] [profile...]
+Options:
+  --all                      Audit all profiles under profiles/
+  --extensions-file <path>   Audit extension IDs from a file (newline-separated or JSON array)
+  --marketplace-only         Query Marketplace engines without requiring installed local extensions
+  --vscode-version <ver>     Override detected local VS Code version (e.g. 1.147.0)
+  --json                     Emit structured JSON report on stdout
+  -h, --help                 Show help
 EOF
 }
 
-# Parse arguments
-PROFILES=()
-CHECK_ALL=false
-JSON_OUTPUT=false
-VERBOSE=false
-USE_CACHE=true
-MARKETPLACE_ONLY=false
-
 while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --all) CHECK_ALL=true; shift ;;
-    --json) JSON_OUTPUT=true; shift ;;
-    --verbose|-v) VERBOSE=true; shift ;;
-    --no-cache) USE_CACHE=false; shift ;;
-    --marketplace-only) MARKETPLACE_ONLY=true; shift ;;
-    --help|-h) usage; exit 0 ;;
-    -*) error "Unknown option: $1"; usage >&2; exit 2 ;;
-    *) PROFILES+=("$1"); shift ;;
+  case "${1}" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --all)
+      CHECK_ALL=1
+      shift
+      ;;
+    --marketplace-only)
+      MARKETPLACE_ONLY=1
+      shift
+      ;;
+    --json)
+      JSON_MODE=1
+      shift
+      ;;
+    --extensions-file)
+      [[ $# -ge 2 && -n "${2}" ]] || { echo "check-compat: --extensions-file requires a path" >&2; exit 2; }
+      EXTENSIONS_FILE="${2}"
+      shift 2
+      ;;
+    --extensions-file=*)
+      EXTENSIONS_FILE="${1#*=}"
+      [[ -n "${EXTENSIONS_FILE}" ]] || { echo "check-compat: --extensions-file requires a path" >&2; exit 2; }
+      shift
+      ;;
+    --vscode-version)
+      [[ $# -ge 2 && -n "${2}" ]] || { echo "check-compat: --vscode-version requires a value" >&2; exit 2; }
+      VSCODE_VER_OVERRIDE="${2}"
+      shift 2
+      ;;
+    --vscode-version=*)
+      VSCODE_VER_OVERRIDE="${1#*=}"
+      shift
+      ;;
+    -*)
+      printf 'check-compat: unknown option %q\n' "${1}" >&2
+      exit 2
+      ;;
+    *)
+      PROFILES+=("${1}")
+      shift
+      ;;
   esac
 done
 
-# Validate dependencies
-for cmd in code jq curl; do
-  if ! command -v "$cmd" &>/dev/null; then
-    error "Required command not found: $cmd"
-    exit 2
-  fi
-done
-
-# Get VS Code version info
-if [[ "$VSCODE_VERSION" == "unknown" ]]; then
-  error "Cannot detect VS Code version. Ensure 'code' is in PATH."
+if ! command -v jq >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+  echo "check-compat: requires jq and curl on PATH" >&2
   exit 2
 fi
 
-# Parse semantic version
-VSCODE_MAJOR=$(echo "$VSCODE_VERSION" | cut -d. -f1)
-VSCODE_MINOR=$(echo "$VSCODE_VERSION" | cut -d. -f2)
+if [[ "${CHECK_ALL}" -eq 0 && -z "${EXTENSIONS_FILE}" && "${#PROFILES[@]}" -eq 0 ]]; then
+  echo "check-compat: specify --all, --extensions-file <path>, or one or more profile names" >&2
+  exit 2
+fi
 
-[[ "$VERBOSE" == true ]] && log "VS Code version: $VSCODE_VERSION (${VSCODE_MAJOR}.${VSCODE_MINOR})"
+# Detect local VS Code version.
+VSCODE_VER="${VSCODE_VER_OVERRIDE}"
+if [[ -z "${VSCODE_VER}" ]]; then
+  if ! command -v code >/dev/null 2>&1; then
+    echo "check-compat: 'code' CLI not found on PATH (pass --vscode-version to override)" >&2
+    exit 2
+  fi
+  VSCODE_VER="$(code --version 2>/dev/null | awk 'NR == 1 { print; exit }')" || true
+fi
 
-# Setup cache directory
-mkdir -p "$CACHE_DIR"
+if [[ ! "${VSCODE_VER}" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+  printf 'check-compat: unable to determine valid VS Code semver (saw: %q)\n' "${VSCODE_VER}" >&2
+  exit 2
+fi
+VSCODE_VER="${VSCODE_VER%%-*}"
 
-# Get extension metadata from Marketplace API
-get_extension_metadata() {
-  local ext_id="$1"
-  local publisher="${ext_id%%.*}"
-  local name="${ext_id#*.}"
-  local cache_file="$CACHE_DIR/${ext_id}.json"
+# Collect unique lowercased extension IDs to audit.
+AUDIT_IDS=()
+add_id_unique() {
+  local id="${1}"
+  [[ -n "${id}" ]] || return 0
+  local lc
+  lc="$(to_lower "${id}")"
+  local existing
+  for existing in "${AUDIT_IDS[@]+"${AUDIT_IDS[@]}"}"; do
+    [[ "$(to_lower "${existing}")" == "${lc}" ]] && return 0
+  done
+  AUDIT_IDS+=("${id}")
+}
 
-  # Check cache
-  if [[ "$USE_CACHE" == true ]] && [[ -f "$cache_file" ]]; then
-    local cache_age=$(($(date +%s) - $(stat -f %m "$cache_file" 2>/dev/null || stat -c %Y "$cache_file" 2>/dev/null || echo 0)))
-    if [[ $cache_age -lt $CACHE_TTL ]]; then
-      cat "$cache_file"
-      return 0
-    fi
+if [[ -n "${EXTENSIONS_FILE}" ]]; then
+  if [[ ! -f "${EXTENSIONS_FILE}" ]]; then
+    printf 'check-compat: extensions file not found: %s\n' "${EXTENSIONS_FILE}" >&2
+    exit 2
+  fi
+  if jq -e -s 'length == 1 and (.[0] | type == "array")' "${EXTENSIONS_FILE}" >/dev/null 2>&1; then
+    while IFS= read -r id; do
+      add_id_unique "${id}"
+    done < <(jq -r '.[] | if type == "string" then . else .identifier.id // empty end' "${EXTENSIONS_FILE}")
+  else
+    while IFS= read -r id; do
+      id="${id%%#*}"
+      id="$(printf '%s' "${id}" | tr -d '[:space:]')"
+      add_id_unique "${id}"
+    done < "${EXTENSIONS_FILE}"
+  fi
+fi
+
+if [[ "${CHECK_ALL}" -eq 1 ]]; then
+  while IFS= read -r p; do
+    [[ -n "${p}" ]] && PROFILES+=("${p}")
+  done < <(discover_profiles "${ROOT}")
+fi
+
+for p in "${PROFILES[@]+"${PROFILES[@]}"}"; do
+  ef="${ROOT}/profiles/${p}/extensions.json"
+  if [[ ! -f "${ef}" ]]; then
+    printf 'check-compat: missing extensions file for profile %q: %s\n' "${p}" "${ef}" >&2
+    exit 2
+  fi
+  while IFS= read -r id; do
+    add_id_unique "${id}"
+  done < <(jq -r '.[] | .identifier.id // empty' "${ef}")
+done
+
+# Pure Bash 3.2 full semver comparison (major.minor.patch).
+# Prints -1 if a < b, 0 if a == b, 1 if a > b.
+semver_cmp() {
+  local a="${1%%-*}" b="${2%%-*}"
+  local a1 a2 a3 b1 b2 b3
+  IFS='.' read -r a1 a2 a3 <<< "${a}"
+  IFS='.' read -r b1 b2 b3 <<< "${b}"
+  a1="${a1:-0}"; a2="${a2:-0}"; a3="${a3:-0}"
+  b1="${b1:-0}"; b2="${b2:-0}"; b3="${b3:-0}"
+  # Strip non-digits (e.g., x/*) safely.
+  [[ "${a1}" =~ ^[0-9]+$ ]] || a1=0
+  [[ "${a2}" =~ ^[0-9]+$ ]] || a2=0
+  [[ "${a3}" =~ ^[0-9]+$ ]] || a3=0
+  [[ "${b1}" =~ ^[0-9]+$ ]] || b1=0
+  [[ "${b2}" =~ ^[0-9]+$ ]] || b2=0
+  [[ "${b3}" =~ ^[0-9]+$ ]] || b3=0
+  if [[ $((10#${a1})) -ne $((10#${b1})) ]]; then
+    [[ $((10#${a1})) -lt $((10#${b1})) ]] && echo -1 || echo 1
+    return 0
+  fi
+  if [[ $((10#${a2})) -ne $((10#${b2})) ]]; then
+    [[ $((10#${a2})) -lt $((10#${b2})) ]] && echo -1 || echo 1
+    return 0
+  fi
+  if [[ $((10#${a3})) -ne $((10#${b3})) ]]; then
+    [[ $((10#${a3})) -lt $((10#${b3})) ]] && echo -1 || echo 1
+    return 0
+  fi
+  echo 0
+}
+
+# Evaluate a single comparator token (^, ~, >=, >, <=, <, =, *, exact) against VSCODE_VER.
+semver_clause_matches() {
+  local ver="${1}"
+  local clause="${2}"
+  clause="${clause#v}"
+  [[ -z "${clause}" || "${clause}" == "*" || "${clause}" == "x" || "${clause}" == "X" ]] && return 0
+
+  local op="" target=""
+  case "${clause}" in
+    ">="*) op=">="; target="${clause#>=}" ;;
+    "<="*) op="<="; target="${clause#<=}" ;;
+    ">"*)  op=">";  target="${clause#>}" ;;
+    "<"*)  op="<";  target="${clause#<}" ;;
+    "^"*)  op="^";  target="${clause#^}" ;;
+    "~"*)  op="~";  target="${clause#~}" ;;
+    "="*)  op="=";  target="${clause#=}" ;;
+    *)     op="=";  target="${clause}" ;;
+  esac
+  target="${target#v}"
+  # Strip optional pre-release suffix on engine comparator (e.g. ^1.110.0-20260204).
+  target="${target%%-*}"
+
+  # Parse major.minor.patch and detect wildcard segments (1.x, 1.*, 1.80.x, 1.80.*).
+  local t1="" t2="" t3="" extra=""
+  IFS='.' read -r t1 t2 t3 extra <<< "${target}"
+  [[ -z "${extra}" ]] || return 1
+
+  local wild_minor=0 wild_patch=0
+  if [[ "${t1}" == "x" || "${t1}" == "X" || "${t1}" == "*" ]]; then
+    return 0
+  fi
+  if [[ "${t2}" == "x" || "${t2}" == "X" || "${t2}" == "*" ]]; then
+    wild_minor=1
+    t2="0"
+    t3="0"
+  elif [[ "${t3}" == "x" || "${t3}" == "X" || "${t3}" == "*" ]]; then
+    wild_patch=1
+    t3="0"
   fi
 
-  # Fetch from Marketplace API
-  local api_url="https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery"
-  local request_body=$(cat <<EOF
-{
-  "filters": [{
-    "criteria": [
-      {"filterType": 7, "value": "$publisher.$name"}
-    ],
-    "pageSize": 1
-  }],
-  "flags": 914
-}
-EOF
-)
+  # Security (CRIT): strictly validate numeric digits BEFORE any Bash arithmetic expansion!
+  [[ "${t1}" =~ ^[0-9]+$ ]] || return 1
+  [[ -z "${t2}" || "${t2}" =~ ^[0-9]+$ ]] || return 1
+  [[ -z "${t3}" || "${t3}" =~ ^[0-9]+$ ]] || return 1
 
-  local response
-  response=$(curl -s -X POST "$api_url" \
+  local n1=$((10#${t1}))
+  local n2=$((10#${t2:-0}))
+  local n3=$((10#${t3:-0}))
+  local norm_target="${n1}.${n2}.${n3}"
+
+  local cmp
+  cmp="$(semver_cmp "${ver}" "${norm_target}")"
+
+  # Bare wildcard ranges like `1.x` (>=1.0.0 <2.0.0) or `1.80.x` (>=1.80.0 <1.81.0).
+  if [[ "${op}" == "=" && "${wild_minor}" -eq 1 ]]; then
+    [[ "${cmp}" -ge 0 ]] || return 1
+    [[ "$(semver_cmp "${ver}" "$((n1 + 1)).0.0")" -lt 0 ]]
+    return $?
+  fi
+  if [[ "${op}" == "=" && "${wild_patch}" -eq 1 ]]; then
+    [[ "${cmp}" -ge 0 ]] || return 1
+    [[ "$(semver_cmp "${ver}" "${n1}.$((n2 + 1)).0")" -lt 0 ]]
+    return $?
+  fi
+
+  case "${op}" in
+    ">=") [[ "${cmp}" -ge 0 ]] ;;
+    ">")  [[ "${cmp}" -gt 0 ]] ;;
+    "<=") [[ "${cmp}" -le 0 ]] ;;
+    "<")  [[ "${cmp}" -lt 0 ]] ;;
+    "=")  [[ "${cmp}" -eq 0 ]] ;;
+    "^")
+      # VS Code engine caret ^1.X.Y means >=1.X.Y and <2.0.0 (or <0.(X+1).0 if major==0).
+      [[ "${cmp}" -ge 0 ]] || return 1
+      local upper=""
+      if [[ "${n1}" -gt 0 ]]; then
+        upper="$((n1 + 1)).0.0"
+      else
+        upper="0.$((n2 + 1)).0"
+      fi
+      [[ "$(semver_cmp "${ver}" "${upper}")" -lt 0 ]]
+      ;;
+    "~")
+      [[ "${cmp}" -ge 0 ]] || return 1
+      local upper="${n1}.$((n2 + 1)).0"
+      [[ "$(semver_cmp "${ver}" "${upper}")" -lt 0 ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# Evaluate a compound semver range (supports || OR groups and space-separated AND clauses).
+semver_satisfies() {
+  local ver="${1}"
+  local range="${2}"
+  [[ -z "${range}" || "${range}" == "*" ]] && return 0
+
+  # Normalize spaces after comparator operators (e.g. ">= 1.80.0" -> ">=1.80.0").
+  local norm_range
+  norm_range="$(printf '%s' "${range}" | sed -E 's/(>=|<=|>|<|\^|~|=)[[:space:]]+/\1/g')"
+
+  local rest="${norm_range}"
+  while true; do
+    local branch=""
+    if [[ "${rest}" == *"||"* ]]; then
+      branch="${rest%%||*}"
+      rest="${rest#*||}"
+    else
+      branch="${rest}"
+      rest=""
+    fi
+    local ok=1
+    # Disable pathname expansion so `*` or `1.*` in branch never globs CWD filenames.
+    local tokens=()
+    local had_noglob=0
+    case "$-" in *f*) had_noglob=1 ;; esac
+    set -f
+    local token
+    for token in ${branch}; do
+      tokens+=("${token}")
+    done
+    [[ "${had_noglob}" -eq 0 ]] && set +f
+
+    for token in "${tokens[@]+"${tokens[@]}"}"; do
+      if ! semver_clause_matches "${ver}" "${token}"; then
+        ok=0
+        break
+      fi
+    done
+    [[ "${ok}" -eq 1 ]] && return 0
+    [[ -z "${rest}" ]] && break
+  done
+  return 1
+}
+
+WORK_TMP="$(mktemp -d "${TMPDIR:-/tmp}/vsp-compat.XXXXXX")"
+trap 'rm -rf "${WORK_TMP}"' EXIT
+JSONL_FILE="${WORK_TMP}/results.jsonl"
+: > "${JSONL_FILE}"
+
+# Query Marketplace in small chunks via jq-escaped JSON payload.
+# Default flags=529 (0x211: IncludeVersions | IncludeVersionProperties | IncludeLatestVersionOnly).
+# Optional third arg overrides flags (e.g. 17 = IncludeVersions | IncludeVersionProperties without IncludeFiles).
+query_batch() {
+  local chunk_file="${1}"
+  local out_file="${2}"
+  local flags="${3:-529}"
+  local payload
+  payload="$(jq -R . "${chunk_file}" | jq -s --argjson fl "${flags}" '{
+    filters: [{
+      criteria: map({ filterType: 7, value: . }),
+      pageNumber: 1,
+      pageSize: 100
+    }],
+    assetTypes: [],
+    flags: $fl
+  }')"
+  curl -fsS --compressed --max-time 30 \
     -H "Content-Type: application/json" \
     -H "Accept: application/json;api-version=3.0-preview.1" \
-    -d "$request_body")
-
-  if [[ -z "$response" ]] || ! echo "$response" | jq -e '.results[0].extensions[0]' &>/dev/null; then
-    echo "{\"error\":\"Extension not found\"}"
-    return 1
-  fi
-
-  # Cache the response
-  echo "$response" | jq '.results[0].extensions[0]' > "$cache_file"
-  cat "$cache_file"
+    -d "${payload}" "${API_URL}" -o "${out_file}"
 }
 
-# Check if extension is compatible with current VS Code version
-check_compatibility() {
-  local ext_id="$1"
-  local metadata
+BATCH_DIR="${WORK_TMP}/batches"
+mkdir -p "${BATCH_DIR}"
+chunk_idx=0
+line_cnt=0
+cur_chunk="${BATCH_DIR}/chunk-0.txt"
+: > "${cur_chunk}"
 
-  metadata=$(get_extension_metadata "$ext_id")
-
-  if echo "$metadata" | jq -e '.error' &>/dev/null; then
-    echo "unknown|Extension not found in Marketplace"
-    return 2
+for id in "${AUDIT_IDS[@]+"${AUDIT_IDS[@]}"}"; do
+  printf '%s\n' "${id}" >> "${cur_chunk}"
+  line_cnt=$((line_cnt + 1))
+  if [[ "${line_cnt}" -ge 40 ]]; then
+    chunk_idx=$((chunk_idx + 1))
+    line_cnt=0
+    cur_chunk="${BATCH_DIR}/chunk-${chunk_idx}.txt"
+    : > "${cur_chunk}"
   fi
+done
 
-  # Extract engine compatibility
-  local engine=$(echo "$metadata" | jq -r '.versions[0].properties[] | select(.key=="Microsoft.VisualStudio.Code.Engine") | .value' 2>/dev/null || echo "")
-
-  if [[ -z "$engine" ]]; then
-    echo "unknown|No engine compatibility info"
-    return 2
+MERGED_MP="${WORK_TMP}/marketplace.json"
+RESP_FILES=()
+for cf in "${BATCH_DIR}"/chunk-*.txt; do
+  [[ -s "${cf}" ]] || continue
+  rf="${cf%.txt}.resp.json"
+  if ! query_batch "${cf}" "${rf}"; then
+    echo "check-compat: Marketplace API request failed" >&2
+    exit 2
   fi
+  RESP_FILES+=("${rf}")
+done
 
-  # Get latest version info
-  local latest_version=$(echo "$metadata" | jq -r '.versions[0].version' 2>/dev/null || echo "unknown")
-  local last_updated=$(echo "$metadata" | jq -r '.versions[0].lastUpdated' 2>/dev/null || echo "unknown")
+if [[ "${#RESP_FILES[@]}" -gt 0 ]]; then
+  jq -s '[ .[] | (.results[0].extensions // [])[] ]' "${RESP_FILES[@]}" > "${MERGED_MP}"
+else
+  printf '[]\n' > "${MERGED_MP}"
+fi
 
-  # Parse engine requirement (e.g., "^1.95.0", ">=1.90.0", "*")
-  if [[ "$engine" == "*" ]]; then
-    echo "compatible|$latest_version|Any version|$last_updated"
-    return 0
-  fi
+COMPAT_COUNT=0
+INCOMPAT_COUNT=0
+NOT_FOUND_COUNT=0
 
-  # Extract minimum version from engine string
-  local min_version=$(echo "$engine" | sed -E 's/[\^>=~]//g')
-  local min_major=$(echo "$min_version" | cut -d. -f1)
-  local min_minor=$(echo "$min_version" | cut -d. -f2 2>/dev/null || echo "0")
+for id in "${AUDIT_IDS[@]+"${AUDIT_IDS[@]}"}"; do
+  id_lc="$(to_lower "${id}")"
+  # Prefer latest stable version; fall back to latest pre-release ONLY when pre-release-only.
+  ext_meta="$(jq -c --arg id_lc "${id_lc}" '
+    map(select(((.publisher.publisherName + "." + .extensionName) | ascii_downcase) == $id_lc))
+    | .[0] as $ext
+    | if $ext == null then null
+      else
+        ($ext.versions // []) as $vers
+        | ($vers | map(select(((.properties // []) | any(.key == "Microsoft.VisualStudio.Code.PreRelease" and .value == "true")) | not))) as $stable
+        | (if ($stable | length) > 0 then { v: $stable[0], pre: false }
+           elif ($vers | length) > 0 then { v: $vers[0], pre: true }
+           else null end) as $pick
+        | if $pick == null then null
+          else {
+            version: ($pick.v.version // ""),
+            prerelease: $pick.pre,
+            engine: ((($pick.v.properties // []) | map(select(.key == "Microsoft.VisualStudio.Code.Engine")) | .[0].value) // "*")
+          }
+          end
+      end
+  ' "${MERGED_MP}")"
 
-  # Compare versions
-  if [[ $VSCODE_MAJOR -gt $min_major ]] || \
-     [[ $VSCODE_MAJOR -eq $min_major && $VSCODE_MINOR -ge $min_minor ]]; then
-    echo "compatible|$latest_version|$engine|$last_updated"
-    return 0
-  else
-    echo "incompatible|$latest_version|$engine|$last_updated"
-    return 1
-  fi
-}
-
-# Check installed extensions for the named profile.
-# Uses `code --list-extensions --show-versions --profile <name>` so results are
-# scoped to the profile under audit (no cross-profile false positives).
-check_installed_extensions() {
-  local ext_id="$1"
-  local profile="$2"
-  local listing
-  listing=$(code --profile "$profile" --list-extensions --show-versions 2>/dev/null) || listing=""
-  # Marketplace IDs are case-insensitive. Match each "id@version..." line by
-  # splitting only on the FIRST '@' so version strings containing additional
-  # '@' chars (e.g. "publisher.name@1.2.3@beta") are returned intact.
-  # Compare the id literally — avoids the bug where regex '.' in the id
-  # matches any character.
-  local needle_lower
-  needle_lower=$(printf '%s' "$ext_id" | tr '[:upper:]' '[:lower:]')
-  local version
-  version=$(printf '%s\n' "$listing" | awk -v n="$needle_lower" '
-    {
-      i = index($0, "@")
-      if (i == 0) next
-      lid = tolower(substr($0, 1, i - 1))
-      if (lid == n) { print substr($0, i + 1); exit }
-    }')
-  if [[ -z "$version" ]]; then
-    return 1
-  fi
-  printf '%s\n' "$version"
-}
-
-# Get all profiles
-get_profiles() {
-  if [[ "$CHECK_ALL" == true ]]; then
-    find "$ROOT/profiles" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort
-  else
-    printf '%s\n' "${PROFILES[@]}"
-  fi
-}
-
-# Main checking logic
-TOTAL_EXTENSIONS=0
-COMPATIBLE_COUNT=0
-INCOMPATIBLE_COUNT=0
-UNKNOWN_COUNT=0
-RESULTS=()
-
-while IFS= read -r profile; do
-  ext_file="$ROOT/profiles/$profile/extensions.json"
-
-  if [[ ! -f "$ext_file" ]]; then
-    warn "Profile not found: $profile (expected: $ext_file)"
+  if [[ "${ext_meta}" == "null" || -z "${ext_meta}" ]]; then
+    NOT_FOUND_COUNT=$((NOT_FOUND_COUNT + 1))
+    jq -n --arg id "${id}" --arg status "NOT_FOUND" \
+      '{ id: $id, status: $status, version: null, engine: null, prerelease: false }' >> "${JSONL_FILE}"
     continue
   fi
 
-  [[ "$JSON_OUTPUT" == false ]] && printf '\n📦 Checking profile: %s\n' "$profile"
-  [[ "$JSON_OUTPUT" == false ]] && log "$(printf '%.0s─' {1..60})"
+  ver="$(printf '%s' "${ext_meta}" | jq -r '.version')"
+  eng="$(printf '%s' "${ext_meta}" | jq -r '.engine')"
+  pre="$(printf '%s' "${ext_meta}" | jq -r '.prerelease')"
 
-  # Extract extension IDs
-  extensions=$(jq -r '.[].identifier.id' "$ext_file")
-
-  while IFS= read -r ext_id; do
-    [[ -z "$ext_id" ]] && continue
-
-    TOTAL_EXTENSIONS=$((TOTAL_EXTENSIONS + 1))
-
-    # Capture per-extension compat result without aborting the loop under set -e.
-    # check_compatibility returns 0 (compatible), 1 (incompatible), 2 (unknown).
-    if compat_info=$(check_compatibility "$ext_id"); then
-      compat_status=0
-    else
-      compat_status=$?
+  # When IncludeLatestVersionOnly returned only a pre-release version, query full
+  # version history (flags=17, no IncludeFiles) for this single extension so
+  # stable-first selection picks the latest stable release if one exists.
+  if [[ "${pre}" == "true" ]]; then
+    fb_chunk="${WORK_TMP}/fb-id.txt"
+    fb_resp="${WORK_TMP}/fb-resp.json"
+    printf '%s\n' "${id}" > "${fb_chunk}"
+    if query_batch "${fb_chunk}" "${fb_resp}" 17 2>/dev/null; then
+      fb_meta="$(jq -c --arg id_lc "${id_lc}" '
+        (.results[0].extensions // [])
+        | map(select(((.publisher.publisherName + "." + .extensionName) | ascii_downcase) == $id_lc))
+        | .[0] as $ext
+        | if $ext == null then null
+          else
+            ($ext.versions // []) as $vers
+            | ($vers | map(select(((.properties // []) | any(.key == "Microsoft.VisualStudio.Code.PreRelease" and .value == "true")) | not))) as $stable
+            | if ($stable | length) > 0 then {
+                version: ($stable[0].version // ""),
+                prerelease: false,
+                engine: ((($stable[0].properties // []) | map(select(.key == "Microsoft.VisualStudio.Code.Engine")) | .[0].value) // "*")
+              } else null end
+          end
+      ' "${fb_resp}" 2>/dev/null || printf 'null')"
+      if [[ "${fb_meta}" != "null" && -n "${fb_meta}" ]]; then
+        ver="$(printf '%s' "${fb_meta}" | jq -r '.version')"
+        eng="$(printf '%s' "${fb_meta}" | jq -r '.engine')"
+        pre="false"
+      fi
     fi
+  fi
 
-    IFS='|' read -r status version engine updated <<< "$compat_info"
+  if semver_satisfies "${VSCODE_VER}" "${eng}"; then
+    COMPAT_COUNT=$((COMPAT_COUNT + 1))
+    status="compatible"
+  else
+    INCOMPAT_COUNT=$((INCOMPAT_COUNT + 1))
+    status="incompatible"
+  fi
 
-    # Check if installed (unless marketplace-only mode), scoped to this profile.
-    installed_version="not installed"
-    if [[ "$MARKETPLACE_ONLY" == false ]]; then
-      installed_version=$(check_installed_extensions "$ext_id" "$profile" || echo "not installed")
-    fi
+  jq -n \
+    --arg id "${id}" \
+    --arg status "${status}" \
+    --arg version "${ver}" \
+    --arg engine "${eng}" \
+    --argjson prerelease "${pre}" \
+    '{ id: $id, status: $status, version: $version, engine: $engine, prerelease: $prerelease }' >> "${JSONL_FILE}"
+done
 
-    # Track stats
-    case "$status" in
-      compatible) COMPATIBLE_COUNT=$((COMPATIBLE_COUNT + 1)) ;;
-      incompatible) INCOMPATIBLE_COUNT=$((INCOMPATIBLE_COUNT + 1)) ;;
-      *) UNKNOWN_COUNT=$((UNKNOWN_COUNT + 1)) ;;
-    esac
+TOTAL_COUNT="${#AUDIT_IDS[@]}"
 
-    # Store result
-    RESULTS+=("{\"profile\":\"$profile\",\"extension\":\"$ext_id\",\"status\":\"$status\",\"latestVersion\":\"$version\",\"engine\":\"$engine\",\"installedVersion\":\"$installed_version\",\"lastUpdated\":\"$updated\"}")
-
-    # Output based on format
-    if [[ "$JSON_OUTPUT" == false ]]; then
-      case "$status" in
-        compatible)
-          if [[ "$VERBOSE" == true ]]; then
-            success "$ext_id ($version) - Requires: $engine"
-          fi
-          ;;
-        incompatible)
-          error "$ext_id ($version) - Requires: $engine (VS Code $VSCODE_VERSION incompatible!)"
-          ;;
-        unknown)
-          warn "$ext_id - $version"
-          ;;
-      esac
-    fi
-
-  done <<< "$extensions"
-
-done < <(get_profiles)
-
-# Output summary
-if [[ "$JSON_OUTPUT" == true ]]; then
-  # JSON output
-  jq -n --argjson results "[$(IFS=,; echo "${RESULTS[*]}")]" \
-    --arg vscode "$VSCODE_VERSION" \
-    --argjson total "$TOTAL_EXTENSIONS" \
-    --argjson compatible "$COMPATIBLE_COUNT" \
-    --argjson incompatible "$INCOMPATIBLE_COUNT" \
-    --argjson unknown "$UNKNOWN_COUNT" \
+if [[ "${JSON_MODE}" -eq 1 ]]; then
+  jq -s \
+    --arg vscode "${VSCODE_VER}" \
+    --argjson total "${TOTAL_COUNT}" \
+    --argjson compatible "${COMPAT_COUNT}" \
+    --argjson incompatible "${INCOMPAT_COUNT}" \
+    --argjson not_found "${NOT_FOUND_COUNT}" \
     '{
-      vscodeVersion: $vscode,
+      vscode_version: $vscode,
       summary: {
         total: $total,
         compatible: $compatible,
         incompatible: $incompatible,
-        unknown: $unknown
+        not_found: $not_found
       },
-      extensions: $results
-    }'
+      extensions: .
+    }' "${JSONL_FILE}"
 else
-  # Human-readable summary
-  printf '\n%s\n' "$(printf '%.0s═' {1..60})"
-  log "📊 SUMMARY"
-  log "$(printf '%.0s═' {1..60})"
-  log "VS Code Version: $VSCODE_VERSION"
-  log "Total Extensions: $TOTAL_EXTENSIONS"
-  success "Compatible: $COMPATIBLE_COUNT"
-  [[ $INCOMPATIBLE_COUNT -gt 0 ]] && error "Incompatible: $INCOMPATIBLE_COUNT" || log "Incompatible: 0"
-  [[ $UNKNOWN_COUNT -gt 0 ]] && warn "Unknown: $UNKNOWN_COUNT" || log "Unknown: 0"
-  log "$(printf '%.0s═' {1..60})"
-
-  if [[ $INCOMPATIBLE_COUNT -gt 0 ]] || [[ $UNKNOWN_COUNT -gt 0 ]]; then
-    [[ $INCOMPATIBLE_COUNT -gt 0 ]] && printf '\n⚠️  Action required: %d incompatible extension(s) found!\n' "$INCOMPATIBLE_COUNT"
-    [[ $UNKNOWN_COUNT -gt 0 ]] && warn "$UNKNOWN_COUNT extension(s) returned unknown — see notes above."
-    exit 1
-  else
-    printf '\n✅ All extensions are compatible with VS Code %s\n' "$VSCODE_VERSION"
+  printf 'VS Code version: %s | total=%d compatible=%d incompatible=%d not_found=%d\n' \
+    "${VSCODE_VER}" "${TOTAL_COUNT}" "${COMPAT_COUNT}" "${INCOMPAT_COUNT}" "${NOT_FOUND_COUNT}"
+  if [[ "${INCOMPAT_COUNT}" -gt 0 || "${NOT_FOUND_COUNT}" -gt 0 ]]; then
+    jq -r 'select(.status != "compatible") | "  \(.status): \(.id) (version=\(.version // "none"), engine=\(.engine // "none"))"' "${JSONL_FILE}" >&2
   fi
 fi
 
-# JSON path also returns 1 on findings so automation can branch on exit code.
-if [[ "$JSON_OUTPUT" == true ]] && { [[ $INCOMPATIBLE_COUNT -gt 0 ]] || [[ $UNKNOWN_COUNT -gt 0 ]]; }; then
+# Silence unused variable warning if MARKETPLACE_ONLY was passed.
+: "${MARKETPLACE_ONLY}"
+
+if [[ "${INCOMPAT_COUNT}" -gt 0 || "${NOT_FOUND_COUNT}" -gt 0 ]]; then
   exit 1
 fi
-
 exit 0

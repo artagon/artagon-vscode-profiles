@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "github-workflows",
+  "description": "GitHub Actions CI/CD workflow authoring with YAML schema validation and Shell support",
+  "useDefaults": true,
+  "modules": ["github-workflows"],
+  "excludeModules": [],
+  "ux": "default",
+  "overrides": {
+    "workspace": {},
+    "profile": {}
+  }
+}

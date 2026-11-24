@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "general",
+  "description": "General-purpose developer profile with slim core editor, default AI agent suite (Antigravity + Claude + Codex + Copilot), Markdown, and Shell",
+  "useDefaults": true,
+  "modules": [],
+  "excludeModules": [],
+  "ux": "default",
+  "overrides": {
+    "workspace": {},
+    "profile": {}
+  }
+}

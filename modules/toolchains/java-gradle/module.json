@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "id": "java-gradle",
+  "kind": "toolchain",
+  "description": "Java with Gradle build tool (mutually exclusive with java-maven; supersedes java-maven when both manifests exist)",
+  "requires": ["java-base"],
+  "defaultWith": [],
+  "conflicts": ["java-maven"],
+  "extensions": {
+    "workspace": [
+      "vscjava.vscode-gradle"
+    ],
+    "profile": [],
+    "unwanted": [
+      "naco-siren.gradle-language"
+    ]
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": "settings.profile.jsonc"
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 30,
+    "fallback": false,
+    "match": "any",
+    "supersedes": ["java-maven"],
+    "rules": [
+      {
+        "type": "any_file",
+        "paths": ["build.gradle", "build.gradle.kts"]
+      }
+    ]
+  }
+}

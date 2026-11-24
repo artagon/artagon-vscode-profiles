@@ -1,0 +1,37 @@
+// Copilot-only settings (no Antigravity, Claude Code, or OpenAI Codex keys).
+{
+  "editor.inlineSuggest.enabled": true,
+  "editor.inlineSuggest.fontFamily": "'Monaspace Krypton NF', 'Monaspace Krypton', 'Maple Mono NF', 'JetBrains Mono', Menlo, monospace",
+  "editor.inlineSuggest.edits.showCollapsed": false,
+  "editor.inlineSuggest.edits.allowCodeShifting": "always",
+  "editor.inlineSuggest.edits.renderSideBySide": "auto",
+  "editor.quickSuggestions": {
+    "other": "offWhenInlineCompletions",
+    "comments": "off",
+    "strings": "off"
+  },
+  "github.copilot.enable": {
+    "*": true,
+    "plaintext": false,
+    "markdown": false,
+    "scminput": false
+  },
+  "github.copilot.editor.enableCodeActions": true,
+  "github.copilot.nextEditSuggestions.enabled": true,
+  "github.copilot.nextEditSuggestions.fixes": true,
+  "github.copilot.nextEditSuggestions.extendedRange": true,
+  "github.copilot.renameSuggestions.triggerAutomatically": true,
+  "chat.agent.enabled": true,
+  "chat.detectParticipant.enabled": true,
+  "chat.useAgentsMdFile": true,
+  "chat.useNestedAgentsMdFiles": true,
+  "chat.useAgentSkills": true,
+  "chat.editor.fontSize": 13,
+  "chat.editor.lineHeight": 20,
+  "chat.tools.compressOutput.enabled": true,
+  "chat.tools.riskAssessment.enabled": true,
+  "chat.tools.terminal.outputReflow": true,
+  "chat.tools.autoExpandFailures": true,
+  "chat.notifyWindowOnResponseReceived": "windowNotFocused",
+  "inlineChat.askInChat": true
+}

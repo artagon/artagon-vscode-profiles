@@ -13,3 +13,6 @@ User/sync/
 .claude/settings.json
 .gemini/settings.local.json
 .gemini/settings.json
+.agents/settings.local.json
+.ntm/
+scratch/

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "cpp-intellisense",
+  "description": "C/C++ development with Microsoft C/C++ IntelliSense, CMake Tools, and CodeLLDB",
+  "useDefaults": true,
+  "modules": ["cpp-intellisense"],
+  "excludeModules": [],
+  "ux": "default",
+  "overrides": {
+    "workspace": {},
+    "profile": {}
+  }
+}

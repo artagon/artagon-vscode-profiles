@@ -1,0 +1,26 @@
+// Maven workspace settings (disables Gradle import, downloads sources, enables GAV & conflict diagnostics).
+{
+  "java.project.resourceFilters": ["target"],
+  "java.import.maven.enabled": true,
+  "java.import.gradle.enabled": false,
+  "java.maven.downloadSources": true,
+  "maven.pomfile.autoUpdateEffectivePOM": false,
+  "maven.terminal.useJavaHome": true,
+  "maven.executable.preferMavenWrapper": true,
+  "maven.completion.gavEnabled": true,
+  "maven.dependency.enableConflictDiagnostics": true,
+  "maven.view": "hierarchical",
+  "java.test.config": {
+    "name": "MavenJUnit",
+    "workingDirectory": "${workspaceFolder}",
+    "vmArgs": ["-ea"],
+    "args": []
+  },
+  "java.test.defaultConfig": "MavenJUnit",
+  "files.watcherExclude": {
+    "**/target/**": true
+  },
+  "search.exclude": {
+    "**/target/**": true
+  }
+}

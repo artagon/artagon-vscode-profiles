@@ -1,0 +1,29 @@
+// Shared TypeScript/JavaScript workspace settings (VS Code 1.147.0 unified js/ts.* schema, formatter-agnostic).
+{
+  "js/ts.updateImportsOnFileMove.enabled": "always",
+  "js/ts.suggest.autoImports": true,
+  "js/ts.tsserver.maxMemory": 4096,
+  "js/ts.preferences.importModuleSpecifier": "project-relative",
+  "js/ts.preferences.preferTypeOnlyAutoImports": true,
+  "js/ts.preferGoToSourceDefinition": true,
+  "js/ts.inlayHints.parameterNames.enabled": "literals",
+  "js/ts.inlayHints.parameterNames.suppressWhenArgumentMatchesName": true,
+  "js/ts.inlayHints.functionLikeReturnTypes.enabled": true,
+  "js/ts.inlayHints.enumMemberValues.enabled": true,
+  "files.watcherExclude": {
+    "**/dist/**": true,
+    "**/.next/**": true,
+    "**/.turbo/**": true,
+    "**/.vite/**": true,
+    "**/coverage/**": true,
+    "**/.pnpm-store/**": true
+  },
+  "search.exclude": {
+    "**/dist/**": true,
+    "**/.next/**": true,
+    "**/.turbo/**": true,
+    "**/.vite/**": true,
+    "**/coverage/**": true,
+    "**/.pnpm-store/**": true
+  }
+}

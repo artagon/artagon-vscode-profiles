@@ -1,0 +1,143 @@
+#!/usr/bin/env bats
+
+bats_require_minimum_version 1.5.0
+load test_helper
+
+@test "compiler: Astro ESLint+Prettier -> Biome switch removes stale Prettier/ESLint workspace settings keys" {
+  ws="$(make_workspace astro-switch package.json astro.config.mjs)"
+
+  # First apply: Astro defaults to ts-eslint-prettier.
+  run vspcli apply --target=workspace --check-compat=off "${ws}"
+  [[ "${status}" -eq 0 ]]
+  [[ "$(jq -r '."[typescript]"."editor.defaultFormatter"' "${ws}/.vscode/settings.json")" == "esbenp.prettier-vscode" ]]
+  [[ "$(jq -r '."[typescript]"."editor.codeActionsOnSave"."source.fixAll.eslint"' "${ws}/.vscode/settings.json")" == "explicit" ]]
+  [[ "$(jq 'has("eslint.validate")' "${ws}/.vscode/settings.json")" == "true" ]]
+  jq -e '.recommendations | index("esbenp.prettier-vscode") != null' "${ws}/.vscode/extensions.json"
+
+  # Second apply: switch to Biome (--with biome --without ts-eslint-prettier).
+  run vspcli apply --target=workspace --check-compat=off --with biome --without ts-eslint-prettier "${ws}"
+  [[ "${status}" -eq 0 ]]
+  [[ "$(jq -r '."[typescript]"."editor.defaultFormatter"' "${ws}/.vscode/settings.json")" == "biomejs.biome" ]]
+  [[ "$(jq 'has("eslint.validate")' "${ws}/.vscode/settings.json")" == "false" ]]
+  [[ "$(jq '."[typescript]"."editor.codeActionsOnSave" | has("source.fixAll.eslint")' "${ws}/.vscode/settings.json")" == "false" ]]
+  [[ "$(jq -r '."[typescript]"."editor.codeActionsOnSave"."source.fixAll.biome"' "${ws}/.vscode/settings.json")" == "explicit" ]]
+  jq -e '.recommendations | index("biomejs.biome") != null' "${ws}/.vscode/extensions.json"
+  jq -e '.recommendations | index("esbenp.prettier-vscode") == null' "${ws}/.vscode/extensions.json"
+}
+
+@test "compiler: general-minimal sets chat.disableAIFeatures=true; returning to AI-enabled profile clears it" {
+  install_code_mock "${TEST_TMP}/bin"
+
+  # Step 1: apply general-minimal to a named VS Code profile.
+  run vspcli apply --target=profile --profile dev-test --toolchain general-minimal
+  [[ "${status}" -eq 0 ]]
+  prof_settings="$(find "${VSCODE_USER_DIR}/profiles" -name settings.json | head -n 1)"
+  [[ -f "${prof_settings}" ]]
+  [[ "$(jq -r '."chat.disableAIFeatures"' "${prof_settings}")" == "true" ]]
+
+  # Step 2: switch same profile to AI-enabled 'rust' -> chat.disableAIFeatures MUST be removed!
+  run vspcli apply --target=profile --profile dev-test --toolchain rust
+  [[ "${status}" -eq 0 ]]
+  [[ "$(jq 'has("chat.disableAIFeatures")' "${prof_settings}")" == "false" ]]
+  [[ "$(jq -r '."chat.agent.enabled"' "${prof_settings}")" == "true" ]]
+}
+
+@test "compiler: Python workspace uses portable venv defaults (no uv machine-scope key); profile gets alwaysUseUv=true" {
+  ws="$(make_workspace py-ws pyproject.toml)"
+  run vspcli apply --target=workspace "${ws}"
+  [[ "${status}" -eq 0 ]]
+  [[ "$(jq -r '."python.languageServer"' "${ws}/.vscode/settings.json")" == "None" ]]
+  [[ "$(jq -r '."[python]"."editor.tabSize"' "${ws}/.vscode/settings.json")" -eq 4 ]]
+  [[ "$(jq -r '."python-envs.defaultEnvManager"' "${ws}/.vscode/settings.json")" == "ms-python.python:venv" ]]
+  # Machine-scoped python-envs.alwaysUseUv must NOT appear in workspace settings.
+  [[ "$(jq 'has("python-envs.alwaysUseUv")' "${ws}/.vscode/settings.json")" == "false" ]]
+
+  # Compiled python profile DOES contain machine-scoped python-envs.alwaysUseUv=true.
+  [[ "$(jq -r '."python-envs.alwaysUseUv"' "${REPO_ROOT}/_merged/python.json")" == "true" ]]
+}
+
+@test "compiler: jq 1.7.1 scalar_leaves detects object-vs-leaf prefix collision across jointly selectable modules" {
+  fixture="${TEST_TMP}/collision-repo"
+  mkdir -p "${fixture}/catalog" "${fixture}/modules/capabilities/mod-a" "${fixture}/modules/capabilities/mod-b" "${fixture}/profiles"
+  cp "${REPO_ROOT}/catalog/"*.json "${fixture}/catalog/"
+  cp -R "${REPO_ROOT}/modules/capabilities/core-editor" "${fixture}/modules/capabilities/"
+  cp -R "${REPO_ROOT}/modules/ux" "${fixture}/modules/"
+
+  printf '{"id":"mod-a","kind":"capability","settings":{"workspace":"settings.workspace.jsonc"}}\n' > "${fixture}/modules/capabilities/mod-a/module.json"
+  printf '{"custom.ns":{"sub":1}}\n' > "${fixture}/modules/capabilities/mod-a/settings.workspace.jsonc"
+
+  printf '{"id":"mod-b","kind":"capability","settings":{"workspace":"settings.workspace.jsonc"}}\n' > "${fixture}/modules/capabilities/mod-b/module.json"
+  printf '{"custom.ns":"scalar-leaf"}\n' > "${fixture}/modules/capabilities/mod-b/settings.workspace.jsonc"
+
+  run env VSPCLI_ROOT="${fixture}" "${BASH}" "${SCRIPTS_DIR}/validate-json.sh"
+  [[ "${status}" -eq 1 ]]
+  [[ "${output}" == *"object-vs-leaf collision"* ]]
+  [[ "${output}" == *"custom.ns"* ]]
+}
+
+@test "compiler: Java Maven + Spring layers cleanly without conflict and preserves machine-scoped gradle args in profile only" {
+  ws="$(make_workspace mvn-spring pom.xml)"
+  mkdir -p "${ws}/src/main/java"
+  printf '@SpringBootApplication\nclass App {}\n' > "${ws}/src/main/java/AppApplication.java"
+
+  run vspcli apply --target=workspace "${ws}"
+  [[ "${status}" -eq 0 ]]
+  jq -e '.recommendations | index("vscjava.vscode-maven") != null' "${ws}/.vscode/extensions.json"
+  jq -e '.recommendations | index("vmware.vscode-spring-boot") != null' "${ws}/.vscode/extensions.json"
+  [[ "$(jq -r '."java.jdt.ls.lombokSupport.enabled"' "${ws}/.vscode/settings.json")" == "true" ]]
+  [[ "$(jq 'has("java.import.gradle.arguments")' "${ws}/.vscode/settings.json")" == "false" ]]
+  [[ "$(jq -r '."java.import.gradle.arguments"' "${REPO_ROOT}/_merged/java-gradle.json")" == *"--parallel"* ]]
+  [[ "$(jq -r '."java.import.gradle.jvmArguments"' "${REPO_ROOT}/_merged/java-gradle.json")" == *"-Xmx2G"* ]]
+  [[ "$(jq 'has("java.import.gradle.jvmArguments")' "${ws}/.vscode/settings.json")" == "false" ]]
+  [[ "$(jq -r '."files.associations"."application*.yml"' "${ws}/.vscode/settings.json")" == "spring-boot-properties-yaml" ]]
+}
+
+@test "compiler: Project Explorer nesting, Antigravity default AI, Markdown hard breaks, and GitHub Actions YAML handoff compile cleanly" {
+  # Compiled AI profile includes Project Explorer file nesting, completion ergonomics, and Antigravity default settings.
+  [[ "$(jq -r '."explorer.fileNesting.enabled"' "${REPO_ROOT}/_merged/ai.json")" == "true" ]]
+  [[ "$(jq -r '."explorer.fileNesting.patterns"."Cargo.toml"' "${REPO_ROOT}/_merged/ai.json")" == *"Cargo.lock"* ]]
+  [[ "$(jq -r '."editor.suggestSelection"' "${REPO_ROOT}/_merged/ai.json")" == "recentlyUsedByPrefix" ]]
+  [[ "$(jq -r '."antigravity.autoAcceptOnChat"' "${REPO_ROOT}/_merged/ai.json")" == "false" ]]
+  [[ "$(jq -r '."github.copilot.enable"."markdown"' "${REPO_ROOT}/_merged/ai.json")" == "false" ]]
+  [[ "$(jq -r '."[markdown]"."files.trimTrailingWhitespace"' "${REPO_ROOT}/_merged/ai.json")" == "false" ]]
+
+  # Rust profile uses isolated RA targetDir and stable formatOnSaveMode.
+  [[ "$(jq -r '."rust-analyzer.cargo.targetDir"' "${REPO_ROOT}/_merged/rust.json")" == "true" ]]
+  [[ "$(jq -r '."[rust]"."editor.formatOnSaveMode"' "${REPO_ROOT}/_merged/rust.json")" == "file" ]]
+
+  # GitHub workflows profile lets github-actions-workflow own workflows without files.associations override.
+  [[ "$(jq 'has("files.associations")' "${REPO_ROOT}/modules/capabilities/github-workflows/settings.workspace.jsonc" 2>/dev/null || echo false)" == "false" ]]
+  [[ "$(jq -r '."[github-actions-workflow]"."editor.defaultFormatter"' "${REPO_ROOT}/_merged/github-workflows.json")" == "redhat.vscode-yaml" ]]
+
+  # Tier 1 IntelliJ-style DX settings + dx-pro in ai-plus + opt-in intellij-keybindings resolve cleanly.
+  [[ "$(jq -r '."editor.suggest.insertMode"' "${REPO_ROOT}/_merged/ai.json")" == "replace" ]]
+  [[ "$(jq -r '."editor.suggest.matchOnWordStartOnly"' "${REPO_ROOT}/_merged/ai.json")" == "false" ]]
+  [[ "$(jq -r '."editor.occurrencesHighlight"' "${REPO_ROOT}/_merged/ai.json")" == "multiFile" ]]
+  [[ "$(jq -r '."debug.inlineValues"' "${REPO_ROOT}/_merged/ai.json")" == "on" ]]
+  [[ "$(jq -r '."workbench.editor.limit.value"' "${REPO_ROOT}/_merged/ai.json")" -eq 10 ]]
+  [[ "$(jq -r '."bookmarks.navigateThroughAllFiles"' "${REPO_ROOT}/_merged/ai-plus.json")" == "true" ]]
+  jq -e '.[] | select(.identifier.id == "buenon.scratchpads")' "${REPO_ROOT}/profiles/ai-plus/extensions.json" >/dev/null
+  jq -e '.[] | select(.identifier.id == "chadalen.vscode-jetbrains-icon-theme")' "${REPO_ROOT}/profiles/ai-plus/extensions.json" >/dev/null
+  # intellij-keybindings stays opt-in (absent from default ai-plus unless --with intellij-keybindings).
+  ! jq -e '.[] | select(.identifier.id == "k--kato.intellij-idea-keybindings")' "${REPO_ROOT}/profiles/ai-plus/extensions.json" >/dev/null
+
+  # Every one of the 15 compiled profiles includes shell LSP/linter/formatter + JSON/YAML/TOML/XML/CSV tooling.
+  for merged in "${REPO_ROOT}"/_merged/*.json; do
+    p="$(basename "${merged}" .json)"
+    [[ "$(jq -r '."bashIde.includeAllWorkspaceSymbols"' "${merged}")" == "true" ]]
+    [[ "$(jq -r '."shellcheck.enable"' "${merged}")" == "true" ]]
+    [[ "$(jq -r '."json.validate.enable"' "${merged}")" == "true" ]]
+    [[ "$(jq -r '."yaml.validate"' "${merged}")" == "true" ]]
+    [[ "$(jq -r '."yaml.schemaStore.enable"' "${merged}")" == "true" ]]
+    [[ "$(jq -r '."evenBetterToml.schema.enabled"' "${merged}")" == "true" ]]
+    [[ "$(jq -r '."xml.server.preferBinary"' "${merged}")" == "true" ]]
+    [[ "$(jq -r '."redhat.telemetry.enabled"' "${merged}")" == "false" ]]
+    [[ "$(jq 'has("[json]") and has("[jsonc]") and has("[yaml]") and has("[toml]") and has("[xml]")' "${merged}")" == "true" ]]
+    jq -e '.[] | select(.identifier.id == "mads-hartmann.bash-ide-vscode")' "${REPO_ROOT}/profiles/${p}/extensions.json" >/dev/null
+    jq -e '.[] | select(.identifier.id == "timonwong.shellcheck")' "${REPO_ROOT}/profiles/${p}/extensions.json" >/dev/null
+    jq -e '.[] | select(.identifier.id == "mkhl.shfmt")' "${REPO_ROOT}/profiles/${p}/extensions.json" >/dev/null
+    jq -e '.[] | select(.identifier.id == "redhat.vscode-yaml")' "${REPO_ROOT}/profiles/${p}/extensions.json" >/dev/null
+    jq -e '.[] | select(.identifier.id == "redhat.vscode-xml")' "${REPO_ROOT}/profiles/${p}/extensions.json" >/dev/null
+    jq -e '.[] | select(.identifier.id == "mechatroner.rainbow-csv")' "${REPO_ROOT}/profiles/${p}/extensions.json" >/dev/null
+  done
+}

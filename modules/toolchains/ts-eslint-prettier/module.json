@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "id": "ts-eslint-prettier",
+  "kind": "toolchain",
+  "description": "ESLint + Prettier formatter and lint stack for TypeScript/JavaScript/Astro (mutually exclusive with biome)",
+  "requires": ["ts-base"],
+  "defaultWith": [],
+  "conflicts": ["biome"],
+  "extensions": {
+    "workspace": [
+      "dbaeumer.vscode-eslint",
+      "esbenp.prettier-vscode"
+    ],
+    "profile": [],
+    "unwanted": []
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": null
+  },
+  "tasks": null,
+  "detect": null
+}

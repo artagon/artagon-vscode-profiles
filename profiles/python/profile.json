@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "python",
+  "description": "Python development with Ruff, BasedPyright, Python Environments (venv/uv), Debugpy, and pytest (swap BasedPyright with --with python-ty --without python)",
+  "useDefaults": true,
+  "modules": ["python"],
+  "excludeModules": [],
+  "ux": "default",
+  "overrides": {
+    "workspace": {},
+    "profile": {}
+  }
+}

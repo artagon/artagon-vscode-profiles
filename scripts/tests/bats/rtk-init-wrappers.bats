@@ -1,101 +1,130 @@
 #!/usr/bin/env bats
 # bats file_tags=no-parallel
-# (uses ARTAGON_RTK_WRAPPED env var; cannot run in parallel)
 
 bats_require_minimum_version 1.5.0
 load test_helper
 
-@test "rtk-init.bash: sourcing without rtk on PATH produces clear stderr" {
-  # Run in a clean PATH that excludes rtk.
-  unset ARTAGON_RTK_WRAPPED
-  run --separate-stderr env -i HOME="$HOME" PATH="/usr/bin:/bin" \
-    bash -c "source $REPO_ROOT/_shared/rtk/rtk-init.bash; echo done"
-  [ "$status" -eq 0 ]
-  [[ "$stderr" == *"rtk not on PATH"* ]]
+RTK_DIR="${REPO_ROOT}/modules/capabilities/rtk-terminal/scripts"
+
+@test "rtk-init.bash: missing rtk emits clear stderr and leaves ARTAGON_RTK_WRAPPED unset so later PATH retry works" {
+  bin="${TEST_TMP}/late-rtk"
+  mkdir -p "${bin}"
+  printf '#!/bin/sh\necho "rtk-called:$*"\n' > "${bin}/rtk"
+  chmod 0755 "${bin}/rtk"
+
+  run --separate-stderr env -i HOME="${HOME}" PATH="/usr/bin:/bin" "${BASH}" -c "
+    source '${RTK_DIR}/rtk-init.bash'
+    echo \"first:\${ARTAGON_RTK_WRAPPED:-unset}\"
+    PATH='${bin}:/usr/bin:/bin'
+    source '${RTK_DIR}/rtk-init.bash'
+    echo \"second:\${ARTAGON_RTK_WRAPPED:-unset}\"
+  "
+  [[ "${status}" -eq 0 ]]
+  [[ "${stderr}" == *"rtk not on PATH"* ]]
+  [[ "${output}" == *"first:unset"* ]]
+  [[ "${output}" == *"second:1"* ]]
 }
 
-@test "rtk-init.bash: re-wrap guard suppresses re-init" {
-  # Sourcing twice in same shell should be idempotent (returns early on second source).
-  result=$(bash -c "
-    source $REPO_ROOT/_shared/rtk/rtk-init.bash 2>/dev/null
-    source $REPO_ROOT/_shared/rtk/rtk-init.bash 2>/dev/null
-    echo \${ARTAGON_RTK_WRAPPED:-unset}
-  ")
-  [ "$result" = "1" ]
+@test "rtk-init.bash: _ARTAGON_RTK_RC_LOADED prevents ~/.bashrc recursion and handles Ubuntu alias grep with exit 0" {
+  bin="${TEST_TMP}/bash-bin"
+  mkdir -p "${bin}"
+  printf '#!/bin/sh\necho "rtk-stub:$*"\n' > "${bin}/rtk"
+  printf '#!/bin/sh\necho "real-grep"\n' > "${bin}/grep"
+  chmod 0755 "${bin}/rtk" "${bin}/grep"
+
+  # Simulate Ubuntu ~/.bashrc defining `alias grep='grep --color=auto'` AND re-sourcing rtk-init.bash!
+  cat > "${HOME}/.bashrc" <<EOF
+alias grep='grep --color=auto'
+source '${RTK_DIR}/rtk-init.bash'
+EOF
+
+  run env -i HOME="${HOME}" PATH="${bin}:/usr/bin:/bin" "${BASH}" -c "
+    source '${RTK_DIR}/rtk-init.bash'
+    rc=\$?
+    echo \"rc=\${rc}\"
+    type -t grep
+    grep foo
+  "
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == *"rc=0"* ]]
+  [[ "${output}" == *"function"* ]]
+  [[ "${output}" == *"rtk-stub:grep foo"* ]]
 }
 
-@test "rtk-init.bash: only wraps commands present on PATH" {
-  # Use a fixture PATH that has rtk + a couple commands, missing others.
-  bin=$(mktemp -d)
-  printf '#!/bin/sh\necho rtk-stub "$@"\n' > "$bin/rtk"
-  chmod +x "$bin/rtk"
-  printf '#!/bin/sh\necho real-grep\n' > "$bin/grep"
-  chmod +x "$bin/grep"
-  result=$(bash -c "
-    PATH='$bin:/usr/bin:/bin'
-    source $REPO_ROOT/_shared/rtk/rtk-init.bash 2>/dev/null
-    type grep | head -1
-    type cargo 2>&1 | head -1
-  ")
-  [[ "$result" == *"is a function"* ]]
-  # cargo not on PATH → should NOT be a function (no wrapper installed)
-  [[ "$result" != *"cargo is a function"* ]]
-  rm -rf "$bin"
+@test "rtk-init.bash: ARTAGON_RTK_WRAPPED is process-local (never exported to child bash)" {
+  bin="${TEST_TMP}/local-bin"
+  mkdir -p "${bin}"
+  printf '#!/bin/sh\necho rtk-stub\n' > "${bin}/rtk"
+  chmod 0755 "${bin}/rtk"
+
+  result="$(env -i HOME="${HOME}" PATH="${bin}:/usr/bin:/bin" "${BASH}" -c "
+    source '${RTK_DIR}/rtk-init.bash' 2>/dev/null
+    '${BASH}' -c 'echo \${ARTAGON_RTK_WRAPPED:-unset}'
+  ")"
+  [[ "${result}" = "unset" ]]
 }
 
-@test "rtk-init.bash: exported marker is NOT exported (process-local)" {
-  bin=$(mktemp -d)
-  printf '#!/bin/sh\necho rtk-stub\n' > "$bin/rtk"
-  chmod +x "$bin/rtk"
-  # Source in a parent shell, fork a child, and check that the child
-  # doesn't see ARTAGON_RTK_WRAPPED in its environment.
-  result=$(bash -c "
-    PATH='$bin:/usr/bin:/bin'
-    source $REPO_ROOT/_shared/rtk/rtk-init.bash 2>/dev/null
-    bash -c 'echo \${ARTAGON_RTK_WRAPPED:-unset}'
-  ")
-  [ "$result" = "unset" ]
-  rm -rf "$bin"
-}
+@test "rtk-init.fish: handles spaces in XDG/script path and retries cleanly after PATH update" {
+  require_bin fish
+  spaced="${TEST_TMP}/dir with spaces"
+  mkdir -p "${spaced}/bin"
+  cp "${RTK_DIR}/rtk-init.fish" "${spaced}/rtk-init.fish"
+  printf '#!/bin/sh\necho "rtk-fish:$*"\n' > "${spaced}/bin/rtk"
+  chmod 0755 "${spaced}/bin/rtk"
 
-@test "rtk-init.fish: sourcing without rtk produces clear stderr" {
-  if ! command -v fish >/dev/null 2>&1; then
-    skip "fish not on PATH"
-  fi
-  fish_path=$(command -v fish)
-  fish_dir=$(dirname "$fish_path")
-  # Use a sandbox bin dir to host fish-symlink without rtk, so fish can
-  # launch but rtk is absent from PATH.
-  sandbox=$(mktemp -d)
-  ln -s "$fish_path" "$sandbox/fish"
-  # Use --no-config to skip user fish config (which may auto-add
-  # /opt/homebrew/bin via fish_user_paths and re-pull rtk).
-  run --separate-stderr env -i HOME="$HOME" PATH="$sandbox:/usr/bin:/bin" \
-    fish --no-config -c "source $REPO_ROOT/_shared/rtk/rtk-init.fish; echo done"
-  [[ "$stderr" == *"rtk not on PATH"* ]]
-  rm -rf "$sandbox"
-  unset fish_dir
-}
+  fish_bin="$(command -v fish)"
+  sandbox="${TEST_TMP}/fish-only"
+  mkdir -p "${sandbox}"
+  ln -s "${fish_bin}" "${sandbox}/fish"
 
-@test "rtk-init.fish: defines find wrapper when rtk + find on PATH" {
-  if ! command -v fish >/dev/null 2>&1; then
-    skip "fish not on PATH"
-  fi
-  bin=$(mktemp -d)
-  printf '#!/bin/sh\necho rtk-stub\n' > "$bin/rtk"
-  chmod +x "$bin/rtk"
-  # Fish only wraps commands actually on PATH. `find` is at /usr/bin/find
-  # which we keep available; rg/grep depend on user install. Use find as
-  # the canonical test target.
-  result=$(fish -c "
-    set -gx PATH '$bin' /usr/bin /bin
-    source $REPO_ROOT/_shared/rtk/rtk-init.fish >/dev/null 2>&1
+  run --separate-stderr env -i HOME="${HOME}" PATH="${sandbox}:/usr/bin:/bin" "${sandbox}/fish" --no-config -c "
+    source '${spaced}/rtk-init.fish'
+    set -gx PATH '${spaced}/bin' /usr/bin /bin
+    source '${spaced}/rtk-init.fish'
     if functions -q find
-      echo 'yes'
+      echo wrapped-yes
     else
-      echo 'no'
+      echo wrapped-no
     end
-  ")
-  [ "$result" = "yes" ]
-  rm -rf "$bin"
+  "
+  [[ "${status}" -eq 0 ]]
+  [[ "${stderr}" == *"rtk not on PATH"* ]]
+  [[ "${output}" == *"wrapped-yes"* ]]
+}
+
+@test "rtk-init.zsh: ZDOTDIR proxy restores unset, HOME, and custom ZDOTDIR in both non-login and login shells" {
+  require_bin zsh
+  bin="${TEST_TMP}/zsh-bin"
+  mkdir -p "${bin}"
+  printf '#!/bin/sh\necho "rtk-zsh:$*"\n' > "${bin}/rtk"
+  chmod 0755 "${bin}/rtk"
+
+  # Prepare custom ZDOTDIR with user .zshrc and .zlogin markers.
+  custom_z="${TEST_TMP}/custom-zdot"
+  mkdir -p "${custom_z}"
+  printf 'USER_ZSHRC_RAN=1\n' > "${custom_z}/.zshrc"
+  printf 'USER_ZLOGIN_RAN=1\n' > "${custom_z}/.zlogin"
+  printf 'HOME_ZSHRC_RAN=1\n' > "${HOME}/.zshrc"
+  printf 'HOME_ZLOGIN_RAN=1\n' > "${HOME}/.zlogin"
+
+  proxy_dir="${RTK_DIR}/zsh"
+
+  # Case 1: ZDOTDIR originally UNSET -> non-login interactive shell restores unset ZDOTDIR & wraps find.
+  run env -i HOME="${HOME}" PATH="${bin}:/usr/bin:/bin" \
+    ZDOTDIR="${proxy_dir}" \
+    ARTAGON_ORIG_ZDOTDIR_SET=0 \
+    ARTAGON_ORIG_ZDOTDIR="" \
+    zsh -i -c 'echo "home_rc=${HOME_ZSHRC_RAN:-0} zdot=${ZDOTDIR-__UNSET__} wrapped=${ARTAGON_RTK_WRAPPED:-0}"; whence -w find'
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == *"home_rc=1 zdot=__UNSET__ wrapped=1"* ]]
+  [[ "${output}" == *"find: function"* ]]
+
+  # Case 2: ZDOTDIR originally CUSTOM -> login interactive shell sources both user .zshrc + .zlogin and restores custom ZDOTDIR!
+  run env -i HOME="${HOME}" PATH="${bin}:/usr/bin:/bin" \
+    ZDOTDIR="${proxy_dir}" \
+    ARTAGON_ORIG_ZDOTDIR_SET=1 \
+    ARTAGON_ORIG_ZDOTDIR="${custom_z}" \
+    zsh -l -i -c 'echo "rc=${USER_ZSHRC_RAN:-0} login=${USER_ZLOGIN_RAN:-0} zdot=${ZDOTDIR} wrapped=${ARTAGON_RTK_WRAPPED:-0}"'
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == *"rc=1 login=1 zdot=${custom_z} wrapped=1"* ]]
 }

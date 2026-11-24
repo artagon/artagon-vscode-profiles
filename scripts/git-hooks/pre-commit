@@ -1,58 +1,61 @@
 #!/usr/bin/env bash
+# pre-commit — Repository validation & artifact-sync pre-commit hook.
+# Does NOT require VS Code CLI (`code`) on PATH so pure config edits work anywhere.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${0}")" && pwd -P)"
+if [[ -n "${VSPCLI_ROOT:-}" ]]; then
+  ROOT="${VSPCLI_ROOT}"
+elif [[ -n "${GIT_DIR:-}" ]] && command -v git >/dev/null 2>&1 && git_top="$(git rev-parse --show-toplevel 2>/dev/null)" && [[ -n "${git_top}" ]]; then
+  ROOT="${git_top}"
+else
+  ROOT="$(CDPATH='' cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
+fi
 
 run() {
-  local description="$1"
+  local description="${1}"
   shift
-  echo "pre-commit: $description"
-  "$@"
+  echo "pre-commit: ${description}"
+  "${@}"
 }
 
-ensure_code_cli() {
-  if command -v code >/dev/null 2>&1; then
-    code --version >/dev/null
-    return 0
-  fi
-  if command -v code-insiders >/dev/null 2>&1; then
-    code-insiders --version >/dev/null
-    return 0
-  fi
-  echo "pre-commit: VS Code CLI (code or code-insiders) not found in PATH" >&2
+run "validating catalog, modules, and profiles" "${BASH}" "${ROOT}/scripts/vspcli" validate
+run "rebuilding composed settings, extensions, and exports" "${BASH}" "${ROOT}/scripts/vspcli" build
+
+# Check git porcelain independently (never mask git failures with `|| true`).
+if ! status_out="$(git -C "${ROOT}" status --porcelain --untracked-files=all -- _merged/ profiles/ exports/)"; then
+  echo "pre-commit: git status failed" >&2
   exit 1
-}
+fi
 
-run "validating JSON fragments" bash "$ROOT/scripts/validate-json.sh"
-run "ensuring VS Code CLI is available" ensure_code_cli
-run "composing profile settings" bash "$ROOT/scripts/compose-settings.sh"
-run "exporting profile bundles" bash "$ROOT/scripts/export-profiles.sh"
+dirty=""
+dirty_re='^(\?\?|.[A-Z?!]|DD|AU|UD|UA|DU|AA|UU)'
+LC_ALL=C
+while IFS= read -r line; do
+  [[ -n "${line}" ]] || continue
+  # Reject:
+  #   - untracked files: `??`
+  #   - any non-space worktree column (M, D, T, A, R, C, ?, !): `^.[A-Z?!]`
+  #   - any unmerged conflict state: DD, AU, UD, UA, DU, AA, UU
+  # Allows purely staged index changes like `M  _merged/rust.json` or `A  exports/ai.code-profile`.
+  if [[ "${line}" =~ ${dirty_re} ]]; then
+    if [[ -z "${dirty}" ]]; then
+      dirty="${line}"
+    else
+      dirty="${dirty}"$'\n'"${line}"
+    fi
+  fi
+done <<< "${status_out}"
 
-# If compose/export regenerated tracked files but the user did not stage those
-# changes, fail the commit with a clear message. Auto-staging silently would be
-# user-hostile (a doc-only commit could pull in unrelated regen). The CI gate
-# 'git diff --exit-code _merged/ exports/' fails for the same reason, so we want
-# the local hook to catch it first.
-# Match any non-clean porcelain line for _merged/ exports/. Column 1 is the
-# index status (A/M/D/R/C/?), column 2 is the worktree status (M/D/?). We
-# care about anything that would leave the next CI 'git diff --exit-code'
-# unhappy: untracked (??), unstaged-modify ( M), unstaged-delete ( D), and
-# also already-staged-but-modified-again (MM) etc. The regex below rejects
-# anything except a clean line.
-DIRTY=$(git -C "$ROOT" status --porcelain _merged/ exports/ | awk '$1 ~ /[?MDARC]/ || $2 ~ /[?MD]/' || true)
-if [ -n "$DIRTY" ]; then
+if [[ -n "${dirty}" ]]; then
   cat >&2 <<EOF
-pre-commit: compose/export regenerated tracked files that are not staged.
+pre-commit: vspcli build regenerated files that are unstaged, untracked, or conflicted.
 
 Affected:
-$DIRTY
+${dirty}
 
-This usually means you edited _shared/ or _overrides/ but did not run
-'bash scripts/compose-settings.sh && bash scripts/export-profiles.sh' and
-stage the resulting _merged/ and exports/ changes.
-
-Run those two scripts, 'git add _merged/ exports/', and commit again.
+Run 'bash scripts/vspcli build', stage the updated _merged/, profiles/, and exports/
+files ('git add _merged/ profiles/ exports/'), and commit again.
 EOF
   exit 1
 fi

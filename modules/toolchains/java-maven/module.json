@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "id": "java-maven",
+  "kind": "toolchain",
+  "description": "Java with Apache Maven build tool (mutually exclusive with java-gradle)",
+  "requires": ["java-base"],
+  "defaultWith": [],
+  "conflicts": ["java-gradle"],
+  "extensions": {
+    "workspace": [
+      "vscjava.vscode-maven"
+    ],
+    "profile": [],
+    "unwanted": [
+      "shirdows.vscode-maven-dependency-explorer"
+    ]
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": null
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 32,
+    "fallback": false,
+    "match": "any",
+    "supersedes": [],
+    "rules": [
+      { "type": "file", "path": "pom.xml" }
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+// Machine-scoped Gradle import arguments (forbidden in workspace settings).
+{
+  "java.import.gradle.arguments": "--parallel --build-cache",
+  "java.import.gradle.jvmArguments": "-Xms256m -Xmx2G -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8"
+}

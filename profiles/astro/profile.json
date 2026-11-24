@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "astro",
+  "description": "Astro + TypeScript web development with Tailwind CSS, Stylelint, and ESLint+Prettier (swap with --with biome)",
+  "useDefaults": true,
+  "modules": ["astro"],
+  "excludeModules": [],
+  "ux": "default",
+  "overrides": {
+    "workspace": {},
+    "profile": {}
+  }
+}

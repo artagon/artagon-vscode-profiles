@@ -1,0 +1,111 @@
+// Rust workspace settings: clippy on save, isolated RA targetDir, selective inlay hints,
+// hover/signature docs, and CodeLLDB defaults (matching cpp-base for polyglot safety).
+{
+  "rust-analyzer.procMacro.enable": true,
+  "rust-analyzer.cargo.buildScripts.enable": true,
+  "rust-analyzer.cargo.targetDir": true,
+  "rust-analyzer.cargo.extraEnv": {},
+
+  "rust-analyzer.cachePriming.numThreads": "physical",
+
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.check.allTargets": true,
+  "rust-analyzer.check.workspace": true,
+  "rust-analyzer.checkOnSave": true,
+
+  "rust-analyzer.diagnostics.experimental.enable": false,
+  "rust-analyzer.diagnostics.styleLints.enable": true,
+  "rust-analyzer.diagnostics.disabled": [],
+
+  "rust-analyzer.imports.granularity.group": "crate",
+  "rust-analyzer.imports.prefix": "crate",
+
+  "rust-analyzer.completion.autoimport.enable": true,
+  "rust-analyzer.completion.autoself.enable": true,
+  "rust-analyzer.completion.callable.snippets": "fill_arguments",
+  "rust-analyzer.completion.fullFunctionSignatures.enable": true,
+  "rust-analyzer.completion.limit": 128,
+  "rust-analyzer.completion.postfix.enable": true,
+  "rust-analyzer.completion.privateEditable.enable": true,
+
+  "rust-analyzer.inlayHints.typeHints.enable": true,
+  "rust-analyzer.inlayHints.typeHints.hideNamedConstructor": true,
+  "rust-analyzer.inlayHints.typeHints.hideClosureInitialization": true,
+  "rust-analyzer.inlayHints.parameterHints.enable": true,
+  "rust-analyzer.inlayHints.chainingHints.enable": true,
+  "rust-analyzer.inlayHints.bindingModeHints.enable": false,
+  "rust-analyzer.inlayHints.closureCaptureHints.enable": false,
+  "rust-analyzer.inlayHints.closureReturnTypeHints.enable": "with_block",
+  "rust-analyzer.inlayHints.closingBraceHints.enable": true,
+  "rust-analyzer.inlayHints.closingBraceHints.minLines": 25,
+  "rust-analyzer.inlayHints.lifetimeElisionHints.enable": "skip_trivial",
+  "rust-analyzer.inlayHints.expressionAdjustmentHints.enable": "never",
+  "rust-analyzer.inlayHints.discriminantHints.enable": "never",
+  "rust-analyzer.inlayHints.genericParameterHints.const.enable": true,
+  "rust-analyzer.inlayHints.genericParameterHints.type.enable": false,
+  "rust-analyzer.inlayHints.genericParameterHints.lifetime.enable": false,
+  "rust-analyzer.inlayHints.maxLength": 32,
+
+  "rust-analyzer.hover.actions.enable": true,
+  "rust-analyzer.hover.actions.run.enable": true,
+  "rust-analyzer.hover.actions.debug.enable": true,
+  "rust-analyzer.hover.actions.gotoTypeDef.enable": true,
+  "rust-analyzer.hover.actions.implementations.enable": true,
+  "rust-analyzer.hover.actions.references.enable": true,
+  "rust-analyzer.hover.documentation.enable": true,
+  "rust-analyzer.hover.documentation.keywords.enable": true,
+  "rust-analyzer.hover.links.enable": true,
+  "rust-analyzer.hover.memoryLayout.enable": true,
+  "rust-analyzer.hover.dropGlue.enable": true,
+  "rust-analyzer.signatureInfo.documentation.enable": true,
+
+  "rust-analyzer.semanticHighlighting.operator.specialization.enable": true,
+  "rust-analyzer.semanticHighlighting.punctuation.enable": true,
+  "rust-analyzer.semanticHighlighting.punctuation.specialization.enable": true,
+  "rust-analyzer.semanticHighlighting.strings.enable": true,
+
+  "rust-analyzer.lens.enable": true,
+  "rust-analyzer.lens.run.enable": true,
+  "rust-analyzer.lens.debug.enable": true,
+  "rust-analyzer.lens.implementations.enable": true,
+  "rust-analyzer.lens.references.adt.enable": true,
+  "rust-analyzer.lens.references.trait.enable": true,
+  "rust-analyzer.lens.references.enumVariant.enable": false,
+  "rust-analyzer.lens.references.method.enable": false,
+
+  "rust-analyzer.workspace.symbol.search.limit": 256,
+  "rust-analyzer.workspace.symbol.search.scope": "workspace",
+  "rust-analyzer.rustfmt.rangeFormatting.enable": false,
+
+  "lldb.displayFormat": "auto",
+  "lldb.dereferencePointers": true,
+  "lldb.showDisassembly": "never",
+  "lldb.suppressMissingSourceFiles": true,
+  "lldb.launch.terminal": "integrated",
+  "lldb.evaluationTimeout": 10,
+
+  "files.watcherExclude": {
+    "**/target/**": true,
+    "**/.cargo/**": true
+  },
+  "search.exclude": {
+    "**/target/**": true,
+    "**/.cargo/**": true
+  },
+
+  "testing.automaticallyOpenPeekView": "failureInVisibleDocument",
+
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer",
+    "editor.formatOnSave": true,
+    "editor.formatOnSaveMode": "file",
+    "editor.hover.delay": 300,
+    "editor.tabSize": 4,
+    "editor.rulers": [100],
+    "editor.suggest.snippetsPreventQuickSuggestions": false,
+    "editor.acceptSuggestionOnCommitCharacter": true,
+    "editor.suggestOnTriggerCharacters": true,
+    "editor.wordBasedSuggestions": "off",
+    "editor.semanticHighlighting.enabled": true
+  }
+}

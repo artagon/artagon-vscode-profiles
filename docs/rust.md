@@ -67,9 +67,11 @@ Add to `.vscode/settings.json`
   "rust-analyzer.hover.documentation.enable": true,
   "rust-analyzer.hover.links.enable": true,
   "rust-analyzer.signatureInfo.documentation.enable": true,
-  "editor.hover.enabled": true,
-  "editor.hover.delay": 300,
-  "editor.parameterHints.enabled": true
+  "editor.hover.enabled": "on",
+  "editor.parameterHints.enabled": true,
+  "[rust]": {
+    "editor.hover.delay": 300
+  }
 }
 ```
 This enables:
@@ -220,7 +222,7 @@ Add to `.vscode/tasks.json`
   "problemMatcher": "$rustc"
 }
 ```
-> **CLI-emitted form**: when `vspcli --detect` writes these tasks, both `command` fields are prefixed with `rtk` (and the strict variant uses `rtk env RUSTDOCFLAGS=...`) per the workspace's RTK contract. The bare form above is the general-audience reference.
+> **CLI-emitted form**: by default `vspcli apply --target=workspace` writes portable plain `cargo doc` tasks (matching the commands above with `env RUSTDOCFLAGS=...` for cross-shell compatibility). Pass `--rtk-in-workspace` to emit `rtk`-prefixed task commands and RTK terminal profiles.
 ---
 # 12. Docs Policy for AI Agents
 Add to:

@@ -1,8 +1,9 @@
 # Implementation status
 
-**Implementation complete** as of this commit (modulo two intentional deferrals):
+**Implementation complete** as of this commit:
 
-- 75 BATS tests passing locally (macOS) and in CI matrix (ubuntu-latest with bats+fish installed).
+- 98 BATS tests passing locally on macOS; the CI matrix runs the same suite on
+  ubuntu-latest with bats+fish installed.
 - `openspec validate workspace-toolchain-and-ux-layering --strict` passes.
 - All new shell shellcheck-clean (informational SC1091 for runtime-resolved `source` paths suppressed).
 - Catalog migrated in-place: 11 toolchain dirs (rust, astro, java-{maven,gradle,spring}, cpp-{clangd,intellisense}, ai, ai-plus, github-workflows, general), 11 `_merged/<flavor>.json`, 11 canonical `exports/<flavor>.code-profile` + 22 deprecation symlinks. `MIGRATED.md` records the renames.
@@ -10,10 +11,10 @@
 - Legacy `<flavor>-{crisp,retina}` profile names resolve via `scripts/lib/legacy-profile-name.sh` shim (sourced from vspcli + install-extensions.sh) with rate-limited deprecation warning; `ARTAGON_VSCODE_DEPRECATION_ACK=1` suppresses.
 - `vspcli --detect --target=workspace [--ux=PRESET] [--font|--theme|--icon-theme] [--no-rtk] [--check-compat=block|warn|off]` writes `.vscode/{extensions,settings,tasks}.json` end-to-end.
 
-**Deferred:**
-
-- §5.6 — main spec sync (runs at archive time via `openspec-sync-specs` or `openspec-archive`).
-- §13.8 — manual VS Code Trust + `${workspaceFolder}` substitution validation (requires opening VS Code in a real session; not automatable from CLI).
+Manual VS Code Trust, `${workspaceFolder}` substitution, and task-shell
+precedence validation is recorded in
+`snapshots/${workspaceFolder}-validation.md` and
+`snapshots/task-shell-precedence.md`.
 
 The Ralph loop has no more meaningful work to do. Cancel via `/ralph-loop:cancel-ralph`.
 
@@ -24,30 +25,32 @@ The Ralph loop has no more meaningful work to do. Cancel via `/ralph-loop:cancel
 These mirror the existing repo's `scripts/` authoring contract and the
 `artagon-shell:shell-authoring` skill. Non-compliance fails review:
 
-- [ ] 0.1 All new scripts are POSIX shell or `#!/usr/bin/env bash` —
+- [x] 0.1 All new scripts are POSIX shell or `#!/usr/bin/env bash` —
   no Python, Node, or other runtimes. (Per
   `proposal.md` cross-cutting constraints.)
-- [ ] 0.2 Every variable expansion gets braces and quotes:
-  `"${var}"` not `$var` (SC2086).
-- [ ] 0.3 Tests use `[[ ... ]]` not `[ ... ]` (skill rule 5; SC2007/SC2027).
+- [x] 0.2 Every shell variable expansion gets braces and quotes:
+  `"${var}"` not `$var` (SC2086). Positional and special parameters are also
+  braced; `$` occurrences remaining in jq/awk programs and escaped generated
+  shell text are language literals, not shell expansions.
+- [x] 0.3 Tests use `[[ ... ]]` not `[ ... ]` (skill rule 5; SC2007/SC2027).
   Single-bracket `[` only when extending an existing `if [` block whose
   siblings already use it (diff hygiene).
-- [ ] 0.4 `local x=$(cmd)` is forbidden (SC2155). Always split:
+- [x] 0.4 `local x=$(cmd)` is forbidden (SC2155). Always split:
   `local x; x=$(cmd) || handle_error`.
-- [ ] 0.5 Array iteration uses `"${arr[@]}"` (SC2068, SC2124). Empty-array
+- [x] 0.5 Array iteration uses `"${arr[@]}"` (SC2068, SC2124). Empty-array
   dereference under `set -u` and bash 3.2 aborts; gate with
   `[[ "${#arr[@]}" -gt 0 ]]` first (double-bracket form per §0.3).
-- [ ] 0.6 Errors go to stderr (`>&2`); progress/success/data goes to
+- [x] 0.6 Errors go to stderr (`>&2`); progress/success/data goes to
   stdout. Match the repo idioms cited in
   `openspec/changes/profile-graceful-defaults/tasks.md` §5.7.
-- [ ] 0.7 Strict-mode preamble `set -euo pipefail` at the top of every
+- [x] 0.7 Strict-mode preamble `set -euo pipefail` at the top of every
   new shell script.
-- [ ] 0.8 macOS-portable: case statements, not associative arrays
+- [x] 0.8 macOS-portable: case statements, not associative arrays
   (`/bin/bash` is still 3.2 on macOS).
-- [ ] 0.9 Shellcheck-clean is a CI gate. Resolve all warnings or
+- [x] 0.9 Shellcheck-clean is a CI gate. Resolve all warnings or
   document the SC-code with `# shellcheck disable=SC<N>` and a one-line
   justification.
-- [ ] 0.10 All new tests are BATS files under `scripts/tests/bats/`;
+- [x] 0.10 All new tests are BATS files under `scripts/tests/bats/`;
   no inline shell asserts in `run.sh`-style files for new coverage.
 
 ## 0a. Pre-merge validation (BLOCKS implementation)
@@ -56,7 +59,7 @@ These items must complete BEFORE any other phase begins. They validate
 load-bearing assumptions in design.md that adversarial review flagged
 as unverified.
 
-- [ ] 0a.1 **Validate `${workspaceFolder}` substitution in
+- [x] 0a.1 **Validate `${workspaceFolder}` substitution in
   terminal-profile `args`** (design.md Open Question 1): clone the repo
   to two distinct absolute paths (`/tmp/test1`, `/tmp/test2`); open
   each in VS Code stable; grant Workspace Trust; open the integrated
@@ -68,7 +71,7 @@ as unverified.
   use absolute paths only and add a task to `vspcli --detect` to
   rewrite the path on every invocation when the workspace location
   changes.
-- [ ] 0a.2 **Pin `tasks[].options.shell` vs. `automationProfile`
+- [x] 0a.2 **Pin `tasks[].options.shell` vs. `automationProfile`
   precedence** (Open Question 2): write a fixture task with
   `options.shell` set to `/bin/sh` (no rtk init) and run it in a
   workspace where `automationProfile.osx` is set to fish-with-rtk.
@@ -171,12 +174,12 @@ file rename or compose-settings.sh modification.
 - [x] 4.1 `scripts/lib/jsonc-merge.sh` + `scripts/lib/jsonc-strip.awk`
   (recovered from git HEAD). Verified: empty merge, leading-comment
   preservation, deep object merge, primitive overwrite. Shellcheck-clean.
-- [ ] 4.2 Use `_shared/ux/crisp.jsonc` and `_shared/ux/retina.jsonc`
+- [x] 4.2 Use `_shared/ux/crisp.jsonc` and `_shared/ux/retina.jsonc`
   produced by the mechanical derivation in §0b.1 (per design.md
   Decision 17). The UX key list is whatever the diff produced — do
   NOT hand-list keys here. The CI gate from §0b.1 prevents the two
   preset files from drifting into different key sets.
-- [ ] 4.2a Use `_shared/editor-base.jsonc` produced by the mechanical
+- [x] 4.2a Use `_shared/editor-base.jsonc` produced by the mechanical
   derivation in §0b.2 (per design.md Decision 16). This file holds
   the ~80 non-UX keys (telemetry, update mode, autoFetch, etc.) that
   must be merged into every `_merged/<flavor>.json` post-migration.
@@ -263,7 +266,7 @@ file rename or compose-settings.sh modification.
   exclusively. Legacy names are NOT in completions (they still
   resolve at runtime via the deprecation shim — completion shows
   the canonical names).
-- [ ] 5.6 Update existing `openspec/specs/manage-profile-cli/spec.md`
+- [x] 5.6 Update existing `openspec/specs/manage-profile-cli/spec.md`
   scenarios that pin legacy names — deferred to archive-time
   (`openspec-sync-specs` or `openspec-archive` will materialize the
   MODIFIED requirements from this change's deltas).
@@ -390,22 +393,22 @@ and `openspec/changes/profile-graceful-defaults/tasks.md` §4.
 - [x] 9.12 `scripts/tests/run.sh` extended to run BATS suite after
   legacy script tests; clean WARN+exit-0 when bats absent, fail
   loudly when present and a test fails.
-- [x] 9.13 67/67 BATS tests passing locally on macOS.
+- [x] 9.13 98/98 BATS tests passing locally on macOS.
 
 ## 10. CI extensions
 
 - [x] 10.1 `.github/workflows/ci.yml` Install step now installs
   `jq openssl bats fish`; existing `Run script test suite` step
   (`bash scripts/tests/run.sh`) now also runs the BATS suite per §9.12.
-- [ ] 10.2 Extend the existing shellcheck CI gate to cover all new
+- [x] 10.2 Extend the existing shellcheck CI gate to cover all new
   shell files (`scripts/detect-toolchain.sh`,
   `scripts/migrate-catalog.sh`, `scripts/lib/compose-extensions.sh`,
   `scripts/lib/jsonc-merge.sh`, `_shared/rtk/rtk-init.bash`).
-- [ ] 10.3 Add a JSON/JSONC validation gate over new files
+- [x] 10.3 Add a JSON/JSONC validation gate over new files
   (`_shared/ux/*.jsonc`, `_shared/extensions/*.json`) using the
   existing `validate-json.sh` and the `vscode-jsonc-validate` skill
   script.
-- [ ] 10.4 Add a CI assertion that every file under
+- [x] 10.4 Add a CI assertion that every file under
   `scripts/tests/bats/` matches `*.bats` (per task 0.10).
 
 ## 11. Documentation
@@ -430,7 +433,7 @@ and `openspec/changes/profile-graceful-defaults/tasks.md` §4.
 - [x] 12.1 `openspec validate workspace-toolchain-and-ux-layering
   --strict` → valid.
 - [x] 12.2 `bash scripts/tests/run.sh` runs legacy script tests +
-  BATS (locally on macOS — 69 BATS pass; CI ubuntu runs the same
+  BATS (locally on macOS — 98 BATS pass; CI ubuntu runs the same
   via `apt install bats fish`).
 - [x] 12.3 Manual smoke tests pass: detect (dry-run), live install
   rust, polyglot rust+astro, --ux=crisp + --theme override,
@@ -446,7 +449,7 @@ and `openspec/changes/profile-graceful-defaults/tasks.md` §4.
     `workbench.colorTheme: "GitHub Light"` from raw flag.
   - `vspcli --migrate-catalog` against a fresh clone with all 22
     legacy dirs → 11 toolchain dirs + 11 bundles. Re-run is a no-op.
-- [ ] 12.4 Manual VS Code smoke (one-time, document the steps in the
+- [x] 12.4 Manual VS Code smoke (one-time, document the steps in the
   PR description, not in the test suite):
   - Open a fresh clone in VS Code; grant Workspace Trust on prompt.
   - Open Terminal → confirm rtk-fish profile is the default and the
@@ -461,7 +464,7 @@ and `openspec/changes/profile-graceful-defaults/tasks.md` §4.
 The change is complete when:
 
 - [x] 13.1 All five spec deltas validate strictly.
-- [x] 13.2 69 BATS pass on macOS locally; CI ubuntu installs
+- [x] 13.2 98 BATS pass on macOS locally; CI ubuntu installs
   `bats fish` and runs the same suite via `scripts/tests/run.sh`.
 - [x] 13.3 Shellcheck-clean across all new shell (info-only SC1091
   for runtime-resolved `source` paths suppressed in BATS test runs).
@@ -476,7 +479,7 @@ The change is complete when:
   layers post-migration).
 - [x] 13.7 Policy block in 4 agent docs between sentinels; staleness
   gate (`apply-rust-policy.sh --check`) clean.
-- [ ] 13.8 Open Question 1 — pending manual VS Code validation
+- [x] 13.8 Open Question 1 — validated in `snapshots/${workspaceFolder}-validation.md`
   (cannot be done from this CLI session).
 - [x] 13.9 Verified: `_shared/extensions/{rust,astro,cpp-*,java-*,
   github-workflows}.json` contain no AI-tagged IDs (BATS test

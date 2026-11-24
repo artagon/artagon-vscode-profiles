@@ -1,132 +1,244 @@
 # shellcheck shell=bash
-# Pin manifest helper. Source from scripts that hand IDs to
-# `code --install-extension`. Looks up `_catalog/extension-pins.json`
-# (or override via ARTAGON_VSCODE_PINS_FILE) and, when an ID is pinned,
-# fetches its VSIX from the recorded URL and verifies the recorded
-# sha256 before install.
+# Pin manifest helper backed by catalog/extension-pins.json.
+# Sourced library: pure Bash 3.2 + jq + curl, NEVER mutates caller shell options.
 #
-# Schema: { "version": 1, "pins": { "<publisher>.<name>": { "version": "...", "sha256": "<hex>", "vsix_url": "https://..." }, ... } }
-#
-# Bypass: ARTAGON_VSCODE_BYPASS_PINS=1 disables pin lookup entirely
-# (live marketplace path for every install). Emits a one-time stderr
-# notice per process.
-#
-# Failure mode is closed: on hash mismatch or fetch failure, the
-# install is REFUSED — no live-marketplace fallback. That fallback
-# would defeat the entire point of pinning.
+# Case-insensitive lookup, strict official https:// Marketplace host + redirect validation,
+# fail-closed SHA-256 verification without live Marketplace fallback.
+# Relax URL host/protocol checks ONLY when ARTAGON_VSCODE_ALLOW_TEST_PIN_URL=1
+# (for offline localhost/file BATS test fixtures).
 
-## _vsix_pin_hasher
-## Echoes the available sha256 hasher command-line ("sha256sum" or
-## "shasum -a 256"); returns non-zero with a stderr error if neither
-## is on PATH.
-_vsix_pin_hasher() {
+_vsix_pin_sha256() {
+  local path="${1}"
   if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s\n' 'sha256sum'
+    sha256sum < "${path}" | awk '{print $1}'
     return 0
   fi
   if command -v shasum >/dev/null 2>&1; then
-    printf '%s\n' 'shasum -a 256'
+    shasum -a 256 < "${path}" | awk '{print $1}'
     return 0
   fi
   echo "vsix-pin: need sha256sum or shasum for VSIX verification" >&2
   return 1
 }
 
-## _vsix_pin_sha256 <path>
-## Echoes the lowercase hex sha256 of <path>. Wraps the available hasher.
-_vsix_pin_sha256() {
-  local path="$1"
-  local hasher
-  hasher=$(_vsix_pin_hasher) || return 1
-  # word-split intentional: hasher is a 1-or-2-token command line.
-  # shellcheck disable=SC2086
-  ${hasher} "${path}" | awk '{print $1}'
-}
-
-## pins_file_path
-## Resolves the active pin manifest path: ARTAGON_VSCODE_PINS_FILE
-## override or the repo-default _catalog/extension-pins.json.
-## Caller passes the script's resolved repo root as $1 (so the helper
-## doesn't need to walk up from its own location, which is brittle
-## when sourced).
 pins_file_path() {
-  local repo_root="$1"
-  if [ -n "${ARTAGON_VSCODE_PINS_FILE:-}" ]; then
+  local repo_root="${1}"
+  if [[ -n "${ARTAGON_VSCODE_PINS_FILE:-}" ]]; then
     printf '%s\n' "${ARTAGON_VSCODE_PINS_FILE}"
     return 0
   fi
-  printf '%s\n' "${repo_root}/_catalog/extension-pins.json"
+  printf '%s\n' "${repo_root}/catalog/extension-pins.json"
 }
 
-## bypass_pins_active
-## Returns 0 if ARTAGON_VSCODE_BYPASS_PINS=1, 1 otherwise. Emits a
-## one-time stderr notice per process when bypass is active.
 bypass_pins_active() {
-  if [ "${ARTAGON_VSCODE_BYPASS_PINS:-0}" != "1" ]; then
+  if [[ "${ARTAGON_VSCODE_BYPASS_PINS:-0}" != "1" ]]; then
     return 1
   fi
-  if [ "${_artagon_pins_bypass_warned:-0}" != "1" ]; then
+  if [[ "${_artagon_pins_bypass_warned:-0}" != "1" ]]; then
     echo "vsix-pin: bypassing pin manifest (ARTAGON_VSCODE_BYPASS_PINS=1)" >&2
     _artagon_pins_bypass_warned=1
   fi
   return 0
 }
 
-## lookup_pin <id> <pins_file>
-## Prints the pin's version, sha256, and vsix_url to stdout
-## (newline-separated, in that order) when <id> is listed and
-## <pins_file> exists; prints nothing and returns 0 otherwise.
-## Returns non-zero only on jq parse failure (manifest is malformed).
-lookup_pin() {
-  local id="$1"
-  local pins_file="$2"
-  if [ ! -f "${pins_file}" ]; then
+# Validate that a VSIX URL uses https:// and an official Marketplace host with NO
+# userinfo (`@`), query/fragment authority spoofing (`?`, `#`), or invalid labels.
+_vsix_pin_validate_url() {
+  local url="${1}"
+  if [[ "${ARTAGON_VSCODE_ALLOW_TEST_PIN_URL:-0}" == "1" ]]; then
+    case "${url}" in
+      https://*|http://127.0.0.1*|http://localhost*|file://*) return 0 ;;
+      *)
+        printf 'vsix-pin: disallowed test URL scheme: %s\n' "${url}" >&2
+        return 1
+        ;;
+    esac
+  fi
+
+  local url_re='^https://([A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+)(:[0-9]+)?(/.*)?$'
+  if [[ ! "${url}" =~ ${url_re} ]]; then
+    printf 'vsix-pin: rejected malformed or non-https vsix_url: %s\n' "${url}" >&2
+    return 1
+  fi
+
+  local host_lc
+  host_lc="$(printf '%s' "${BASH_REMATCH[1]}" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  local mp_re='^(marketplace\.visualstudio\.com|[a-z0-9-]+(\.[a-z0-9-]+)*\.gallery(cdn)?\.vsassets\.io)$'
+  if [[ "${host_lc}" =~ ${mp_re} ]]; then
     return 0
   fi
-  local entry
-  entry=$(jq -r --arg id "${id}" '.pins[$id] // empty | "\(.version // "")\n\(.sha256 // "")\n\(.vsix_url // "")"' "${pins_file}") || return 1
-  if [ -z "${entry}" ] || [ "${entry}" = $'\n\n' ]; then
-    return 0
-  fi
-  printf '%s\n' "${entry}"
+  printf 'vsix-pin: rejected non-Marketplace host %q in %s\n' "${host_lc}" "${url}" >&2
+  return 1
 }
 
-## fetch_and_verify_vsix <id> <vsix_url> <expected_sha256> <out_path>
-## Fetches the VSIX from <vsix_url> via curl (-fsSL), verifies the
-## sha256 matches <expected_sha256>, and on success leaves the
-## verified file at <out_path>. Atomic write via a sibling temp file.
-## Returns non-zero with a stderr error on any failure.
+# lookup_pin <id> <pins_file>
+# Case-insensitive lookup over .pins; prints version, sha256, vsix_url on 3 lines.
+# Fails closed on:
+#   - explicit ARTAGON_VSCODE_PINS_FILE set but missing
+#   - duplicate case-colliding keys in .pins
+#   - malformed pin entry missing sha256 or vsix_url
+#   - pinRequired=true when id is absent
+lookup_pin() {
+  local id="${1}"
+  local pins_file="${2}"
+  if [[ ! -f "${pins_file}" ]]; then
+    if [[ -n "${ARTAGON_VSCODE_PINS_FILE:-}" ]]; then
+      printf 'vsix-pin: explicit ARTAGON_VSCODE_PINS_FILE not found: %s\n' "${pins_file}" >&2
+      return 1
+    fi
+    return 0
+  fi
+
+  local pin_required
+  pin_required="$(jq -r '.pinRequired // false' "${pins_file}")" || return 1
+
+  local match_count
+  match_count="$(jq -r --arg id "${id}" '
+    ($id | ascii_downcase) as $k
+    | (.pins // {}) | to_entries | map(select((.key | ascii_downcase) == $k)) | length
+  ' "${pins_file}")" || return 1
+
+  if [[ "${match_count}" -gt 1 ]]; then
+    printf 'vsix-pin: duplicate case-colliding pin entries for %s in %s\n' "${id}" "${pins_file}" >&2
+    return 1
+  fi
+
+  if [[ "${match_count}" -eq 0 ]]; then
+    if [[ "${pin_required}" == "true" ]]; then
+      printf 'vsix-pin: pinRequired=true in %s but no pin exists for %s\n' "${pins_file}" "${id}" >&2
+      return 1
+    fi
+    return 0
+  fi
+
+  local ver sha url
+  ver="$(jq -r --arg id "${id}" '($id | ascii_downcase) as $k | (.pins // {}) | to_entries | map(select((.key | ascii_downcase) == $k))[0].value.version // ""' "${pins_file}")" || return 1
+  sha="$(jq -r --arg id "${id}" '($id | ascii_downcase) as $k | (.pins // {}) | to_entries | map(select((.key | ascii_downcase) == $k))[0].value.sha256 // ""' "${pins_file}")" || return 1
+  url="$(jq -r --arg id "${id}" '($id | ascii_downcase) as $k | (.pins // {}) | to_entries | map(select((.key | ascii_downcase) == $k))[0].value.vsix_url // ""' "${pins_file}")" || return 1
+
+  if [[ -z "${sha}" || -z "${url}" ]]; then
+    printf 'vsix-pin: malformed pin entry for %s in %s (missing sha256 or vsix_url)\n' "${id}" "${pins_file}" >&2
+    return 1
+  fi
+
+  printf '%s\n%s\n%s\n' "${ver}" "${sha}" "${url}"
+}
+
+# fetch_and_verify_vsix <id> <vsix_url> <expected_sha256> <out_path>
+# When VSCODE_VSIX_CACHE_DIR is set (non-empty), copies cached VSIX into private 0600 temp
+# file BEFORE computing SHA-256 (zero TOCTOU), falls through to curl on miss/eviction/mismatch,
+# and atomically populates the 0700 content-addressed cache on verified download.
 fetch_and_verify_vsix() {
-  local id="$1"
-  local url="$2"
-  local expected="$3"
-  local out_path="$4"
+  local id="${1}"
+  local url="${2}"
+  local expected
+  expected="$(printf '%s' "${3}" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  local out_path="${4}"
+
+  local id_lc
+  id_lc="$(printf '%s' "${id}" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  local id_re='^[a-z0-9][a-z0-9._-]*\.[a-z0-9][a-z0-9._-]*$'
+  if [[ ! "${id_lc}" =~ ${id_re} || "${id_lc}" == *..* ]]; then
+    printf 'vsix-pin: invalid extension id: %q\n' "${id}" >&2
+    return 1
+  fi
+
+  if [[ ! "${expected}" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'vsix-pin: invalid sha256 digest for %s: %q\n' "${id}" "${expected}" >&2
+    return 1
+  fi
+
+  _vsix_pin_validate_url "${url}" || return 1
+
+  local out_dir
+  out_dir="$(dirname -- "${out_path}")"
+  mkdir -p -- "${out_dir}"
+
+  # Content-addressed local cache check: copy to private 0600 temp FIRST, then hash private copy.
+  local cache_dir="${VSCODE_VSIX_CACHE_DIR:-}"
+  local cache_file=""
+  if [[ -n "${cache_dir}" && ! -L "${cache_dir}" ]]; then
+    cache_file="${cache_dir}/${id_lc}-${expected}.vsix"
+    if [[ -f "${cache_file}" && ! -L "${cache_file}" ]]; then
+      local ctmp=""
+      ctmp="$(mktemp "${out_dir}/.vsix-cache.XXXXXX" 2>/dev/null || true)"
+      if [[ -n "${ctmp}" ]]; then
+        chmod -- 0600 "${ctmp}" 2>/dev/null || true
+        if cp -- "${cache_file}" "${ctmp}" 2>/dev/null && chmod -- 0600 "${ctmp}" 2>/dev/null; then
+          local cached_sha=""
+          cached_sha="$(_vsix_pin_sha256 "${ctmp}" 2>/dev/null || true)"
+          if [[ "${cached_sha}" == "${expected}" ]]; then
+            if mv -f -- "${ctmp}" "${out_path}"; then
+              return 0
+            fi
+          else
+            # Completed read mismatched expected SHA-256: evict non-symlink corrupt cache file and re-fetch.
+            if [[ -f "${cache_file}" && ! -L "${cache_file}" ]]; then
+              rm -f -- "${cache_file}"
+            fi
+          fi
+        fi
+        rm -f -- "${ctmp}"
+      fi
+    fi
+  fi
 
   if ! command -v curl >/dev/null 2>&1; then
     echo "vsix-pin: curl required to verify pinned VSIXs (set ARTAGON_VSCODE_BYPASS_PINS=1 to disable pinning)" >&2
     return 1
   fi
 
-  local out_dir
-  out_dir=$(dirname "${out_path}")
-  mkdir -p "${out_dir}"
+  local tmp
+  tmp="$(mktemp "${out_dir}/.vsix-pin.XXXXXX")" || return 1
+  chmod -- 0600 "${tmp}" 2>/dev/null || true
 
-  local tmp="${out_path}.tmp.$$"
-  if ! curl -fsSL --max-time 60 -o "${tmp}" "${url}"; then
-    rm -f "${tmp}"
+  local curl_rc=0
+  local eff_url=""
+  if [[ "${ARTAGON_VSCODE_ALLOW_TEST_PIN_URL:-0}" == "1" ]]; then
+    eff_url="$(curl -fsSL --max-time 60 -w '%{url_effective}' -o "${tmp}" -- "${url}")" || curl_rc=$?
+  else
+    eff_url="$(curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 60 -w '%{url_effective}' -o "${tmp}" -- "${url}")" || curl_rc=$?
+  fi
+  if [[ "${curl_rc}" -ne 0 ]]; then
+    rm -f -- "${tmp}"
     printf 'vsix-pin: failed to fetch %s\n  url: %s\n' "${id}" "${url}" >&2
     return 1
   fi
 
+  # Re-verify final effective URL after any 3xx redirects so off-host redirects cannot bypass allowlist.
+  if [[ -n "${eff_url}" && "${ARTAGON_VSCODE_ALLOW_TEST_PIN_URL:-0}" != "1" ]]; then
+    if ! _vsix_pin_validate_url "${eff_url}"; then
+      rm -f -- "${tmp}"
+      printf 'vsix-pin: rejected off-host redirect for %s -> %s\n' "${id}" "${eff_url}" >&2
+      return 1
+    fi
+  fi
+
   local actual
-  actual=$(_vsix_pin_sha256 "${tmp}") || { rm -f "${tmp}"; return 1; }
-  if [ "${actual}" != "${expected}" ]; then
-    rm -f "${tmp}"
+  actual="$(_vsix_pin_sha256 "${tmp}")" || { rm -f -- "${tmp}"; return 1; }
+  if [[ "${actual}" != "${expected}" ]]; then
+    rm -f -- "${tmp}"
     printf 'vsix-pin: sha256 mismatch for %s\n  expected: %s\n  actual:   %s\n  url: %s\n' \
       "${id}" "${expected}" "${actual}" "${url}" >&2
     return 1
   fi
 
-  mv -f "${tmp}" "${out_path}"
+  chmod -- 0600 "${tmp}" 2>/dev/null || true
+  if [[ -n "${cache_file}" && ! -L "${cache_dir}" ]]; then
+    mkdir -p -- "${cache_dir}" 2>/dev/null || true
+    chmod -- 0700 "${cache_dir}" 2>/dev/null || true
+    if [[ -d "${cache_dir}" && ! -L "${cache_dir}" && ! -L "${cache_file}" && ! -d "${cache_file}" ]]; then
+      local csave
+      csave="$(mktemp "${cache_dir}/.vsix-save.XXXXXX" 2>/dev/null || true)"
+      if [[ -n "${csave}" ]]; then
+        if cp -- "${tmp}" "${csave}" 2>/dev/null && chmod -- 0600 "${csave}" 2>/dev/null; then
+          mv -f -- "${csave}" "${cache_file}" 2>/dev/null || rm -f -- "${csave}"
+        else
+          rm -f -- "${csave}"
+        fi
+      fi
+    fi
+  fi
+  mv -f -- "${tmp}" "${out_path}"
   return 0
 }

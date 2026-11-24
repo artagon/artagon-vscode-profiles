@@ -1,0 +1,16 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "fixture: explicit sh task",
+      "type": "shell",
+      "command": "printf 'task-shell=%s\\n' \"$0\"",
+      "options": {
+        "shell": {
+          "executable": "/bin/sh",
+          "args": ["-c"]
+        }
+      }
+    }
+  ]
+}

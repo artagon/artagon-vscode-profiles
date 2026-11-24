@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "id": "cpp-intellisense",
+  "kind": "toolchain",
+  "description": "C/C++ powered by Microsoft C/C++ IntelliSense (mutually exclusive with cpp-clangd)",
+  "requires": ["cpp-base"],
+  "defaultWith": [],
+  "conflicts": ["cpp-clangd"],
+  "extensions": {
+    "workspace": [
+      "ms-vscode.cpptools"
+    ],
+    "profile": [],
+    "unwanted": [
+      "llvm-vs-code-extensions.vscode-clangd",
+      "ms-vscode.cpptools-extension-pack"
+    ]
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": null
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 42,
+    "fallback": false,
+    "match": "any",
+    "supersedes": [],
+    "rules": [
+      {
+        "type": "file_and_absent",
+        "present": "CMakeLists.txt",
+        "absent": ".clangd"
+      }
+    ]
+  }
+}

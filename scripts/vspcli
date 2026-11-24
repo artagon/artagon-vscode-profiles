@@ -1,462 +1,750 @@
 #!/usr/bin/env bash
+# vspcli — Unified pure Bash 3.2 + jq front-door CLI for artagon-vscode-profiles.
+# Supports unified verbs (build, apply, detect, reconcile, doctor, validate, export,
+# import, completions, list, open, install-ext) AND backwards-compatible legacy flags.
 set -euo pipefail
 
+SCRIPT_ROOT="$(CDPATH='' cd -- "$(dirname -- "${0}")/.." && pwd -P)"
+ROOT="${VSPCLI_ROOT:-${SCRIPT_ROOT}}"
+SCRIPTS_DIR="${SCRIPT_ROOT}/scripts"
+LIB_DIR="${SCRIPTS_DIR}/lib"
+
+# shellcheck source=scripts/lib/common.sh
+source "${LIB_DIR}/common.sh"
+# shellcheck source=scripts/lib/catalog.sh
+source "${LIB_DIR}/catalog.sh"
+# shellcheck source=scripts/lib/extension-id.sh
+source "${LIB_DIR}/extension-id.sh"
+# shellcheck source=scripts/lib/vsix-pin.sh
+source "${LIB_DIR}/vsix-pin.sh"
+# shellcheck source=scripts/lib/module-resolver.sh
+source "${LIB_DIR}/module-resolver.sh"
+# shellcheck source=scripts/lib/compiler.sh
+source "${LIB_DIR}/compiler.sh"
+# shellcheck source=scripts/lib/vscode-storage.sh
+source "${LIB_DIR}/vscode-storage.sh"
+# shellcheck source=scripts/lib/legacy-profile-name.sh
+source "${LIB_DIR}/legacy-profile-name.sh"
+
 usage() {
-  cat <<USAGE
-vspcli - VS Code profile helper
+  cat <<'EOF'
+vspcli — Manage Artagon VS Code capability modules, workspaces, and profiles
 
-Usage:
-  vspcli [options]
+Verbs:
+  vspcli build [profile...]             Compile _merged/, profiles/*/extensions.json, exports/, SHA256SUMS under one lock
+  vspcli apply [options] [path]         Apply modules to --target=workspace|profile|global
+  vspcli detect [options] [path]        Detect workspace toolchains and capabilities
+  vspcli reconcile [options]            Reconcile installed VS Code profile extensions (compromised-first)
+  vspcli doctor [--strict]              Read-only environment, catalog, compromised, and Default-profile diagnostics
+  vspcli validate                       Validate catalog, modules, profiles, scopes, security deny-list, and SHA256SUMS
+  vspcli export [profile...]            Export UX-agnostic .code-profile bundles and SHA256SUMS
+  vspcli import <name> <bundle> [opts]  Import .code-profile bundle with pre-mutation security checks
+  vspcli list                           List canonical profile recipes
+  vspcli open <profile> [path]          Open workspace in VS Code profile (with -- "$path")
+  vspcli install-ext <profile> <id>     Install single extension with allowlist + VSIX pin enforcement
+  vspcli completions <bash|zsh|fish>    Output dynamic shell completion snippet
 
-Options:
-  -l, --list                 List available profiles
-  -o, --open PROFILE PATH    Open PATH with the given profile (VS Code)
-  -i, --install PROFILE [--group <name> ...]
-                             Install declared extensions for PROFILE (use "all" for every profile)
-  -E, --install-ext PROFILE EXT
-                             Install a single VS Code extension into PROFILE
-  -G, --install-groups PROFILE GROUP [GROUP ...]
-                             Install specific extension groups (AI, CMake, Java, Rust, General) for PROFILE
-  -c, --compose [PROFILES]   Compose settings (all if none provided; pass profiles to limit)
-  -x, --export [PROFILES]    Export profiles (all if none provided; pass profiles to limit)
-  -O, --open-profiles [PROFILES]
-                             Run open-profiles.sh (all profiles if none provided)
-      --skip-install         With --open-profiles, skip installing extensions (sets VSCODE_SKIP_EXTENSION_INSTALL=1)
-  -p, --profile-import PROFILE FILE
-                             Import a .code-profile bundle into the named profile
-  -h, --help                 Show this help message
-
-Examples:
-  vspcli --list
-  vspcli --install ai-profile-crisp
-  vspcli --install all
-  vspcli --open ai-profile-crisp /path/to/workspace
-  vspcli --install-ext rust-profile-retina github.copilot
-  vspcli --install-groups java-profile-crisp AI Rust
-  vspcli --compose cpp-clangd cpp-intellisense
-  vspcli --export java-profile-crisp
-  vspcli --open-profiles rust-profile-retina java-profile-retina
-  vspcli --profile-import rust-profile-retina ~/Downloads/team-standard.code-profile
-
-Completion:
-  vspcli --completion=(bash|zsh|fish)
-USAGE
+Backwards-compatible flags:
+  --list, --completion <sh>, --open <profile> [path], --open-profiles [--skip-install],
+  --compose [profile...], --export [profile...], --install <profile|all> [opts],
+  --install-ext <profile> <id>, --profile-import <name> <bundle> [opts],
+  --detect [options] [path], --migrate-catalog [--doctor|--refresh-symlinks|--finalize],
+  --help, -h
+EOF
 }
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SCRIPT_DIR="$ROOT/scripts"
-# shellcheck source=lib/extension-id.sh
-source "$SCRIPT_DIR/lib/extension-id.sh"
-
-list_profiles() {
-  find "$ROOT/profiles" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort
-}
-
-profiles_space_list() {
-  # macOS BSD paste requires a file arg; use tr for portability.
-  list_profiles | tr '\n' ' ' | sed 's/ $//'
-}
-
-open_profile() {
-  local profile="$1" path="$2"
-  if ! command -v code >/dev/null 2>&1; then
-    echo "VS Code CLI 'code' not found" >&2
-    exit 1
-  fi
-  code --profile "$profile" "$path"
-}
-
-install_extensions() {
-  bash "$SCRIPT_DIR/install-extensions.sh" "$@"
-}
-
-install_single_extension() {
-  local profile="$1" ext="$2"
-  if ! command -v code >/dev/null 2>&1; then
-    echo "VS Code CLI 'code' not found" >&2
-    exit 1
-  fi
-  if ! validate_extension_id "$ext"; then
-    exit 1
-  fi
-  echo "Installing $ext for profile $profile"
-  if ! code --profile "$profile" --install-extension "$ext"; then
-    echo "Warning: failed to install $ext for $profile" >&2
-    return 1
+need_val() {
+  if [[ $# -lt 2 || -z "${2}" ]]; then
+    printf 'vspcli: %s requires a value\n' "${1}" >&2
+    exit 4
   fi
 }
 
-install_groups_for_profile() {
-  local profile="$1"
-  shift
-  if [[ $# -eq 0 ]]; then
-    echo "Error: --install-groups requires at least one GROUP" >&2
-    exit 1
-  fi
-  local args=()
-  for group in "$@"; do
-    args+=("--group" "$group")
-  done
-  install_extensions "$profile" "${args[@]}"
-}
-compose_profiles() {
-  if [[ $# -gt 0 ]]; then
-    bash "$SCRIPT_DIR/compose-settings.sh" "$@"
-  else
-    bash "$SCRIPT_DIR/compose-settings.sh"
-  fi
+cmd_list() {
+  discover_profiles "${ROOT}"
 }
 
-export_profiles() {
-  if [[ $# -gt 0 ]]; then
-    bash "$SCRIPT_DIR/export-profiles.sh" "$@"
-  else
-    bash "$SCRIPT_DIR/export-profiles.sh"
+cmd_completions() {
+  local shell_name="${1:-}"
+  if [[ -z "${shell_name}" ]]; then
+    echo "vspcli: completions requires shell name (bash, zsh, fish)" >&2
+    exit 4
   fi
-}
+  local profiles_str modules_str
+  profiles_str="$(discover_profiles "${ROOT}" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  modules_str="$(discover_modules "${ROOT}" 2>/dev/null | awk -F'\t' '{print $1}' | LC_ALL=C sort | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  local verbs="build apply detect reconcile doctor validate export import completions list open install-ext"
+  local flags="--list --completion --open --open-profiles --compose --export --install --install-ext --profile-import --detect --target --ux --ux-target --ux-in-workspace --with --without --check-compat --no-batch --dry-run --help"
 
-open_profiles_batch() {
-  local env_skip="${OPEN_PROFILES_SKIP_INSTALL:-0}"
-  if [[ $# -gt 0 ]]; then
-    VSCODE_SKIP_EXTENSION_INSTALL="$env_skip" bash "$SCRIPT_DIR/open-profiles.sh" "$@"
-  else
-    VSCODE_SKIP_EXTENSION_INSTALL="$env_skip" bash "$SCRIPT_DIR/open-profiles.sh"
-  fi
-}
-
-import_profile_bundle() {
-  local profile="$1" file="$2"
-  bash "$SCRIPT_DIR/import-profile.sh" "$profile" "$file"
-}
-
-print_completion() {
-  local shell="$1"
-  local profiles
-  profiles=$(profiles_space_list)
-  case "$shell" in
+  case "${shell_name}" in
     bash)
-      cat <<BASH
+      cat <<EOF
 _vspcli_completions() {
-  local cur prev
-  COMPREPLY=()
-  cur="\${COMP_WORDS[COMP_CWORD]:-}"
-  prev="\${COMP_WORDS[COMP_CWORD-1]:-}"
-  local opts="--help --list --open --install --install-ext --install-groups --compose --export --open-profiles --skip-install --profile-import --detect --target --ux --font --font-size --theme --icon-theme --migrate-catalog --toolchain --no-detect --no-rtk --check-compat --dry-run"
-  local profiles="$profiles"
-  if [[ \$cur == -* ]]; then
-    COMPREPLY=( \$(compgen -W "\$opts" -- "\$cur") )
-    return 0
-  fi
-  case \$prev in
-    --open)
-      COMPREPLY=( \$(compgen -W "\$profiles" -- "\$cur") )
-      return 0
-      ;;
-    --install|--install-ext|--install-groups|--toolchain)
-      COMPREPLY=( \$(compgen -W "\$profiles" -- "\$cur") )
-      return 0
-      ;;
-    --ux)
-      COMPREPLY=( \$(compgen -W "crisp retina default" -- "\$cur") )
-      return 0
-      ;;
-    --target)
-      COMPREPLY=( \$(compgen -W "workspace profile global" -- "\$cur") )
-      return 0
-      ;;
-    --check-compat)
-      COMPREPLY=( \$(compgen -W "block warn off" -- "\$cur") )
-      return 0
-      ;;
-    --compose|--export|--open-profiles|--profile-import)
-      COMPREPLY=( \$(compgen -W "\$profiles" -- "\$cur") )
-      return 0
-      ;;
-  esac
+  local cur="\${COMP_WORDS[COMP_CWORD]}"
+  local words="${verbs} ${flags} ${profiles_str} ${modules_str}"
+  COMPREPLY=( \$(compgen -W "\${words}" -- "\${cur}") )
 }
 complete -F _vspcli_completions vspcli
-BASH
+EOF
       ;;
     zsh)
-      cat <<ZSH
+      cat <<EOF
 #compdef vspcli
-_arguments \
-  '(-h --help)'{-h,--help}'[Show help]' \
-  '(-l --list)'{-l,--list}'[List profiles]' \
-  '(-o --open)'{-o,--open}'[Open profile + path]:profile:( $profiles ):path:_files' \
-  '(-i --install)'{-i,--install}'[Install extensions]:profile:( $profiles )' \
-  '(-E --install-ext)'{-E,--install-ext}'[Install extension]:profile:( $profiles ):ext:' \
-  '(-G --install-groups)'{-G,--install-groups}'[Install extension groups]:profile:( $profiles ):*:group:( AI CMake Java Rust General )' \
-  '(-c --compose)'{-c,--compose}'[Compose profiles]:*:profiles:( $profiles )' \
-  '(-x --export)'{-x,--export}'[Export profiles]:*:profiles:( $profiles )' \
-  '(-O --open-profiles)'{-O,--open-profiles}'[Run open-profiles.sh]:*:profiles:( $profiles )' \
-  '--skip-install[Skip extension installs with --open-profiles]' \\
-  '(-p --profile-import)'{-p,--profile-import}'[Import .code-profile]:profile:( $profiles ):file:_files'
-ZSH
+_vspcli() {
+  local -a verbs profiles modules
+  verbs=(${verbs})
+  profiles=(${profiles_str})
+  modules=(${modules_str})
+  _arguments '1:command:(${verbs} ${flags})' '*:target:(${profiles_str} ${modules_str})'
+}
+compdef _vspcli vspcli
+EOF
       ;;
     fish)
-      cat <<FISH
-function __vspcli_profiles
-  echo $profiles
-end
-complete -c vspcli -l help -d 'Show help'
-complete -c vspcli -l list -d 'List profiles'
-complete -c vspcli -l open -d 'Open profile/path' -a '(__vspcli_profiles)'
-complete -c vspcli -l install -d 'Install extensions' -a '(__vspcli_profiles)'
-complete -c vspcli -l install-ext -d 'Install single extension' -a '(__vspcli_profiles)'
-complete -c vspcli -l install-groups -d 'Install extension groups' -a '(__vspcli_profiles)'
-complete -c vspcli -l compose -d 'Compose profiles' -a '(__vspcli_profiles)'
-complete -c vspcli -l export -d 'Export profiles' -a '(__vspcli_profiles)'
-complete -c vspcli -l open-profiles -d 'Run open-profiles.sh' -a '(__vspcli_profiles)'
-complete -c vspcli -l skip-install -d 'Skip extension installs with --open-profiles'
-complete -c vspcli -l profile-import -d 'Import .code-profile' -a '(__vspcli_profiles)'
-FISH
+      cat <<EOF
+complete -c vspcli -f
+complete -c vspcli -a "${verbs}" -d "vspcli command"
+complete -c vspcli -a "${profiles_str}" -d "profile"
+complete -c vspcli -l with -xa "${modules_str}" -d "add module"
+complete -c vspcli -l without -xa "${modules_str}" -d "exclude module"
+complete -c vspcli -l ux -xa "crisp retina default" -d "UX preset"
+EOF
       ;;
     *)
-      echo "Unsupported shell for completion" >&2
-      exit 1
+      printf 'vspcli: unsupported shell %q (supported: bash, zsh, fish)\n' "${shell_name}" >&2
+      exit 4
       ;;
   esac
 }
 
-if [[ ${1:-} == "--completion" ]]; then
-  if [[ $# -lt 2 ]]; then
-    echo "Specify bash, zsh, or fish" >&2
+cmd_build() {
+  local break_stale=""
+  local args=()
+  while [[ $# -gt 0 ]]; do
+    case "${1}" in
+      --break-stale-lock) break_stale="--break-stale-lock"; shift ;;
+      *) args+=("${1}"); shift ;;
+    esac
+  done
+
+  _VSPCLI_LOCK_DIR="${ROOT}/.cache/.build.lock"
+  acquire_lock "${_VSPCLI_LOCK_DIR}" 15 ${break_stale:+"${break_stale}"} || exit 1
+  trap 'release_lock "${_VSPCLI_LOCK_DIR}"' EXIT
+
+  "${BASH}" "${SCRIPTS_DIR}/compose-settings.sh" --no-lock "${args[@]+"${args[@]}"}"
+  "${BASH}" "${SCRIPTS_DIR}/export-profiles.sh" --no-lock "${args[@]+"${args[@]}"}"
+  release_lock "${_VSPCLI_LOCK_DIR}"
+  trap - EXIT
+}
+
+cmd_open() {
+  if [[ $# -lt 1 ]]; then
+    echo "vspcli: open requires <profile> [path]" >&2
+    exit 4
+  fi
+  if ! command -v code >/dev/null 2>&1; then
+    echo "vspcli: VS Code 'code' CLI is required on PATH" >&2
     exit 1
   fi
-  print_completion "$2"
+  local prof="${1}"; shift
+  local legacy
+  legacy="$(resolve_legacy_profile_name "${prof}")"
+  [[ -n "${legacy}" ]] && prof="${legacy%% *}"
+  local ws_path="${1:-.}"
+
+  CODE_STORE_USER_DIR=""
+  CODE_STORE_DATA_ROOT=""
+  resolve_code_store || exit $?
+  local code_args=()
+  if [[ -n "${CODE_STORE_DATA_ROOT}" ]]; then
+    code_args+=(--user-data-dir "${CODE_STORE_DATA_ROOT}")
+  fi
+  code_args+=(--profile "${prof}" -- "${ws_path}")
+  code "${code_args[@]}"
+}
+
+cmd_install_ext() {
+  if [[ $# -lt 2 ]]; then
+    echo "vspcli: install-ext requires <profile> <extension-id>" >&2
+    exit 4
+  fi
+  local prof="${1}"
+  local ext_id="${2}"
+  local legacy
+  legacy="$(resolve_legacy_profile_name "${prof}")"
+  [[ -n "${legacy}" ]] && prof="${legacy%% *}"
+
+  validate_extension_id "${ext_id}" || exit 1
+  if ! command -v code >/dev/null 2>&1; then
+    echo "vspcli: VS Code 'code' CLI is required on PATH" >&2
+    exit 1
+  fi
+
+  CODE_STORE_USER_DIR=""
+  CODE_STORE_DATA_ROOT=""
+  resolve_code_store --require-data-root || exit $?
+
+  local install_target="${ext_id}"
+  _VSPCLI_TMP_VSIX=""
+  export VSCODE_VSIX_CACHE_DIR="${VSCODE_VSIX_CACHE_DIR-${ROOT}/.cache/vsix}"
+  if ! bypass_pins_active; then
+    local pins_file pin_out
+    pins_file="$(pins_file_path "${ROOT}")"
+    pin_out="$(lookup_pin "${ext_id}" "${pins_file}")" || exit 1
+    if [[ -n "${pin_out}" ]]; then
+      local pin_sha pin_url
+      pin_sha="$(printf '%s\n' "${pin_out}" | sed -n '2p')"
+      pin_url="$(printf '%s\n' "${pin_out}" | sed -n '3p')"
+      _VSPCLI_TMP_VSIX="$(mktemp -d "${TMPDIR:-/tmp}/vsp-single-vsix.XXXXXX")"
+      trap 'rm -rf -- "${_VSPCLI_TMP_VSIX}"' EXIT
+      fetch_and_verify_vsix "${ext_id}" "${pin_url}" "${pin_sha}" "${_VSPCLI_TMP_VSIX}/${ext_id}.vsix" || exit 1
+      install_target="${_VSPCLI_TMP_VSIX}/${ext_id}.vsix"
+    fi
+  fi
+
+  local code_args=()
+  if [[ -n "${CODE_STORE_DATA_ROOT}" ]]; then
+    code_args+=(--user-data-dir "${CODE_STORE_DATA_ROOT}")
+  fi
+  code_args+=(--profile "${prof}" --install-extension "${install_target}")
+  code "${code_args[@]}"
+}
+
+# Reconcile one profile (plan-first so --dry-run executes ZERO mutations including Step 0!).
+_reconcile_one() {
+  local target_prof="${1}"
+  local recipe_name="${2}"
+  local dry_run="${3}"
+  local compromised_only="${4}"
+  local prune_retired="${5}"
+  local prune_unmanaged="${6}"
+
+  local code_base=()
+  if [[ -n "${CODE_STORE_DATA_ROOT}" ]]; then
+    code_base+=(--user-data-dir "${CODE_STORE_DATA_ROOT}")
+  fi
+  if [[ "${target_prof}" != "default" ]]; then
+    code_base+=(--profile "${target_prof}")
+  fi
+
+  local err_tmp
+  err_tmp="$(mktemp "${TMPDIR:-/tmp}/vsp-rec-err.XXXXXX")"
+  local installed_raw=""
+  if ! installed_raw="$(code "${code_base[@]+"${code_base[@]}"}" --list-extensions 2>"${err_tmp}")"; then
+    printf 'reconcile: failed to query installed extensions for profile %q: %s\n' "${target_prof}" "$(cat "${err_tmp}")" >&2
+    rm -f "${err_tmp}"
+    return 1
+  fi
+  rm -f "${err_tmp}"
+
+  local installed_lc=()
+  local line lc
+  while IFS= read -r line; do
+    line="$(printf '%s' "${line}" | tr -d '[:space:]')"
+    [[ -n "${line}" ]] || continue
+    installed_lc+=("$(to_lower "${line}")")
+  done <<< "${installed_raw}"
+
+  in_list() {
+    local want="${1}"; shift
+    local item
+    for item in "${@+"${@}"}"; do
+      [[ "${item}" == "${want}" ]] && return 0
+    done
+    return 1
+  }
+
+  local desired_lc=()
+  if [[ "${compromised_only}" -eq 0 ]]; then
+    local ext_file="${ROOT}/profiles/${recipe_name}/extensions.json"
+    if [[ ! -f "${ext_file}" ]]; then
+      printf 'reconcile: missing recipe extensions file: %s\n' "${ext_file}" >&2
+      return 1
+    fi
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] && desired_lc+=("$(to_lower "${line}")")
+    done < <(jq -r '.[] | .identifier.id // empty' "${ext_file}")
+  fi
+
+  # Compute FULL ordered plan BEFORE any mutation!
+  local plan_step0_compromised=()
+  local plan_step1_install=()
+  local plan_step2_removed=()
+  local plan_step2_superseded=() # pairs: "<old>:<replacement>"
+  local plan_step2_retired=()
+  local plan_step2_unmanaged=()
+
+  # Step 0 plan: compromised extensions currently installed.
+  local eid st rep
+  for eid in "${installed_lc[@]+"${installed_lc[@]}"}"; do
+    st="$(catalog_extension_status "${eid}" "${ROOT}" 2>/dev/null || true)"
+    if [[ "${st}" == "compromised" ]]; then
+      plan_step0_compromised+=("${eid}")
+    fi
+  done
+
+  if [[ "${compromised_only}" -eq 0 ]]; then
+    # Step 1 plan: missing active extensions from desired recipe.
+    for eid in "${desired_lc[@]+"${desired_lc[@]}"}"; do
+      if ! in_list "${eid}" "${installed_lc[@]+"${installed_lc[@]}"}"; then
+        plan_step1_install+=("${eid}")
+      fi
+    done
+
+    # Compute pack members required by retained/desired parent extensions (including preserved retired parents).
+    local retained_pack_members=()
+    local pm
+    for eid in "${desired_lc[@]+"${desired_lc[@]}"}"; do
+      while IFS= read -r pm; do
+        [[ -n "${pm}" ]] && retained_pack_members+=("$(to_lower "${pm}")")
+      done < <(catalog_pack_members "${eid}" "${ROOT}")
+    done
+    if [[ "${prune_retired}" -eq 0 ]]; then
+      for eid in "${installed_lc[@]+"${installed_lc[@]}"}"; do
+        if [[ "$(catalog_extension_status "${eid}" "${ROOT}" 2>/dev/null || true)" == "retired" ]]; then
+          while IFS= read -r pm; do
+            [[ -n "${pm}" ]] && retained_pack_members+=("$(to_lower "${pm}")")
+          done < <(catalog_pack_members "${eid}" "${ROOT}")
+        fi
+      done
+    fi
+
+    # Step 2 plan: removed, superseded, opt-in retired, opt-in unmanaged + packMembers.
+    for eid in "${installed_lc[@]+"${installed_lc[@]}"}"; do
+      st="$(catalog_extension_status "${eid}" "${ROOT}" 2>/dev/null || true)"
+      case "${st}" in
+        compromised) ;; # already in Step 0
+        removed)
+          plan_step2_removed+=("${eid}")
+          ;;
+        superseded)
+          rep="$(to_lower "$(catalog_extension_replaced_by "${eid}" "${ROOT}" 2>/dev/null || true)")"
+          plan_step2_superseded+=("${eid}:${rep}")
+          ;;
+        retired)
+          [[ "${prune_retired}" -eq 1 ]] && plan_step2_retired+=("${eid}")
+          ;;
+        active)
+          if [[ "${prune_unmanaged}" -eq 1 ]] \
+             && ! in_list "${eid}" "${desired_lc[@]+"${desired_lc[@]}"}" \
+             && ! in_list "${eid}" "${retained_pack_members[@]+"${retained_pack_members[@]}"}"; then
+            plan_step2_unmanaged+=("${eid}")
+          fi
+          ;;
+        "")
+          # Check if this installed ID is a declared packMember of an unmanaged/uninstalled parent.
+          if [[ "${prune_unmanaged}" -eq 1 ]] \
+             && catalog_is_known_for_uninstall "${eid}" "${ROOT}" \
+             && ! in_list "${eid}" "${desired_lc[@]+"${desired_lc[@]}"}" \
+             && ! in_list "${eid}" "${retained_pack_members[@]+"${retained_pack_members[@]}"}"; then
+            plan_step2_unmanaged+=("${eid}")
+          fi
+          ;;
+      esac
+    done
+  fi
+
+  # Dry-run: emit complete ordered plan and return 0 with ZERO mutations!
+  if [[ "${dry_run}" -eq 1 ]]; then
+    printf 'DRY-RUN reconcile profile=%s recipe=%s\n' "${target_prof}" "${recipe_name}"
+    for eid in "${plan_step0_compromised[@]+"${plan_step0_compromised[@]}"}"; do
+      printf '  [STEP 0] uninstall compromised: %s\n' "${eid}"
+    done
+    for eid in "${plan_step1_install[@]+"${plan_step1_install[@]}"}"; do
+      printf '  [STEP 1] install missing: %s\n' "${eid}"
+    done
+    for eid in "${plan_step2_removed[@]+"${plan_step2_removed[@]}"}"; do
+      printf '  [STEP 2] uninstall removed: %s\n' "${eid}"
+    done
+    for pair in "${plan_step2_superseded[@]+"${plan_step2_superseded[@]}"}"; do
+      printf '  [STEP 2] uninstall superseded: %s (requires replacement %s)\n' "${pair%%:*}" "${pair#*:}"
+    done
+    for eid in "${plan_step2_retired[@]+"${plan_step2_retired[@]}"}"; do
+      printf '  [STEP 2] uninstall retired: %s\n' "${eid}"
+    done
+    for eid in "${plan_step2_unmanaged[@]+"${plan_step2_unmanaged[@]}"}"; do
+      printf '  [STEP 2] uninstall unmanaged: %s\n' "${eid}"
+    done
+    return 0
+  fi
+
+  local had_error=0
+
+  # Execute Step 0 UNCONDITIONALLY FIRST (never blocked by network/install failures).
+  # Always pass --exact-profile -- so legacy profile names (e.g. rust-profile-crisp) are NEVER rewritten!
+  for eid in "${plan_step0_compromised[@]+"${plan_step0_compromised[@]}"}"; do
+    printf 'reconcile [%s]: uninstalling compromised extension %s\n' "${target_prof}" "${eid}"
+    if ! "${BASH}" "${SCRIPTS_DIR}/install-extensions.sh" --exact-profile --uninstall "${eid}" -- "${target_prof}"; then
+      had_error=1
+    fi
+  done
+
+  if [[ "${compromised_only}" -eq 1 ]]; then
+    return "${had_error}"
+  fi
+
+  # Execute Step 1: install missing active extensions via allowlist + VSIX pins.
+  local installed_now=("${installed_lc[@]+"${installed_lc[@]}"}")
+  local pins_file tmp_vsix
+  pins_file="$(pins_file_path "${ROOT}")"
+  export VSCODE_VSIX_CACHE_DIR="${VSCODE_VSIX_CACHE_DIR-${ROOT}/.cache/vsix}"
+  tmp_vsix="$(mktemp -d "${TMPDIR:-/tmp}/vsp-rec-vsix.XXXXXX")"
+
+  for eid in "${plan_step1_install[@]+"${plan_step1_install[@]}"}"; do
+    if ! validate_extension_id "${eid}"; then
+      had_error=1
+      continue
+    fi
+    local inst_target="${eid}"
+    if ! bypass_pins_active; then
+      local pin_out=""
+      if ! pin_out="$(lookup_pin "${eid}" "${pins_file}")"; then
+        had_error=1
+        continue
+      fi
+      if [[ -n "${pin_out}" ]]; then
+        local pin_sha pin_url
+        pin_sha="$(printf '%s\n' "${pin_out}" | sed -n '2p')"
+        pin_url="$(printf '%s\n' "${pin_out}" | sed -n '3p')"
+        if ! fetch_and_verify_vsix "${eid}" "${pin_url}" "${pin_sha}" "${tmp_vsix}/${eid}.vsix"; then
+          had_error=1
+          continue
+        fi
+        inst_target="${tmp_vsix}/${eid}.vsix"
+      fi
+    fi
+    if code "${code_base[@]+"${code_base[@]}"}" --install-extension "${inst_target}"; then
+      installed_now+=("${eid}")
+    else
+      had_error=1
+    fi
+  done
+  rm -rf "${tmp_vsix}"
+
+  # Execute Step 2: removed, verified-replaced superseded, opt-in retired, opt-in unmanaged.
+  for eid in "${plan_step2_removed[@]+"${plan_step2_removed[@]}"}"; do
+    "${BASH}" "${SCRIPTS_DIR}/install-extensions.sh" --exact-profile --uninstall "${eid}" -- "${target_prof}" || had_error=1
+  done
+
+  for pair in "${plan_step2_superseded[@]+"${plan_step2_superseded[@]}"}"; do
+    local old_id="${pair%%:*}"
+    local rep_id="${pair#*:}"
+    if [[ -n "${rep_id}" ]] && in_list "${rep_id}" "${installed_now[@]+"${installed_now[@]}"}"; then
+      "${BASH}" "${SCRIPTS_DIR}/install-extensions.sh" --exact-profile --uninstall "${old_id}" -- "${target_prof}" || had_error=1
+    else
+      printf 'reconcile [%s]: preserving superseded %s because replacement %s is not installed\n' \
+        "${target_prof}" "${old_id}" "${rep_id:-unknown}" >&2
+    fi
+  done
+
+  for eid in "${plan_step2_retired[@]+"${plan_step2_retired[@]}"}"; do
+    "${BASH}" "${SCRIPTS_DIR}/install-extensions.sh" --exact-profile --uninstall "${eid}" -- "${target_prof}" || had_error=1
+  done
+
+  if [[ "${#plan_step2_unmanaged[@]}" -gt 0 ]]; then
+    # Uninstall parents first; protect packMembers of any parent whose uninstall failed.
+    local failed_parent_pms=()
+    for eid in "${plan_step2_unmanaged[@]}"; do
+      if [[ -n "$(catalog_extension_status "${eid}" "${ROOT}" 2>/dev/null || true)" ]]; then
+        if ! "${BASH}" "${SCRIPTS_DIR}/install-extensions.sh" --exact-profile --uninstall "${eid}" -- "${target_prof}"; then
+          had_error=1
+          while IFS= read -r pm; do
+            [[ -n "${pm}" ]] && failed_parent_pms+=("$(to_lower "${pm}")")
+          done < <(catalog_pack_members "${eid}" "${ROOT}")
+        fi
+      fi
+    done
+    # Re-check installed extensions before removing nested-only packMembers.
+    local post_raw=""
+    if post_raw="$(code "${code_base[@]+"${code_base[@]}"}" --list-extensions 2>/dev/null)"; then
+      local post_lc=()
+      while IFS= read -r line; do
+        line="$(printf '%s' "${line}" | tr -d '[:space:]')"
+        [[ -n "${line}" ]] && post_lc+=("$(to_lower "${line}")")
+      done <<< "${post_raw}"
+      for eid in "${plan_step2_unmanaged[@]}"; do
+        if [[ -z "$(catalog_extension_status "${eid}" "${ROOT}" 2>/dev/null || true)" ]] \
+           && in_list "${eid}" "${post_lc[@]+"${post_lc[@]}"}" \
+           && ! in_list "${eid}" "${failed_parent_pms[@]+"${failed_parent_pms[@]}"}"; then
+          "${BASH}" "${SCRIPTS_DIR}/install-extensions.sh" --exact-profile --uninstall "${eid}" -- "${target_prof}" || had_error=1
+        fi
+      done
+    fi
+  fi
+
+  return "${had_error}"
+}
+
+cmd_reconcile() {
+  local profile="" recipe="" all_mode=0 dry_run=0 compromised_only=0 prune_retired=0 prune_unmanaged=0
+  while [[ $# -gt 0 ]]; do
+    case "${1}" in
+      --profile)          need_val "${1}" "${2:-}"; profile="${2}"; shift 2 ;;
+      --profile=*)        profile="${1#*=}"; shift ;;
+      --as)               need_val "${1}" "${2:-}"; recipe="${2}"; shift 2 ;;
+      --as=*)             recipe="${1#*=}"; shift ;;
+      --all)              all_mode=1; shift ;;
+      --dry-run)          dry_run=1; shift ;;
+      --compromised-only) compromised_only=1; shift ;;
+      --prune-retired)    prune_retired=1; shift ;;
+      --prune-unmanaged)  prune_unmanaged=1; shift ;;
+      -h|--help)
+        echo "Usage: vspcli reconcile (--profile <name> [--as <recipe>] | --all) [--dry-run] [--compromised-only] [--prune-retired] [--prune-unmanaged]"
+        exit 0
+        ;;
+      *) printf 'vspcli reconcile: unknown option %q\n' "${1}" >&2; exit 4 ;;
+    esac
+  done
+
+  if [[ "${all_mode}" -eq 0 && -z "${profile}" ]]; then
+    echo "vspcli reconcile: specify --profile <name> or --all" >&2
+    exit 4
+  fi
+  if ! command -v code >/dev/null 2>&1; then
+    echo "vspcli reconcile: VS Code 'code' CLI is required on PATH" >&2
+    exit 1
+  fi
+
+  CODE_STORE_USER_DIR=""
+  CODE_STORE_DATA_ROOT=""
+  resolve_code_store --require-data-root || exit $?
+
+  local rc=0
+  if [[ "${all_mode}" -eq 1 ]]; then
+    local registered
+    registered="$(vscode_storage_list_profiles "${CODE_STORE_USER_DIR}")" || exit 1
+    local p
+    while IFS= read -r p; do
+      [[ -n "${p}" ]] || continue
+      if [[ "${compromised_only}" -eq 0 && -f "${ROOT}/profiles/${p}/profile.json" ]]; then
+        _reconcile_one "${p}" "${p}" "${dry_run}" 0 "${prune_retired}" "${prune_unmanaged}" || rc=1
+      else
+        # Non-recipe / legacy registered profiles ALWAYS get Step 0 compromised remediation!
+        _reconcile_one "${p}" "${p}" "${dry_run}" 1 0 0 || rc=1
+      fi
+    done <<< "${registered}"
+    # Default profile ALWAYS gets Step 0 compromised remediation under --all!
+    _reconcile_one "default" "default" "${dry_run}" 1 0 0 || rc=1
+  else
+    [[ -n "${recipe}" ]] || recipe="${profile}"
+    _reconcile_one "${profile}" "${recipe}" "${dry_run}" "${compromised_only}" "${prune_retired}" "${prune_unmanaged}" || rc=1
+  fi
+  exit "${rc}"
+}
+
+cmd_doctor() {
+  local strict=0
+  while [[ $# -gt 0 ]]; do
+    case "${1}" in
+      --strict) strict=1; shift ;;
+      -h|--help) echo "Usage: vspcli doctor [--strict]"; exit 0 ;;
+      *) printf 'vspcli doctor: unknown option %q\n' "${1}" >&2; exit 4 ;;
+    esac
+  done
+
+  local fails=0
+  local warns=0
+  pass_msg() { printf 'PASS: %s\n' "${*}"; }
+  warn_msg() { printf 'WARN: %s\n' "${*}"; warns=$((warns + 1)); }
+  fail_msg() { printf 'FAIL: %s\n' "${*}"; fails=$((fails + 1)); }
+
+  # 1. Required tools: bash, jq, (shasum OR sha256sum), curl.
+  for bin in bash jq curl; do
+    if command -v "${bin}" >/dev/null 2>&1; then
+      pass_msg "tool available: ${bin}"
+    else
+      fail_msg "missing required tool: ${bin}"
+    fi
+  done
+  if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; then
+    pass_msg "tool available: sha256 hasher (sha256sum/shasum)"
+  else
+    fail_msg "missing required SHA-256 tool: need shasum or sha256sum"
+  fi
+
+  local have_code=0
+  if command -v code >/dev/null 2>&1; then
+    have_code=1
+    pass_msg "tool available: code"
+  else
+    warn_msg "VS Code 'code' CLI not on PATH (skipping live profile inspection)"
+  fi
+
+  # 2. Repo catalog, module, security, SHA256SUMS, and symlink integrity.
+  if "${BASH}" "${SCRIPTS_DIR}/validate-json.sh" >/dev/null 2>&1; then
+    pass_msg "catalog, modules, profiles, SHA256SUMS, and security invariants valid"
+  else
+    fail_msg "scripts/validate-json.sh reported errors (run 'vspcli validate' for details)"
+  fi
+
+  # 3. XDG RTK wrappers presence.
+  local xdg_rtk
+  xdg_rtk="$(resolve_xdg_config_home)/artagon-vscode/rtk"
+  if [[ -f "${xdg_rtk}/rtk-init.bash" && -f "${xdg_rtk}/rtk-init.fish" && -f "${xdg_rtk}/rtk-init.zsh" ]]; then
+    pass_msg "XDG RTK wrappers installed at ${xdg_rtk}"
+  else
+    warn_msg "XDG RTK wrappers not yet installed at ${xdg_rtk} (run 'vspcli apply' to install)"
+  fi
+
+  # 4. VS Code Default profile application-scope settings & compromised extension scan.
+  CODE_STORE_USER_DIR=""
+  CODE_STORE_DATA_ROOT=""
+  local store_ok=1
+  if ! resolve_code_store --require-data-root 2>/dev/null; then
+    fail_msg "VS Code store configuration mismatch (check VSCODE_USER_DIR / VSCODE_USER_DATA_DIR)"
+    store_ok=0
+    CODE_STORE_USER_DIR="$(detect_code_user_dir)"
+  fi
+  local user_settings="${CODE_STORE_USER_DIR}/settings.json"
+  if [[ -f "${user_settings}" ]]; then
+    local strip="${LIB_DIR}/jsonc-strip.awk"
+    local us_clean
+    if us_clean="$(LC_ALL=C awk -f "${strip}" "${user_settings}" 2>/dev/null)" \
+       && printf '%s\n' "${us_clean}" | jq -e -s 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1; then
+      local tel trust auto_upd
+      tel="$(printf '%s\n' "${us_clean}" | jq -r '."telemetry.telemetryLevel" // "MISSING"')"
+      trust="$(printf '%s\n' "${us_clean}" | jq -r '."security.workspace.trust.untrustedFiles" // "MISSING"')"
+      auto_upd="$(printf '%s\n' "${us_clean}" | jq -r 'if has("extensions.autoUpdate") then (."extensions.autoUpdate" | tostring) else "MISSING" end')"
+      if [[ "${tel}" != "off" ]]; then
+        warn_msg "Default profile (${user_settings}) has telemetry.telemetryLevel=${tel} (VS Code 1.147 application-scope ignores named profile overrides; set \"off\" in Default profile)"
+      else
+        pass_msg "Default profile telemetry.telemetryLevel == off"
+      fi
+      if [[ "${trust}" != "prompt" ]]; then
+        warn_msg "Default profile (${user_settings}) has security.workspace.trust.untrustedFiles=${trust} (application-scope; set \"prompt\" in Default profile)"
+      else
+        pass_msg "Default profile security.workspace.trust.untrustedFiles == prompt"
+      fi
+      if [[ "${auto_upd}" == "true" || "${auto_upd}" == "on" ]]; then
+        warn_msg "Default profile (${user_settings}) has extensions.autoUpdate=${auto_upd} (application-scope; auto-updates may advance install-time VSIX pins)"
+      else
+        pass_msg "Default profile extensions.autoUpdate (${auto_upd}) does not force pin drift"
+      fi
+    else
+      warn_msg "Default profile settings.json could not be parsed: ${user_settings}"
+    fi
+  else
+    warn_msg "Default profile settings.json not found: ${user_settings}"
+  fi
+
+  # 5. Live VS Code scan: compromised extensions in Default + ALL storage.json profiles => FAIL!
+  #    Also check pinned extension version drift => WARN!
+  if [[ "${have_code}" -eq 1 && "${store_ok}" -eq 1 ]]; then
+    local code_root_args=()
+    if [[ -n "${CODE_STORE_DATA_ROOT}" ]]; then
+      code_root_args+=(--user-data-dir "${CODE_STORE_DATA_ROOT}")
+    fi
+    local scan_profiles=("default")
+    local reg_list="" reg_p
+    if reg_list="$(vscode_storage_list_profiles "${CODE_STORE_USER_DIR}")"; then
+      while IFS= read -r reg_p; do
+        [[ -n "${reg_p}" ]] && scan_profiles+=("${reg_p}")
+      done <<< "${reg_list}"
+    else
+      fail_msg "storage.json is malformed; could not enumerate named VS Code profiles for security scan"
+    fi
+
+    local pins_file
+    pins_file="$(pins_file_path "${ROOT}")"
+    local sp ext_lines el id_only ver_only st pin_ver
+    for sp in "${scan_profiles[@]}"; do
+      local p_args=("${code_root_args[@]+"${code_root_args[@]}"}")
+      [[ "${sp}" != "default" ]] && p_args+=(--profile "${sp}")
+      ext_lines="$(code "${p_args[@]+"${p_args[@]}"}" --list-extensions --show-versions 2>/dev/null || true)"
+      [[ -n "${ext_lines}" ]] || continue
+      while IFS= read -r el; do
+        [[ -n "${el}" ]] || continue
+        id_only="$(to_lower "${el%%@*}")"
+        ver_only="${el#*@}"
+        [[ "${ver_only}" == "${el}" ]] && ver_only=""
+        st="$(catalog_extension_status "${id_only}" "${ROOT}" 2>/dev/null || true)"
+        if [[ "${st}" == "compromised" ]]; then
+          local hint_cmd="code"
+          [[ -n "${CODE_STORE_DATA_ROOT}" ]] && hint_cmd="${hint_cmd} --user-data-dir '${CODE_STORE_DATA_ROOT}'"
+          [[ "${sp}" != "default" ]] && hint_cmd="${hint_cmd} --profile '${sp}'"
+          hint_cmd="${hint_cmd} --uninstall-extension ${id_only}"
+          fail_msg "SECURITY: compromised extension '${id_only}' installed in profile '${sp}' (remove via: ${hint_cmd})"
+        fi
+        if [[ -n "${ver_only}" && -f "${pins_file}" ]]; then
+          pin_ver="$(jq -r --arg id "${id_only}" '(.pins // {}) | to_entries | map(select((.key | ascii_downcase) == $id)) | .[0].value.version // empty' "${pins_file}" 2>/dev/null || true)"
+          if [[ -n "${pin_ver}" && "${pin_ver}" != "${ver_only}" ]]; then
+            warn_msg "profile '${sp}': pinned extension '${id_only}' version drift (installed=${ver_only}, pinned=${pin_ver})"
+          fi
+        fi
+      done <<< "${ext_lines}"
+    done
+  fi
+
+  printf 'Summary: %d fail(s), %d warning(s)\n' "${fails}" "${warns}"
+  if [[ "${fails}" -gt 0 ]]; then
+    exit 1
+  fi
+  if [[ "${strict}" -eq 1 && "${warns}" -gt 0 ]]; then
+    exit 1
+  fi
+  exit 0
+}
+
+# Main command dispatch (verbs + backwards-compatible flags).
+if [[ $# -eq 0 ]]; then
+  usage
   exit 0
 fi
 
-action_taken=0
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --detect)
-      shift
-      detect_args=()
-      install_args=()
-      target=""
-      workspace_path=""
-      no_install=0
-      while [[ $# -gt 0 ]]; do
-        case "$1" in
-          --toolchain)
-            detect_args+=("--toolchain" "$2"); shift 2 ;;
-          --toolchain=*)
-            detect_args+=("--toolchain" "${1#*=}"); shift ;;
-          --no-detect|--json)
-            detect_args+=("$1"); shift ;;
-          --target=*)
-            target="${1#*=}"; shift ;;
-          --target)
-            target="$2"; shift 2 ;;
-          --ux=*|--font=*|--font-size=*|--theme=*|--icon-theme=*|--check-compat=*)
-            install_args+=("$1"); shift ;;
-          --ux|--font|--font-size|--theme|--icon-theme|--check-compat)
-            install_args+=("$1" "$2"); shift 2 ;;
-          --no-rtk|--dry-run)
-            install_args+=("$1"); shift ;;
-          --no-install)
-            no_install=1; shift ;;
-          -*)
-            break ;;
-          *)
-            if [[ -z "$workspace_path" ]]; then
-              workspace_path="$1"
-              detect_args+=("$1")
-            fi
-            shift
-            ;;
-        esac
-      done
-      detected=$(bash "$SCRIPT_DIR/detect-toolchain.sh" "${detect_args[@]}")
-      detect_status=$?
-      if [[ $detect_status -ne 0 ]]; then
-        exit $detect_status
-      fi
-      if [[ -z "$target" ]] || [[ $no_install -eq 1 ]]; then
-        # Detection-only: emit toolchain list and stop.
-        echo "$detected"
-      elif [[ "$target" == "workspace" ]]; then
-        ws="${workspace_path:-$PWD}"
-        # Pass detected toolchains as positional args.
-        # shellcheck disable=SC2086
-        bash "$SCRIPT_DIR/install-workspace.sh" "$ws" "${install_args[@]}" $detected
-      else
-        echo "error: --target=$target not yet wired into --detect (workspace only this round)" >&2
-        exit 4
-      fi
-      action_taken=1
-      ;;
-    --migrate-catalog)
-      shift
-      mc_args=()
-      while [[ $# -gt 0 ]]; do
-        case "$1" in
-          --doctor|--finalize) mc_args+=("$1"); shift ;;
-          -*) break ;;
-          *) shift ;;
-        esac
-      done
-      bash "$SCRIPT_DIR/migrate-catalog.sh" "${mc_args[@]}"
-      action_taken=1
-      ;;
-    -l|--list)
-      list_profiles
-      action_taken=1
-      shift
-      ;;
-    -o|--open)
-      if [[ $# -lt 3 ]]; then
-        echo "Error: --open requires PROFILE and PATH" >&2
-        echo "Available profiles:" >&2
-        list_profiles >&2
-        exit 1
-      fi
-      open_profile "$2" "$3"
-      action_taken=1
-      shift 3
-      ;;
-    -i|--install)
-      shift
-      if [[ $# -eq 0 ]]; then
-        echo "Error: --install requires PROFILE" >&2
-        echo "Available profiles:" >&2
-        list_profiles >&2
-        exit 1
-      fi
-      profile="$1"
-      shift
-      args=()
-      while [[ $# -gt 0 ]]; do
-        case "$1" in
-          --group|--groups)
-            if [[ $# -lt 2 ]]; then
-              echo "Error: $1 requires a value" >&2
-              exit 1
-            fi
-            args+=("$1" "$2")
-            shift 2
-            ;;
-          *)
-            break
-            ;;
-        esac
-      done
-      install_extensions "$profile" "${args[@]}"
-      action_taken=1
-      ;;
-    -G|--install-groups)
-      shift
-      if [[ $# -lt 2 ]]; then
-        echo "Error: --install-groups requires PROFILE and at least one GROUP" >&2
-        echo "Available profiles:" >&2
-        list_profiles >&2
-        exit 1
-      fi
-      profile="$1"
-      shift
-      groups=()
-      while [[ $# -gt 0 && "${1:0:1}" != '-' ]]; do
-        groups+=("$1")
-        shift
-      done
-      if [[ ${#groups[@]} -eq 0 ]]; then
-        echo "Error: --install-groups requires at least one GROUP" >&2
-        exit 1
-      fi
-      install_groups_for_profile "$profile" "${groups[@]}"
-      action_taken=1
-      ;;
-    -E|--install-ext)
-      if [[ $# -lt 3 ]]; then
-        echo "Error: --install-ext requires PROFILE and EXTENSION ID" >&2
-        exit 1
-      fi
-      install_single_extension "$2" "$3"
-      action_taken=1
-      shift 3
-      ;;
-    -c|--compose)
-      shift
-      if [[ $# -gt 0 && "${1:0:1}" != '-' ]]; then
-        args=()
-        while [[ $# -gt 0 && "${1:0:1}" != '-' ]]; do
-          args+=("$1")
-          shift
-        done
-        compose_profiles "${args[@]}"
-      else
-        compose_profiles
-      fi
-      action_taken=1
-      ;;
-    -x|--export)
-      shift
-      if [[ $# -gt 0 && "${1:0:1}" != '-' ]]; then
-        args=()
-        while [[ $# -gt 0 && "${1:0:1}" != '-' ]]; do
-          args+=("$1")
-          shift
-        done
-        export_profiles "${args[@]}"
-      else
-        export_profiles
-      fi
-      action_taken=1
-      ;;
-    -O|--open-profiles)
-      shift
-      args=()
-      while [[ $# -gt 0 ]]; do
-        case "$1" in
-          --skip-install)
-            OPEN_PROFILES_SKIP_INSTALL=1
-            args+=("$1")
-            shift
-            ;;
-          -*)
-            break
-            ;;
-          *)
-            args+=("$1")
-            shift
-            ;;
-        esac
-      done
-      if [[ ${#args[@]} -gt 0 ]]; then
-        open_profiles_batch "${args[@]}"
-      else
-        open_profiles_batch
-      fi
-      action_taken=1
-      ;;
-    --skip-install)
-      OPEN_PROFILES_SKIP_INSTALL=1
-      shift
-      ;;
-    -p|--profile-import)
-      if [[ $# -lt 3 ]]; then
-        echo "Error: --profile-import requires PROFILE and FILE" >&2
-        exit 1
-      fi
-      import_profile_bundle "$2" "$3"
-      action_taken=1
-      shift 3
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown option: $1" >&2
-      usage
-      exit 1
-      ;;
-  esac
-done
-
-if [[ $action_taken -eq 0 ]]; then
-  usage
-  exit 1
-fi
+case "${1}" in
+  -h|--help|help)
+    usage; exit 0 ;;
+  list|--list)
+    shift; cmd_list "${@+"${@}"}" ;;
+  completions)
+    shift; need_val "completions" "${1:-}"; cmd_completions "${1}" ;;
+  --completion=*)
+    cmd_completions "${1#*=}" ;;
+  --completion)
+    need_val "${1}" "${2:-}"; cmd_completions "${2}" ;;
+  build)
+    shift; cmd_build "${@+"${@}"}" ;;
+  compose|--compose)
+    shift; "${BASH}" "${SCRIPTS_DIR}/compose-settings.sh" "${@+"${@}"}" ;;
+  export|--export)
+    shift; "${BASH}" "${SCRIPTS_DIR}/export-profiles.sh" "${@+"${@}"}" ;;
+  validate|--validate)
+    shift; "${BASH}" "${SCRIPTS_DIR}/validate-json.sh" "${@+"${@}"}" ;;
+  detect)
+    shift; "${BASH}" "${SCRIPTS_DIR}/detect-toolchain.sh" "${@+"${@}"}" ;;
+  apply)
+    shift; "${BASH}" "${SCRIPTS_DIR}/install-workspace.sh" "${@+"${@}"}" ;;
+  reconcile)
+    shift; cmd_reconcile "${@+"${@}"}" ;;
+  doctor)
+    shift; cmd_doctor "${@+"${@}"}" ;;
+  import|--profile-import)
+    shift; "${BASH}" "${SCRIPTS_DIR}/import-profile.sh" "${@+"${@}"}" ;;
+  open|--open)
+    shift; cmd_open "${@+"${@}"}" ;;
+  --open-profiles)
+    shift; "${BASH}" "${SCRIPTS_DIR}/open-profiles.sh" "${@+"${@}"}" ;;
+  install-ext|--install-ext)
+    shift; cmd_install_ext "${@+"${@}"}" ;;
+  install|--install)
+    shift; "${BASH}" "${SCRIPTS_DIR}/install-extensions.sh" "${@+"${@}"}" ;;
+  migrate|--migrate-catalog)
+    shift
+    # Reject combining --migrate-catalog with unrelated actions.
+    for arg in "${@+"${@}"}"; do
+      case "${arg}" in
+        --doctor|--finalize|--refresh-symlinks) ;;
+        *) printf 'vspcli: --migrate-catalog cannot be combined with: %s\n' "${arg}" >&2; exit 4 ;;
+      esac
+    done
+    "${BASH}" "${SCRIPTS_DIR}/migrate-catalog.sh" "${@+"${@}"}"
+    ;;
+  --detect)
+    shift
+    "${BASH}" "${SCRIPTS_DIR}/install-workspace.sh" "${@+"${@}"}"
+    ;;
+  *)
+    printf 'vspcli: unknown command or flag %q (run vspcli --help)\n' "${1}" >&2
+    exit 4
+    ;;
+esac

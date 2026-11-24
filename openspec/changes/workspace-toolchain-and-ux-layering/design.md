@@ -484,10 +484,10 @@ into `terminal.integrated.profiles.osx[*].path` and `.linux[*].path`.
 When the binary is not on PATH, the profile entry is omitted (not
 written with a stub path that would silently fail) and a stderr notice
 explains the omission. `${workspaceFolder}` is used in `args` for the
-`--init-command` source path; if VS Code does not substitute the
-variable in that context (Open Question 1 below — must be validated
-before merge), the migration script falls back to writing the absolute
-path resolved at compose time.
+`--init-command` source path. The two-absolute-path validation in
+`snapshots/${workspaceFolder}-validation.md` confirmed that VS Code expands
+the variable for both macOS terminal profiles, so no absolute-path fallback
+is needed for the supported VS Code version.
 
 **Rationale**: hardcoding `/opt/homebrew/bin/fish` (the original
 draft's value) breaks every Linux contributor, Intel Mac, Codespace,
@@ -515,7 +515,7 @@ documented in the in-repo skill references). The change adds two
 fallbacks:
 
 1. The fish init script, when sourced manually, prints a single
-   stderr line on first interactive shell: `"rtk wrappers active —
+   stderr line when the rtk init command completes: `"rtk wrappers active —
    workspace trust granted"` (success) or — when sourced but rtk is
    absent on PATH — the existing
    `"rtk not on PATH; aliases not installed"` line. Users who never
@@ -587,6 +587,8 @@ mechanically into:
   `git.autofetch`, `git.confirmSync`,
   `security.workspace.trust.untrustedFiles`, `telemetry.telemetryLevel`,
   ...). Always merged into every `_merged/<flavor>.json` post-migration.
+  This includes `workbench.sideBar.location: "left"`, so the Explorer view
+  opens in the left sidebar for every composed profile and workspace install.
 - `_shared/ux/{crisp,retina}.jsonc` — every key whose value differs
   between crisp and retina. Applied at the workspace layer only.
 
@@ -938,25 +940,15 @@ Workspace Trust. In Restricted Mode the rtk profile is silently dropped and
 the terminal blocks open by default. **The change documents this as a
 one-time trust-grant click on first open.**
 
-## Open Questions (must be resolved BEFORE merge, not deferred to BATS)
+## Resolved validation questions
 
-1. **`${workspaceFolder}` in terminal-profile `args`.** Adversarial review
-   flagged this as the load-bearing assumption of the entire rtk wiring.
-   Validate manually before merge: clone the repo to two distinct
-   absolute paths (`/tmp/test1`, `/tmp/test2`); open each in VS Code;
-   open the integrated terminal; check that the rtk init script actually
-   ran in both (look for the "rtk wrappers active" diagnostic line per
-   Decision 14). If it doesn't expand, the migration script falls back
-   to writing absolute paths resolved at compose time, which means
-   moving the repo on disk requires re-running `vspcli --detect`.
-   **Block the change on validating this** — do not merge with the
-   substitution unverified.
-2. **`tasks[].options.shell` vs. `automationProfile` precedence** — which
-   wins? VS Code docs are silent. Pin behavior with a BATS test using a
-   per-task-shell override that should *not* run through rtk; if the
-   override wins, document the precedence; if the automationProfile
-   wins, document that and enforce only via the per-task `command`
-   literal.
+1. **`${workspaceFolder}` in terminal-profile `args`.** Resolved by the
+   two-absolute-path VS Code validation in
+   `snapshots/${workspaceFolder}-validation.md`: the rtk init script ran from
+   each workspace's own `_shared/rtk/` path and emitted the trust diagnostic.
+2. **`tasks[].options.shell` vs. `automationProfile` precedence.** Resolved
+   by `snapshots/task-shell-precedence.md`: an explicit `/bin/sh` task ran as
+   `/bin/sh` while the workspace automation profile was `rtk-fish`.
 3. **Devcontainer / Codespaces interaction** — does
    `customizations.vscode.settings` in `devcontainer.json` apply terminal
    profile changes inside the container? Out of scope for this round;

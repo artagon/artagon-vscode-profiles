@@ -1,0 +1,5 @@
+// Machine-scoped Python environment preferences (auto-routes through uv; clean shellStartup activation).
+{
+  "python-envs.alwaysUseUv": true,
+  "python-envs.terminal.autoActivationType": "shellStartup"
+}

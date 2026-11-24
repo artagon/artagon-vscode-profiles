@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "id": "core-editor",
+  "kind": "capability",
+  "description": "Slim core editor ergonomics, universal data-format tooling (JSON/YAML/TOML/XML/CSV/DotEnv/EditorConfig), Error Lens, spell checking, and pinned crisp/retina theme packs",
+  "requires": [],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [
+      "editorconfig.editorconfig",
+      "tamasfe.even-better-toml",
+      "dotenv.dotenv-vscode",
+      "redhat.vscode-yaml"
+    ],
+    "profile": [
+      "redhat.vscode-xml",
+      "mechatroner.rainbow-csv",
+      "usernamehw.errorlens",
+      "streetsidesoftware.code-spell-checker",
+      "enkia.tokyo-night",
+      "pkief.material-icon-theme",
+      "pkief.material-product-icons",
+      "catppuccin.catppuccin-vsc",
+      "catppuccin.catppuccin-vsc-icons",
+      "miguelsolorio.fluent-icons"
+    ],
+    "unwanted": [
+      "mikestead.dotenv"
+    ]
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": "settings.profile.jsonc"
+  },
+  "tasks": null,
+  "detect": null
+}

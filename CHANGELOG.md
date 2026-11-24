@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased — `refactor-capability-modules-and-defaults`
+
+### Changed (BREAKING — vertical capability-module architecture & default AI agents)
+
+- Refactored repository from horizontal `_shared/` + `_overrides/` + `_catalog/` layers to vertical self-contained modules under `modules/{capabilities,toolchains,ux}/` backed by a unified lowercase-keyed `catalog/` registry and compiled by a single pure Bash 3.2+ + `jq` engine (`scripts/lib/{common,catalog,module-resolver,compiler,vscode-storage}.sh`).
+- Expanded compiled recipes from 13 to 15 (`ai-copilot` for strict Copilot-only policy and `general-minimal` for zero-AI `"chat.disableAIFeatures": true`).
+- Added `modules/capabilities/ai-agents` (**Google Antigravity** `google.google-antigravity` as default primary agent alongside `anthropic.claude-code`, `openai.chatgpt`, and unified `github.copilot-chat` owning inline completions & Next Edit Suggestions) to default compiled profiles and 18 legacy toolchain export symlinks; superseded `google.geminicodeassist`. Legacy `ai-profile-{crisp,retina}` aliases and symlinks strictly point to `ai-copilot.code-profile` (never silently upgraded to Antigravity, Claude, or Codex).
+- Added universal shell tooling (`modules/capabilities/shell`: Bash IDE, ShellCheck, `shfmt`, Fish, Better ShellScript syntax, BATS Test Runner) and universal data-format tooling (`core-editor`: JSON/JSONC, YAML, TOML, XML, CSV via `rainbow-csv`, DotEnv, INI/Properties, EditorConfig) across all 15 compiled profiles.
+- Added IntelliJ-grade developer ergonomics across `core-editor` (24+ native settings including Project Explorer file nesting, inlay hints, sticky scroll, semantic highlighting, VS Code `1.147.0` Terminal IntelliSense, Kitty image protocol, macOS Option-as-Meta, SCM Graph incoming/outgoing changes, inline diff view, and Git merge/prune/smart-commit tuning), `modules/capabilities/dx-pro` (Bookmarks, Project Manager, Scratchpads, Better Comments, Regex Previewer, Peacock, Bruno HTTP, Draw.io; included in `ai-plus`), opt-in `modules/capabilities/intellij-keybindings`, and expanded `modules/capabilities/themes-pack` to 30 curated theme/icon/product-icon packs with `themeLabels`.
+- Refined `retina` and `crisp` 15-key symmetric UX presets with verified macOS CoreText + Linux font stacks (`Maple Mono NF`, `JetBrains Mono`, `Monaspace Neon/Krypton NF`, `Geist Mono`, `CommitMono`, `Lilex`, `Fira Code`) and OpenType ligatures (`retina`: `'calt', 'liga', 'zero', 'ss03', 'ss07', 'ss08'`; `crisp`: `'calt', 'liga', 'zero'`).
+- Tuned VS Code `1.120`–`1.147` AI chat ergonomics (`chat.tools.compressOutput.enabled`, `chat.tools.riskAssessment.enabled`, `chat.tools.terminal.outputReflow`, `chat.tools.autoExpandFailures`, `chat.notifyWindowOnResponseReceived`), `editor.inlineSuggest.fontFamily` (`Monaspace Krypton NF`), Claude Code (`preferredLocation: "sidebar"`, `respectGitIgnore`, `autosave`), and Codex (`followUpQueueMode: "queue"`, `composerEnterBehavior: "cmdIfMultiline"`, `reviewDelivery: "inline"`).
+- Hardened extension installation and VSIX pinning: zero-TOCTOU copy-before-hash content-addressed local VSIX cache (`VSCODE_VSIX_CACHE_DIR`, `0700`/`0600` modes, BSD/GNU POSIX `chmod --`, symlink/traversal guards), batched `--install-extension` with per-extension retry fallback (`--no-batch` opt-out), `DX` group completeness gate in `validate-json.sh`, refined `--no-ai` stripping (preserves shared `core-editor` keys while removing all `chat.*`/`inlineChat.*`/`editor.inlineSuggest.{fontFamily,edits.*}`), and anchored VS Code `1.147.0` macOS/Linux `is_vscode_running` detection.
+- Added deprecated setting keys (`json.colorDecorators.enable`, `scratchpads.useSubfolders`, `ruff.nativeServer`, `chat.tools.terminal.shellIntegrationTimeout`, `chatgpt.runCodexInWindowsSubsystemForLinux`) to `catalog/setting-scopes.json` `forbiddenKeys` and extended the bundle autonomy deny-list with Antigravity bypass keys (`antigravity.serverArgs`, `antigravity.releaseBaseUrl`, `antigravity.caCertificates`).
+- Added [`ABOUT.md`](ABOUT.md) and refreshed [`README.md`](README.md) with badges, security contract, capability highlights, UX/AI breakdowns, and troubleshooting guide.
+- Enforced strict workspace vs personal separation: `vspcli apply --target=workspace` writes only `extensions.workspace[]`, `settings.workspace.jsonc`, and portable plain `tasks.json`. Personal UX presets require `--ux-target=user|profile:<name>` or explicit `--ux-in-workspace`; workspace RTK wiring requires explicit `--rtk-in-workspace`.
+- Replaced compromised `JScearcy.rust-doc-viewer` (Oct 2025 GlassWorm campaign) with `status: "compromised"` in `catalog/extensions.json`, removed 5 Marketplace 404 extension IDs, updated VS Code `1.147.0` setting types/enums/scopes (`editor.hover.enabled: "on"`, `catppuccin-mocha`, `errorLens.messageMaxChars`, `gitlens.plusFeatures.enabled`, `testing.automaticallyOpenTestResults`, native `java.jdt.ls.lombokSupport.enabled`).
+- Removed tracked security-bypass files (`agents`, `.agents/settings.local.json`), circular symlink `.agents/skills/skills`, and legacy `_shared/`, `_overrides/`, `_catalog/` directories.
+
+### Added
+
+- Unified `vspcli` verbs: `build`, `validate`, `detect`, `apply`, `reconcile`, `doctor`, `install`, `import`, `open`, `list`, `migrate`.
+- `vspcli reconcile`: plan-first (`--dry-run` zero mutations), unconditional Step 0 compromised-extension uninstall, `--as <recipe>`, `--compromised-only`, `--prune-retired`, `--prune-unmanaged` with `packMembers[]` (`openai.codex-audio`) protection.
+- `vspcli doctor`: audits tools, catalog, XDG RTK wrappers, Default-profile application-scope settings (`telemetry.telemetryLevel`, `security.workspace.trust.untrustedFiles`), pin version drift, and `FAIL`s on any installed compromised extension across all profiles including Default.
+- Live install-time SHA-256 VSIX pins in `catalog/extension-pins.json` refreshed via `scripts/refresh-pins.sh`.
+- Full Zsh `ZDOTDIR` proxy RTK wrapper (`modules/capabilities/rtk-terminal/scripts/rtk-init.zsh` + `zsh/.*`) alongside hardened Fish and Bash wrappers.
+- `scripts/generate-readme-matrix.sh` for deterministic Profile & Module Matrix rendering and CI sync checks.
+- Dual-OS CI (`ubuntu-latest` + `macos-latest` with PATH-pinned `/bin/bash` 3.2 shim), static Bash 3.2 construct lint, full `shellcheck`, `zsh -n`, `fish -n`, and hermetic offline BATS suite.
+
 ## Unreleased — `workspace-toolchain-and-ux-layering`
 
 ### Changed (BREAKING — catalog reshape)

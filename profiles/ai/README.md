@@ -1,8 +1,23 @@
-# AI Profile (Crisp)
+# AI Profile (`ai`)
 
-Purpose-built VS Code profile with the common AI assistant extensions (GitHub Copilot, Claude, Gemini AI Studio, Continue, Codeium, Tabnine). Use `vsp ai-profile-crisp <path>` to open a workspace with this configuration.
+Compiled VS Code profile featuring the default AI agent suite:
+- **Google Antigravity** (`google.google-antigravity`) — default primary AI agent
+- **Claude Code** (`anthropic.claude-code`)
+- **OpenAI Codex** (`openai.chatgpt`)
+- **GitHub Copilot Chat** (`github.copilot-chat`) — inline ghost-text completions and Next Edit Suggestions
 
-Setup tips:
-1. Sign in to each AI extension with your provider subscription (Copilot, Claude Pro, Gemini Advanced, etc.).
-2. Use the chat command center in the title bar to reach Copilot Chat, Claude, and Gemini side-by-side.
-3. Run `bash ~/.config/vscode/scripts/install-extensions.sh ai-profile-crisp` after cloning on a new machine.
+For a strict **Copilot-only** profile (preserving the legacy `ai-profile-{crisp,retina}` policy), use [`profiles/ai-copilot/`](../ai-copilot/README.md).
+For a zero-AI baseline (`"chat.disableAIFeatures": true`), use [`profiles/general-minimal/`](../general-minimal/README.md).
+
+## Usage
+
+```bash
+# Import the compiled bundle (installs all extensions + verifies SHA256SUMS)
+bash scripts/import-profile.sh ai exports/ai.code-profile
+
+# Or sync extensions into an existing profile
+bash scripts/vspcli reconcile --profile ai
+
+# Apply personal UX preset (crisp or retina) to VS Code User settings
+bash scripts/vspcli apply --ux=crisp --ux-target=user .
+```

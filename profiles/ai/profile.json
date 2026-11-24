@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "ai",
+  "description": "AI-first multi-agent workflow profile (Google Antigravity default, Claude Code, OpenAI Codex, and unified GitHub Copilot Chat)",
+  "useDefaults": true,
+  "modules": ["ai-agents"],
+  "excludeModules": [],
+  "ux": "default",
+  "overrides": {
+    "workspace": {},
+    "profile": {
+      "chat.editor.fontSize": 14
+    }
+  }
+}

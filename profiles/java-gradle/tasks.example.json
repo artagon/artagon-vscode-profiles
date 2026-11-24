@@ -6,15 +6,16 @@
       "type": "shell",
       "command": "./gradlew",
       "args": ["build"],
-      "group": "build"
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "silent", "panel": "shared" }
     },
     {
       "label": "Gradle: Test",
       "type": "shell",
       "command": "./gradlew",
       "args": ["test"],
-      "group": "test",
-      "dependsOn": "Gradle: Build"
+      "group": { "kind": "test", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "shared" }
     }
   ]
 }

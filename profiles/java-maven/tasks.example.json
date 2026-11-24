@@ -4,17 +4,18 @@
     {
       "label": "Maven: Package",
       "type": "shell",
-      "command": "mvn",
-      "args": ["-B", "clean", "package"],
-      "group": "build"
+      "command": "if [ -x ./mvnw ]; then ./mvnw -B clean package; else mvn -B clean package; fi",
+      "options": { "shell": { "executable": "/bin/sh", "args": ["-c"] } },
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "silent", "panel": "shared" }
     },
     {
       "label": "Maven: Test",
       "type": "shell",
-      "command": "mvn",
-      "args": ["-B", "test"],
-      "group": "test",
-      "dependsOn": "Maven: Package"
+      "command": "if [ -x ./mvnw ]; then ./mvnw -B test; else mvn -B test; fi",
+      "options": { "shell": { "executable": "/bin/sh", "args": ["-c"] } },
+      "group": { "kind": "test", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "shared" }
     }
   ]
 }

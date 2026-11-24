@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "id": "ts-base",
+  "kind": "toolchain",
+  "description": "Shared TypeScript/JavaScript base (Pretty TypeScript Errors, Vitest, tsserver tuning)",
+  "requires": ["core-editor"],
+  "defaultWith": ["ts-eslint-prettier"],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [
+      "yoavbls.pretty-ts-errors",
+      "vitest.explorer"
+    ],
+    "profile": [],
+    "unwanted": [
+      "christian-kohler.npm-intellisense",
+      "christian-kohler.path-intellisense"
+    ]
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": null
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 26,
+    "fallback": false,
+    "match": "any",
+    "supersedes": [],
+    "rules": [
+      { "type": "file", "path": "tsconfig.json" }
+    ]
+  }
+}

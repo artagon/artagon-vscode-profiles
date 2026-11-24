@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "java-gradle",
+  "description": "Java development with Red Hat JDT LS (native Lombok), Gradle, JUnit, and Checkstyle",
+  "useDefaults": true,
+  "modules": ["java-gradle"],
+  "excludeModules": [],
+  "ux": "default",
+  "overrides": {
+    "workspace": {},
+    "profile": {}
+  }
+}

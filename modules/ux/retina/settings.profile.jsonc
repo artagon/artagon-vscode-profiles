@@ -1,0 +1,19 @@
+// Retina UX preset — 15 exact symmetric keys (identical key set to crisp, disjoint from core-editor).
+// Tuned for 2x Liquid Retina XDR (3456x2234) with Maple Mono NF cursive italics + Catppuccin Mocha.
+{
+  "workbench.colorTheme": "Catppuccin Mocha",
+  "workbench.preferredDarkColorTheme": "Catppuccin Mocha",
+  "workbench.iconTheme": "catppuccin-mocha",
+  "workbench.productIconTheme": "fluent-icons",
+  "workbench.fontAliasing": "auto",
+  "workbench.tree.indent": 16,
+  "window.density.editorTabHeight": "default",
+  "editor.fontFamily": "'Maple Mono NF', 'Monaspace Neon NF', 'Geist Mono', 'JetBrains Mono', 'JetBrainsMono NF', 'JetBrainsMono Nerd Font', Menlo, monospace",
+  "terminal.integrated.fontFamily": "'Maple Mono NF', 'Monaspace Neon NF', 'GeistMono NF', 'JetBrainsMono NF', 'JetBrainsMono Nerd Font', 'JetBrains Mono', Menlo, monospace",
+  "editor.fontLigatures": "'calt', 'liga', 'zero', 'ss03', 'ss07', 'ss08'",
+  "editor.fontVariations": true,
+  "editor.fontSize": 14,
+  "editor.lineHeight": 1.65,
+  "terminal.integrated.fontSize": 13,
+  "editor.letterSpacing": 0
+}

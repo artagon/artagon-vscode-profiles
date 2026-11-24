@@ -1,3 +1,6 @@
+> [!WARNING]
+> **SUPERSEDED by `refactor-capability-modules-and-defaults`** — archive ONLY with `openspec archive <change-id> --skip-specs` so retired `_shared/`, `_overrides/`, `_catalog/`, and legacy Decision-15 deltas do not re-enter `openspec/specs/`.
+
 ## Why
 
 The repo's existing extension-install supply-chain story stops at

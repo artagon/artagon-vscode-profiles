@@ -1,0 +1,26 @@
+// GitHub Actions workflow handoff: let github.vscode-github-actions own workflow language ID
+// and schema validation while Red Hat YAML (base settings in core-editor) handles formatting and custom action.yml schemas.
+{
+  "yaml.disableSchemaDetection": [
+    "**/.github/workflows/*.yml",
+    "**/.github/workflows/*.yaml",
+    "**/.gitea/workflows/*.yml",
+    "**/.gitea/workflows/*.yaml",
+    "**/.forgejo/workflows/*.yml",
+    "**/.forgejo/workflows/*.yaml"
+  ],
+  "yaml.schemas": {
+    "https://json.schemastore.org/github-action.json": [
+      ".github/actions/**/action.yml",
+      ".github/actions/**/action.yaml",
+      "action.yml",
+      "action.yaml"
+    ]
+  },
+  "[github-actions-workflow]": {
+    "editor.defaultFormatter": "redhat.vscode-yaml",
+    "editor.formatOnSave": false,
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  }
+}

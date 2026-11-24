@@ -1,0 +1,7 @@
+// Astral ty workspace settings: workspace-wide Rust checking + selective non-noisy inlay hints.
+{
+  "ty.diagnosticMode": "workspace",
+  "ty.completions.autoImport": true,
+  "ty.inlayHints.variableTypes": false,
+  "ty.inlayHints.callArgumentNames": true
+}

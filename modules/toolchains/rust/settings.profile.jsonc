@@ -1,0 +1,15 @@
+// Rust profile-scoped extension host affinity and semantic token styling.
+{
+  "extensions.experimental.affinity": {
+    "rust-lang.rust-analyzer": 1
+  },
+  "editor.semanticTokenColorCustomizations": {
+    "[*]": {
+      "rules": {
+        "*.mutable": { "fontStyle": "underline" },
+        "*.unsafe": { "fontStyle": "bold" },
+        "*.consuming": { "fontStyle": "italic" }
+      }
+    }
+  }
+}

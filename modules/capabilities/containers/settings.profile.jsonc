@@ -1,0 +1,5 @@
+// Container Tools profile noise reduction.
+{
+  "containers.showRemoteWorkspaceWarning": false,
+  "containers.images.checkForOutdatedImages": false
+}

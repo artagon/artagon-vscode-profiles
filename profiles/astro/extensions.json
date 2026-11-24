@@ -1,12 +1,57 @@
 [
   {
     "identifier": {
-      "id": "GitHub.github-vscode-theme"
+      "id": "editorconfig.editorconfig"
     }
   },
   {
     "identifier": {
-      "id": "akamud.vscode-theme-onedark"
+      "id": "tamasfe.even-better-toml"
+    }
+  },
+  {
+    "identifier": {
+      "id": "dotenv.dotenv-vscode"
+    }
+  },
+  {
+    "identifier": {
+      "id": "redhat.vscode-yaml"
+    }
+  },
+  {
+    "identifier": {
+      "id": "redhat.vscode-xml"
+    }
+  },
+  {
+    "identifier": {
+      "id": "mechatroner.rainbow-csv"
+    }
+  },
+  {
+    "identifier": {
+      "id": "usernamehw.errorlens"
+    }
+  },
+  {
+    "identifier": {
+      "id": "streetsidesoftware.code-spell-checker"
+    }
+  },
+  {
+    "identifier": {
+      "id": "enkia.tokyo-night"
+    }
+  },
+  {
+    "identifier": {
+      "id": "pkief.material-icon-theme"
+    }
+  },
+  {
+    "identifier": {
+      "id": "pkief.material-product-icons"
     }
   },
   {
@@ -21,127 +66,87 @@
   },
   {
     "identifier": {
-      "id": "dracula-theme.theme-dracula"
+      "id": "miguelsolorio.fluent-icons"
     }
   },
   {
     "identifier": {
-      "id": "eamodio.gitlens"
+      "id": "google.google-antigravity"
     }
   },
   {
     "identifier": {
-      "id": "enkia.tokyo-night"
+      "id": "anthropic.claude-code"
     }
   },
   {
     "identifier": {
-      "id": "fawwazfirdaus.poimandres-darker"
+      "id": "openai.chatgpt"
     }
   },
   {
     "identifier": {
-      "id": "foxundermoon.shell-format"
+      "id": "github.copilot-chat"
     }
   },
   {
     "identifier": {
-      "id": "github.vscode-github-actions"
+      "id": "yzhang.markdown-all-in-one"
     }
   },
   {
     "identifier": {
-      "id": "github.vscode-pull-request-github"
+      "id": "davidanson.vscode-markdownlint"
     }
   },
   {
     "identifier": {
-      "id": "liviuschera.noctis"
+      "id": "bierner.markdown-mermaid"
     }
   },
   {
     "identifier": {
-      "id": "miguelsolorio.symbols"
+      "id": "bierner.markdown-preview-github-styles"
     }
   },
   {
     "identifier": {
-      "id": "mikestead.dotenv"
+      "id": "mads-hartmann.bash-ide-vscode"
     }
   },
   {
     "identifier": {
-      "id": "monokai.theme-monokai-pro-vscode"
+      "id": "timonwong.shellcheck"
     }
   },
   {
     "identifier": {
-      "id": "ms-azuretools.vscode-docker"
+      "id": "mkhl.shfmt"
     }
   },
   {
     "identifier": {
-      "id": "mutantdino.resourcemonitor"
+      "id": "bmalehorn.vscode-fish"
     }
   },
   {
     "identifier": {
-      "id": "mvllow.rose-pine"
+      "id": "jeff-hykin.better-shellscript-syntax"
     }
   },
   {
     "identifier": {
-      "id": "oderwat.indent-rainbow"
+      "id": "kherring.bats-test-runner"
     }
   },
   {
     "identifier": {
-      "id": "pkief.material-icon-theme"
+      "id": "yoavbls.pretty-ts-errors"
     }
   },
   {
     "identifier": {
-      "id": "redhat.vscode-yaml"
-    }
-  },
-  {
-    "identifier": {
-      "id": "sdras.night-owl"
-    }
-  },
-  {
-    "identifier": {
-      "id": "sonarsource.sonarlint-vscode"
-    }
-  },
-  {
-    "identifier": {
-      "id": "streetsidesoftware.code-spell-checker"
-    }
-  },
-  {
-    "identifier": {
-      "id": "tamasfe.even-better-toml"
-    }
-  },
-  {
-    "identifier": {
-      "id": "teabyii.ayu"
-    }
-  },
-  {
-    "identifier": {
-      "id": "usernamehw.errorlens"
-    }
-  },
-  {
-    "identifier": {
-      "id": "vscode-icons-team.vscode-icons"
-    }
-  },
-  {
-    "identifier": {
-      "id": "zhuangtongfa.Material-theme"
+      "id": "vitest.explorer"
     }
   },
   {
@@ -156,12 +161,7 @@
   },
   {
     "identifier": {
-      "id": "christian-kohler.npm-intellisense"
-    }
-  },
-  {
-    "identifier": {
-      "id": "christian-kohler.path-intellisense"
+      "id": "stylelint.vscode-stylelint"
     }
   },
   {
@@ -171,32 +171,7 @@
   },
   {
     "identifier": {
-      "id": "dbaeumer.vscode-eslint"
-    }
-  },
-  {
-    "identifier": {
       "id": "ecmel.vscode-html-css"
-    }
-  },
-  {
-    "identifier": {
-      "id": "eg2.vscode-npm-script"
-    }
-  },
-  {
-    "identifier": {
-      "id": "esbenp.prettier-vscode"
-    }
-  },
-  {
-    "identifier": {
-      "id": "ms-vsliveshare.vsliveshare"
-    }
-  },
-  {
-    "identifier": {
-      "id": "naumovs.color-highlight"
     }
   },
   {
@@ -206,7 +181,17 @@
   },
   {
     "identifier": {
-      "id": "stylelint.vscode-stylelint"
+      "id": "naumovs.color-highlight"
+    }
+  },
+  {
+    "identifier": {
+      "id": "dbaeumer.vscode-eslint"
+    }
+  },
+  {
+    "identifier": {
+      "id": "esbenp.prettier-vscode"
     }
   }
 ]

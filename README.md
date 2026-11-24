@@ -1,982 +1,320 @@
-# VS Code Profiles (XDG Managed)
-
-This repository tracks all Visual Studio Code profiles, shared settings, and helper scripts under `~/.config/vscode`. It replaces the stock `User/` folder with a reproducible, profile-aware layout and scripting toolkit. Clone it anywhere (e.g., `~/src/vscode-profiles`) if you prefer—profile symlinks stay relative, so the layout remains portable even when teammates do not follow the same XDG conventions.
-
-## About
+# Artagon VS Code Profiles
 
 [![CI](https://github.com/Artagon/artagon-vscode-profiles/actions/workflows/ci.yml/badge.svg)](https://github.com/Artagon/artagon-vscode-profiles/actions/workflows/ci.yml)
-[![OS macOS](https://img.shields.io/badge/os-macOS-000000?logo=apple&logoColor=white)](#)
-[![OS Linux](https://img.shields.io/badge/os-Linux-0b7261?logo=linux&logoColor=white)](#)
-[![OS Windows](https://img.shields.io/badge/os-Windows-0078D4?logo=windows&logoColor=white)](#)
-[![AI Copilot Only](https://img.shields.io/badge/AI-Copilot%20only-1f6feb?logo=githubcopilot&logoColor=white)](#)
-[![Topics](https://img.shields.io/badge/profiles-astro%2C%20java%2C%20rust%2C%20c%2B%2B-4a7bbb)](#)
+[![Platforms: macOS & Linux](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-0969da)](ABOUT.md#overview)
+[![Runtime: Bash 3.2+ + jq](https://img.shields.io/badge/runtime-Bash%203.2%2B%20%2B%20jq-4a7bbb)](ABOUT.md#design-guarantees)
+[![VS Code: 1.147+](https://img.shields.io/badge/VS%20Code-1.147%2B-007acc)](#profile--module-matrix)
+[![Profiles: 15](https://img.shields.io/badge/profiles-15-8250df)](#profile--module-matrix)
+[![Modules: 32](https://img.shields.io/badge/modules-32-bf3989)](#profile--module-matrix)
+[![VSIX Pins: SHA-256](https://img.shields.io/badge/VSIX%20pins-SHA--256-2ea44f)](#security--supply-chain-controls)
+[![About](https://img.shields.io/badge/about-design%20%26%20verification-57606a)](ABOUT.md)
 
-- Portable, profile‑based VS Code setup with crisp/retina shared baselines and per‑profile overrides.
-- Web/Astro (TypeScript/JS + HTML/CSS), Java via jenv, Rust, and C/C++ stacks pre‑configured.
-- AI policy: GitHub Copilot + Copilot Chat only (no other assistants).
-- Scripts for validate/compose/export/open/install; bundles imported via `scripts/import-profile.sh` (the VS Code UI import does NOT install missing extensions).
+Vertical capability-module architecture for Visual Studio Code (`1.147+`) profiles, team-shareable workspace toolchains, IntelliJ-grade developer ergonomics, multi-agent AI coexistence, and supply-chain-hardened extension management. Runs strictly on **Bash 3.2+ (`/bin/bash` on macOS) + `jq`** with zero Python, Node, or Rust runtime dependencies.
 
-## Behavior Change Notice
+> [!IMPORTANT]
+> **Security & Non-Invasiveness Contract**
+> - **Clean team workspaces**: `vspcli apply --target=workspace` writes only team-shareable toolchain recommendations, workspace settings, and portable plain `tasks.json` into `.vscode/`; personal AI agents, UX presets (`crisp`/`retina`), and RTK terminal wiring stay out of `.vscode/` unless explicitly opted in.
+> - **Hardened local-first defaults**: Profiles default `security.workspace.trust.untrustedFiles` to `"prompt"`, disable telemetry (`telemetry.telemetryLevel: "off"`), block auto-approve / CLI-wrapper bypass settings during bundle import, and provide first-class Copilot-only (`ai-copilot`) and zero-AI (`general-minimal`, `--no-ai`) opt-outs.
+> - **Verified supply chain**: Universal core/UX extensions install via SHA-256-pinned official `https://` Marketplace VSIX packages through a zero-TOCTOU local cache; publisher allowlists gate every install; and compromised `jscearcy.rust-doc-viewer` (GlassWorm) is uninstalled first by `vspcli reconcile` and flagged `FAIL` across all profiles by `vspcli doctor`.
 
-Starting with the `harden-profile-tooling-and-pipeline` change:
+[Quick Start](#quick-start) · [Highlights](#architecture--capability-highlights) · [Profiles & Modules](#profile--module-matrix) · [AI Agents & Opt-Outs](#ai-agent-coexistence--explicit-opt-outs) · [UX & Typography](#ux-presets-typography--themes) · [Security Controls](#security--supply-chain-controls) · [CLI Reference](#cli-quick-reference) · [Troubleshooting](#troubleshooting--faq)
 
-- **Workspace Trust:** All shipped profiles default `security.workspace.trust.untrustedFiles` to `"prompt"` (was `"open"`). The first time you open an untrusted folder under a managed profile, VS Code will show its Workspace Trust prompt before running language servers, tasks, debug launches, or formatters defined in the workspace. This is the recommended secure default — accept the prompt to proceed normally.
-- **`@extends` chains:** The composer now only accepts bare filenames or a single sub-directory under `_overrides/` (e.g. `ai/copilot.jsonc`). Multi-level paths like `ai/sub/copilot.jsonc`, traversal segments, absolute paths, leading `~`, backslashes, and NUL bytes are rejected. If you previously authored a deeper chain, flatten it to a single level or move the fragment.
-- **Pre-commit hook:** After running `bash scripts/install-hooks.sh`, commits that touch `_shared/` or `_overrides/` must also stage the regenerated `_merged/` and `exports/` artifacts. The hook will refuse a commit that leaves regenerated files unstaged, with a clear "run X, stage Y" message.
-- **Extension identifiers:** Marketplace IDs in `extensions.json` and imported `.code-profile` bundles are validated against an allowlist regex before installation. Identifiers with shell metacharacters, embedded whitespace, or quote characters are rejected — this is a hardening step, not a feature change. If you maintain a custom `extensions.json`, ensure each `.identifier.id` matches `<publisher>.<extension>` shape.
+---
 
-See [CHANGELOG.md](./CHANGELOG.md) for the complete list of changes.
+## Quick Start
 
-## Quick Start — Import a Profile Bundle
-
-```bash
-bash scripts/import-profile.sh <profile-name> exports/<profile>.code-profile
-```
-
-> **Do not import via the VS Code UI** (Settings → Profiles → Import). The UI import only *enables* extensions that are already installed; it does NOT install missing ones, so themes and icon themes silently fall back to a degraded look. `import-profile.sh` installs every listed extension before VS Code reads the profile.
-
-If a theme or icon-theme extension fails to install (e.g., offline / marketplace down), `import-profile.sh` strips the dangling `workbench.colorTheme` / `workbench.iconTheme` keys before VS Code first reads the profile, so the workbench loads its built-in default theme instead of silently failing on a missing theme name.
-
-## Quick Start (workspace-aware, recommended)
-
-Per the `workspace-toolchain-and-ux-layering` change, `vspcli --detect`
-infers the toolchain from a project root and writes
-`.vscode/{extensions,settings,tasks}.json`:
+### 1. Import a Compiled Profile Bundle (Recommended)
 
 ```bash
-# In any project root with Cargo.toml / package.json+astro.config / pom.xml / etc.
-bash scripts/vspcli --detect --target=workspace --ux=crisp .
+# Full stack with default AI agent suite (Antigravity + Claude Code + Codex + Copilot Chat)
+bash scripts/import-profile.sh rust exports/rust.code-profile
 
-# Polyglot stack — both layers compose:
-bash scripts/vspcli --detect --target=workspace --ux=retina /path/to/tauri-repo
+# Apply your personal Retina or Crisp UX preset on import
+bash scripts/import-profile.sh --ux=retina rust exports/rust.code-profile
+bash scripts/import-profile.sh --ux=crisp java-gradle exports/java-gradle.code-profile
+
+# Strict Copilot-only (never adds Antigravity, Claude Code, or Codex)
+bash scripts/import-profile.sh ai-copilot exports/ai-copilot.code-profile
+
+# Zero-AI minimal profile, or strip AI from any compiled bundle
+bash scripts/import-profile.sh general-minimal exports/general-minimal.code-profile
+bash scripts/import-profile.sh --no-ai rust-clean exports/rust.code-profile
 ```
 
-Resulting files:
-- `.vscode/extensions.json` — base + toolchain layer recommendations.
-- `.vscode/settings.json` — `_shared/editor-base.jsonc` + UX preset
-  (`_shared/ux/{crisp,retina}.jsonc`) + rust-analyzer hover settings
-  (when rust detected) + rtk terminal profile (`rtk-fish`/`rtk-bash`).
-- `.vscode/tasks.json` — `cargo doc` + strict-docs tasks (when rust detected).
+> [!NOTE]
+> Always import via `scripts/import-profile.sh` (or `bash scripts/vspcli import`), not the VS Code UI (`Settings → Profiles → Import`). The VS Code UI skips extensions that are not already installed, whereas `import-profile.sh` verifies `exports/SHA256SUMS`, enforces the autonomy deny-list and publisher allowlist, installs pinned VSIX packages with SHA-256 verification, batches installs with per-extension retry fallback (`--no-batch` to disable), and applies graceful theme fallbacks if any theme extension fails.
 
-UX overrides on top of (or in lieu of) `--ux`:
-`--font="JetBrains Mono"`, `--font-size=14`, `--theme="GitHub Light"`,
-`--icon-theme=catppuccin-icons`. Skip rtk wiring with `--no-rtk`
-(useful in Restricted Mode / Codespaces).
+### 2. Apply Team-Shareable Workspace Configuration
 
-**Workspace Trust**: on first open of any workspace this CLI configures,
-VS Code prompts for Workspace Trust. Click Trust — the rtk-fish terminal
-profile and the automation profile are silently dropped in Restricted
-Mode. The fish/bash init scripts emit
-`"rtk wrappers active — workspace trust granted"` on first interactive
-shell so you can verify.
+```bash
+# Auto-detect toolchains and write team-shareable .vscode/{extensions,settings,tasks}.json
+bash scripts/vspcli apply --target=workspace /path/to/repo
 
-**rtk enforcement caveats** (per design.md Decision 6):
-1. `automationProfile` only chooses the shell, not the prefix — tasks
-   in `.vscode/tasks.json` written by the CLI start every `command` with
-   `rtk` literally.
-2. `"type": "process"` tasks bypass the shell entirely (no aliases,
-   no rtk).
-3. Aliases don't propagate into subshells launched from a script
-   (e.g., `bash build.sh` in a task hits raw `cargo`).
-4. `VAR=val cmd` syntax is bash-only; on fish use `rtk env VAR=val cmd`.
-5. `unwantedRecommendations` is suppression, not enforcement.
+# Java Maven + Spring Boot (layers cleanly with either Gradle or Maven)
+bash scripts/vspcli apply --target=workspace --toolchain java-maven --with java-spring /path/to/maven-spring-repo
 
-## Profile Toolkit
+# Astro + Biome (automatic formatter settings-key cleanup from ESLint+Prettier)
+bash scripts/vspcli apply --target=workspace --with biome --without ts-eslint-prettier /path/to/astro-repo
 
-- Requirements: VS Code CLI on PATH (`code --version`) and `jq`.
-- Compose + export:
-  - `bash scripts/compose-settings.sh && bash scripts/export-profiles.sh`
-- Open a profile without installing extensions (registers it):
-  - `scripts/open-profiles.sh --skip-install web-astro`
-- Install extensions for a profile:
-  - `bash scripts/install-extensions.sh web-astro`
-- Tip: `vspcli --open-profiles --skip-install <profiles...>` to open multiple at once.
+# Python with Astral ty instead of BasedPyright
+bash scripts/vspcli apply --target=workspace --with python-ty --without python /path/to/python-repo
 
-### Profiles Overview
-- Web (Astro/Node): `web-astro-(crisp|retina)` with Astro syntax, Prettier/ESLint, Tailwind, HTML/CSS/npm/path IntelliSense, Emmet in `.astro`.
-- Java: `java-*-*` (jenv-driven via `${command:jenv.javaHome}`), Spring/Maven/Gradle focused variants.
-- Rust: `rust-profile-(crisp|retina)` (rust-analyzer, CodeLLDB, Dependi, TOML).
-- C/C++: `cpp-clangd-(crisp|retina)` and `cpp-intellisense-(crisp|retina)`.
-- AI bundle: `ai-profile-(crisp|retina)` with GitHub Copilot + Copilot Chat only.
+# Apply personal UX preset to VS Code User settings (keeps team .vscode/ clean)
+bash scripts/vspcli apply --target=workspace --ux=retina --ux-target=user /path/to/repo
 
-## Profile Matrix
+# Explicitly opt in to workspace UX or RTK terminal wiring when desired
+bash scripts/vspcli apply --target=workspace --ux=crisp --ux-in-workspace --rtk-in-workspace /path/to/repo
+```
 
-The `(crisp|retina)` in profile names below denotes a **UX preset**
-applied at the workspace layer (`vspcli --detect --ux=<look>`), not
-a separate profile directory. `CR` / `RT` columns link to the
-crisp / retina export bundles.
+### 3. Reconcile & Audit Installed Profiles
 
-| Profile | Stack | Extensions | Export (CR/RT) | Notes |
-|---|---|---|---|---|
-| `web-astro-(crisp|retina)` | Astro · Node · TS/JS · HTML/CSS | [full list](#ext-web-astro) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/web-astro-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/web-astro-retina.code-profile) | Prettier on save; Astro formatter; Emmet in `.astro`; Tailwind mapped for Astro; TOML formatting |
-| `java-profile-(crisp|retina)` | Java (general) | [full list](#ext-java-profile) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/java-profile-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/java-profile-retina.code-profile) | JDK via `${command:jenv.javaHome}`; Gradle & Maven enabled |
-| `java-gradle-(crisp|retina)` | Java (Gradle‑first) | [full list](#ext-java-gradle) | — | Maven import disabled; jenv for JDK |
-| `java-maven-(crisp|retina)` | Java (Maven‑first) | [full list](#ext-java-maven) | — | Gradle import disabled; jenv for JDK |
-| `java-spring-(crisp|retina)` | Spring Boot | [full list](#ext-java-spring) | — | jenv for Spring LS; Spring YAML schema |
-| `rust-profile-(crisp|retina)` | Rust | [full list](#ext-rust) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/rust-profile-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/rust-profile-retina.code-profile) | clippy on save; exclude `**/target`; TOML formatting |
-| `cpp-clangd-(crisp|retina)` | C/C++ (clangd) | [full list](#ext-cpp-clangd) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-clangd-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-clangd-retina.code-profile) | clang‑tidy; Ninja; build dirs excluded |
-| `cpp-intellisense-(crisp|retina)` | C/C++ (cpptools) | [full list](#ext-cpp-cpptools) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-intellisense-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-intellisense-retina.code-profile) | cpptools provider; `compile_commands.json`; Ninja |
-| `ai-profile-(crisp|retina)` | Utilities / AI | [full list](#ext-ai) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-profile-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-profile-retina.code-profile) | Copilot‑only policy; chat center |
-| `ai-plus-(crisp|retina)` | Utilities / AI (Copilot + Cody + Continue) | [full list](#ext-ai-plus) | [CR](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-plus-crisp.code-profile) · [RT](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-plus-retina.code-profile) | Experimental “try more AI” bundle |
+```bash
+# Audit tools, catalog, Default-profile application scopes, pin drift, and compromised extensions
+bash scripts/vspcli doctor --strict
 
-### Downloadable Profile Bundles
+# Preview reconciliation with zero mutations (including Step 0)
+bash scripts/vspcli reconcile --profile rust --dry-run
 
-Click an Export badge to download the `.code-profile` bundle, then import it via `bash scripts/import-profile.sh <name> <downloaded-file>`. Avoid the VS Code UI import — it does not install missing extensions.
+# Remove compromised extensions across all registered profiles (including Default)
+bash scripts/vspcli reconcile --all --compromised-only
 
-| Profile | Export |
-|---|---|
-| web-astro-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/web-astro-crisp.code-profile) |
-| web-astro-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/web-astro-retina.code-profile) |
-| java-profile-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/java-profile-crisp.code-profile) |
-| java-profile-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/java-profile-retina.code-profile) |
-| rust-profile-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/rust-profile-crisp.code-profile) |
-| rust-profile-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/rust-profile-retina.code-profile) |
-| cpp-clangd-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-clangd-crisp.code-profile) |
-| cpp-clangd-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-clangd-retina.code-profile) |
-| cpp-intellisense-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-intellisense-crisp.code-profile) |
-| cpp-intellisense-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/cpp-intellisense-retina.code-profile) |
-| ai-profile-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-profile-crisp.code-profile) |
-| ai-profile-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-profile-retina.code-profile) |
-| ai-plus-crisp | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-plus-crisp.code-profile) |
-| ai-plus-retina | [![Export](https://img.shields.io/badge/Export-.code--profile-0ea5e9)](https://raw.githubusercontent.com/artagon/artagon-vscode-profiles/main/exports/ai-plus-retina.code-profile) |
+# Sync a profile to a canonical recipe, or switch an existing profile to Copilot-only
+bash scripts/vspcli reconcile --profile ai-copilot --as ai-copilot --prune-unmanaged
+```
 
-### Full Extension Lists
+---
 
-The following lists show the full set of extensions per profile family. Crisp and Retina variants share the same extension set unless otherwise noted.
+## Architecture & Capability Highlights
 
-<a id="ext-web-astro"></a>
+| Domain | Included Capabilities & Tuning | Modules |
+| :--- | :--- | :--- |
+| **Core Editor & IntelliJ-Grade DX** | Native inlay hints, sticky scroll, semantic highlighting, bracket-pair guides, Project Explorer file nesting (`explorer.fileNesting.*`), Terminal IntelliSense (`terminal.integrated.suggest.*`), Kitty graphics protocol (`enableImages`), macOS Option-as-Meta, SCM Graph & inline diffs, Error Lens, spell check; opt-in Bookmarks, Project Manager, Scratchpads, Better Comments, Regex Previewer, Peacock, Bruno HTTP, Draw.io, and IntelliJ keymap | `core-editor`, `dx-pro`, `intellij-keybindings` |
+| **Universal Shell & Data Formats** | Built into **all 15 profiles**: Bash IDE, ShellCheck, `shfmt`, Fish, Better ShellScript syntax, BATS Test Runner, JSON/JSONC, YAML (`redhat.vscode-yaml`), TOML (`even-better-toml`), XML (`redhat.vscode-xml`), CSV (`rainbow-csv`), DotEnv, INI/Properties, EditorConfig, and Markdown + Mermaid | `core-editor`, `shell`, `markdown` |
+| **AI Coding Agents** | **Google Antigravity** (default primary agent), **Claude Code**, **OpenAI Codex**, and unified **GitHub Copilot Chat** (owning inline completions & Next Edit Suggestions) with clean non-conflicting defaults, `Monaspace Krypton NF` ghost-text font, and safe VS Code `1.120`–`1.147` chat ergonomics | `ai-agents`, `ai-copilot` |
+| **Language Toolchains** | Auto-detected composable stacks for **Rust** (`rust-analyzer`, CodeLLDB, Dependi, Coverage Gutters, strict rustdoc tasks), **Java** (`java-base` native Lombok + `java-gradle` / `java-maven` / `java-spring`), **Python** (Ruff, `uv`/venv Environments, Debugpy, pytest + BasedPyright or Astral `ty`), **TypeScript / Astro** (`ts-base` + `astro` + ESLint/Prettier or Biome), and **C/C++** (`cpp-base` + `cpp-clangd` or `cpp-intellisense`) | `rust`, `java-*`, `python*`, `ts-*`, `astro`, `biome`, `cpp-*` |
+| **DevOps, Git & Quality** | GitLens (Plus disabled) + GitHub Pull Requests, Container Tools (replaces deprecated `vscode-docker`), GitHub Actions (`github-workflows` covering all `.github`/`.gitea`/`.forgejo` globs), SonarQube for IDE (`quality`), Live Share (`collaboration`), and portable XDG RTK terminal wrappers (`rtk-terminal`) | `git-pro`, `containers`, `github-workflows`, `quality`, `collaboration`, `rtk-terminal` |
+| **UX Presets & Themes** | 15-key exact-symmetry `retina` (Maple Mono NF + Catppuccin Mocha + Fluent Icons) and `crisp` (JetBrains Mono + Tokyo Night + Material Icons) presets, UX-agnostic `default`, plus 30 curated color/file-icon/product-icon packs in `themes-pack` | `retina`, `crisp`, `default`, `themes-pack` |
+
+---
+
+## Profile & Module Matrix
+
+<!-- BEGIN GENERATED-MATRIX -->
+### Profiles (15 Compiled Recipes)
+
+| Profile | Description | Included Modules | Extensions | Export Bundle |
+| --- | --- | --- | ---: | --- |
+| `ai` | AI-first multi-agent workflow profile (Google Antigravity default, Claude Code, OpenAI Codex, and unified GitHub Copilot Chat) | `core-editor, ai-agents, markdown, shell` | 28 | [`ai.code-profile`](exports/ai.code-profile) |
+| `ai-copilot` | Strict Copilot-only AI profile (unified GitHub Copilot Chat without Antigravity, Claude Code, or Codex; target of legacy ai-profile-* links) | `core-editor, markdown, shell, ai-copilot` | 25 | [`ai-copilot.code-profile`](exports/ai-copilot.code-profile) |
+| `ai-plus` | Full-stack AI power profile adding GitLens + GitHub PRs, Container Tools, SonarQube for IDE, DX Pro (Bookmarks/Scratchpads/Project Manager/Bruno), and curated extra themes | `core-editor, ai-agents, markdown, shell, containers, dx-pro, git-pro, quality, themes-pack` | 64 | [`ai-plus.code-profile`](exports/ai-plus.code-profile) |
+| `astro` | Astro + TypeScript web development with Tailwind CSS, Stylelint, and ESLint+Prettier (swap with --with biome) | `core-editor, ai-agents, markdown, shell, ts-base, astro, ts-eslint-prettier` | 39 | [`astro.code-profile`](exports/astro.code-profile) |
+| `cpp-clangd` | C/C++ development with LLVM clangd, CMake Tools, and CodeLLDB | `core-editor, ai-agents, markdown, shell, cpp-base, cpp-clangd` | 32 | [`cpp-clangd.code-profile`](exports/cpp-clangd.code-profile) |
+| `cpp-intellisense` | C/C++ development with Microsoft C/C++ IntelliSense, CMake Tools, and CodeLLDB | `core-editor, ai-agents, markdown, shell, cpp-base, cpp-intellisense` | 32 | [`cpp-intellisense.code-profile`](exports/cpp-intellisense.code-profile) |
+| `general` | General-purpose developer profile with slim core editor, default AI agent suite (Antigravity + Claude + Codex + Copilot), Markdown, and Shell | `core-editor, ai-agents, markdown, shell` | 28 | [`general.code-profile`](exports/general.code-profile) |
+| `general-minimal` | AI-free general developer profile (excludes ai-agents and disables built-in VS Code AI features) | `core-editor, markdown, shell` | 24 | [`general-minimal.code-profile`](exports/general-minimal.code-profile) |
+| `github-workflows` | GitHub Actions CI/CD workflow authoring with YAML schema validation and Shell support | `core-editor, ai-agents, markdown, shell, github-workflows` | 29 | [`github-workflows.code-profile`](exports/github-workflows.code-profile) |
+| `java-gradle` | Java development with Red Hat JDT LS (native Lombok), Gradle, JUnit, and Checkstyle | `core-editor, ai-agents, markdown, shell, java-base, java-gradle` | 34 | [`java-gradle.code-profile`](exports/java-gradle.code-profile) |
+| `java-maven` | Java development with Red Hat JDT LS (native Lombok), Apache Maven, JUnit, and Checkstyle | `core-editor, ai-agents, markdown, shell, java-base, java-maven` | 34 | [`java-maven.code-profile`](exports/java-maven.code-profile) |
+| `java-spring` | Spring Boot development layered on Gradle (for Maven Spring, compose java-maven --with java-spring) | `core-editor, ai-agents, markdown, shell, java-base, java-gradle, java-spring` | 37 | [`java-spring.code-profile`](exports/java-spring.code-profile) |
+| `python` | Python development with Ruff, BasedPyright, Python Environments (venv/uv), Debugpy, and pytest (swap BasedPyright with --with python-ty --without python) | `core-editor, ai-agents, markdown, shell, python-base, python` | 33 | [`python.code-profile`](exports/python.code-profile) |
+| `rust` | Rust development with rust-analyzer, CodeLLDB, Dependi, Coverage Gutters, and strict docs policy | `core-editor, ai-agents, markdown, shell, rust` | 32 | [`rust.code-profile`](exports/rust.code-profile) |
+| `shell` | Shell scripting profile with Bash IDE, ShellCheck, shfmt, Fish, and BATS Test Runner | `core-editor, ai-agents, markdown, shell` | 28 | [`shell.code-profile`](exports/shell.code-profile) |
+
+### Modules (`modules/`)
+
+| Kind | Module ID | Description | Requires | Conflicts |
+| --- | --- | --- | --- | --- |
+| `capability` | `ai-agents` | Default AI agent suite: Google Antigravity (default), Claude Code, OpenAI Codex IDE, and unified GitHub Copilot Chat (inline completions & NES) | core-editor | ai-copilot |
+| `capability` | `ai-copilot` | Strict Copilot-only AI capability (unified GitHub Copilot Chat, excludes Antigravity, Claude Code, and Codex) | core-editor | ai-agents |
+| `capability` | `collaboration` | Real-time collaborative editing via Visual Studio Live Share | core-editor | — |
+| `capability` | `containers` | Container Tools (replaces deprecated ms-azuretools.vscode-docker) | core-editor | — |
+| `capability` | `core-editor` | Slim core editor ergonomics, universal data-format tooling (JSON/YAML/TOML/XML/CSV/DotEnv/EditorConfig), Error Lens, spell checking, and pinned crisp/retina theme packs | — | — |
+| `capability` | `dx-pro` | IntelliJ-grade developer experience toolkit (Bookmarks, Project Manager, Scratchpads, Better Comments, Regex Previewer, Peacock, Bruno HTTP, Draw.io) | core-editor | — |
+| `capability` | `git-pro` | Enhanced Git and GitHub PR workflow (GitLens with Plus disabled + GitHub Pull Requests) | core-editor | — |
+| `capability` | `github-workflows` | GitHub Actions workflow schema validation, IntelliSense, and run inspection (additive on repos with .github/workflows) | core-editor | — |
+| `capability` | `intellij-keybindings` | Opt-in IntelliJ IDEA keyboard shortcuts for JetBrains muscle memory (pass --with intellij-keybindings) | core-editor | — |
+| `capability` | `markdown` | Markdown authoring, linting, Mermaid diagrams, and GitHub preview styles | core-editor | — |
+| `capability` | `quality` | Optional SonarQube for IDE (SonarLint) static analysis | core-editor | — |
+| `capability` | `rtk-terminal` | Portable XDG-installed RTK terminal wrappers for Fish, Bash, and Zsh (ZDOTDIR proxy) | core-editor | — |
+| `capability` | `shell` | Bash, POSIX sh, Fish, ShellCheck, shfmt, and BATS testing support | core-editor | — |
+| `capability` | `themes-pack` | Optional curated extra color, file icon, and product icon themes beyond crisp (Tokyo Night) and retina (Catppuccin Mocha) | core-editor | — |
+| `toolchain` | `astro` | Astro web development with Tailwind CSS, Stylelint, and automatic ESLint+Prettier (or Biome when biome.json exists) | ts-base | — |
+| `toolchain` | `biome` | Biome formatter and linter stack for TypeScript/JavaScript/JSON/CSS (mutually exclusive with ts-eslint-prettier) | ts-base | ts-eslint-prettier |
+| `toolchain` | `cpp-base` | Shared C/C++ CMake Tools, CodeLLDB debugger, and syntax highlighting (portable, zero hardcoded host paths) | core-editor | — |
+| `toolchain` | `cpp-clangd` | C/C++ powered by LLVM clangd (mutually exclusive with cpp-intellisense) | cpp-base | cpp-intellisense |
+| `toolchain` | `cpp-intellisense` | C/C++ powered by Microsoft C/C++ IntelliSense (mutually exclusive with cpp-clangd) | cpp-base | cpp-clangd |
+| `toolchain` | `java-base` | Shared Java language support (Red Hat JDT LS with native Lombok, XML, Debug, Test, Dependencies, Checkstyle) | core-editor | — |
+| `toolchain` | `java-gradle` | Java with Gradle build tool (mutually exclusive with java-maven; supersedes java-maven when both manifests exist) | java-base | java-maven |
+| `toolchain` | `java-maven` | Java with Apache Maven build tool (mutually exclusive with java-gradle) | java-base | java-gradle |
+| `toolchain` | `java-spring` | Spring Boot framework layer (layers cleanly with either java-gradle or java-maven) | java-base | — |
+| `toolchain` | `python` | Default Python toolchain with BasedPyright type checking (mutually exclusive with python-ty) | python-base | python-ty |
+| `toolchain` | `python-base` | Shared Python runtime, debugger, Python Environments (venv/uv), Ruff formatter/linter, and pytest configuration | core-editor | — |
+| `toolchain` | `python-ty` | Optional Python toolchain using Astral ty type checker (mutually exclusive with python/BasedPyright) | python-base | python |
+| `toolchain` | `rust` | Rust development with rust-analyzer, CodeLLDB, Dependi, Coverage Gutters, and strict docs tasks | core-editor | — |
+| `toolchain` | `ts-base` | Shared TypeScript/JavaScript base (Pretty TypeScript Errors, Vitest, tsserver tuning) | core-editor | — |
+| `toolchain` | `ts-eslint-prettier` | ESLint + Prettier formatter and lint stack for TypeScript/JavaScript/Astro (mutually exclusive with biome) | ts-base | biome |
+| `ux` | `crisp` | High-density crisp preset for external / standard-DPI monitors (Tokyo Night + Material Icons + Material Product Icons) | core-editor | retina, default |
+| `ux` | `default` | UX-agnostic default preset (removes all 15 managed UX keys on explicit apply) | core-editor | crisp, retina |
+| `ux` | `retina` | Comfortable Retina / HiDPI display preset (Catppuccin Mocha + Catppuccin Icons + Fluent Product Icons) | core-editor | crisp, default |
+<!-- END GENERATED-MATRIX -->
+
+---
+
+## AI Agent Coexistence & Explicit Opt-Outs
+
+Default compiled profiles (`general`, `ai`, `ai-plus`, `rust`, `python`, `astro`, `java-*`, `cpp-*`, `github-workflows`, `shell`) and the 18 legacy toolchain export symlinks include [`modules/capabilities/ai-agents`](modules/capabilities/ai-agents):
+
+| Extension | Role in `ai-agents` | Coexistence Defaults |
+| :--- | :--- | :--- |
+| `google.google-antigravity` | Default primary AI agent | Sidebar-first agent workflow; replaces superseded `google.geminicodeassist` |
+| `anthropic.claude-code` | Claude Code IDE agent | `preferredLocation: "sidebar"`, `respectGitIgnore: true`, `autosave: true` |
+| `openai.chatgpt` (+ `openai.codex-audio`) | OpenAI Codex IDE agent | `followUpQueueMode: "queue"`, `composerEnterBehavior: "cmdIfMultiline"`, `reviewDelivery: "inline"` |
+| `github.copilot-chat` | Inline ghost-text completions & Next Edit Suggestions (NES) | Replaces legacy `github.copilot`; paired with `Monaspace Krypton NF` inline ghost text |
+
+- **Strict Copilot-only preserved**: Legacy `ai-profile-crisp` / `ai-profile-retina` aliases and export symlinks strictly resolve to [`exports/ai-copilot.code-profile`](exports/ai-copilot.code-profile) (`github.copilot-chat` only — never silently upgraded to Antigravity, Claude, or Codex).
+- **Zero-AI profile**: Use [`exports/general-minimal.code-profile`](exports/general-minimal.code-profile), which excludes `ai-agents` and sets `"chat.disableAIFeatures": true`.
+- **Strip AI on any import or apply**: Pass `--no-ai` to `scripts/import-profile.sh` (strips all AI extensions and `ai-agents`/`chat.*`/`inlineChat.*` settings while preserving shared `core-editor` keys, and sets `"chat.disableAIFeatures": true`), or pass `--without ai-agents` to `vspcli apply`.
+
+---
+
+## UX Presets, Typography & Themes
+
+Profiles compile **UX-agnostic** (`_merged/*.json`) so you can pair any toolchain profile with your display preset via `--ux=retina`, `--ux=crisp`, or `--ux=default`. Both `retina` and `crisp` manage the exact same **15 symmetric keys** (enforced by [`scripts/tests/check-ux-symmetry.sh`](scripts/tests/check-ux-symmetry.sh)):
+
+| Aspect | `retina` (HiDPI / Liquid Retina XDR) | `crisp` (External QHD / 1x DPI) |
+| :--- | :--- | :--- |
+| Color Theme | `Catppuccin Mocha` (`catppuccin.catppuccin-vsc`) | `Tokyo Night` (`enkia.tokyo-night`) |
+| File Icon Theme | `catppuccin-mocha` (`catppuccin.catppuccin-vsc-icons`) | `material-icon-theme` (`pkief.material-icon-theme`) |
+| Product Icon Theme | `fluent-icons` (`miguelsolorio.fluent-icons`) | `material-product-icons` (`pkief.material-product-icons`) |
+| Editor Font Stack | `'Maple Mono NF', 'Monaspace Neon NF', 'Geist Mono', 'JetBrains Mono', ...` | `'JetBrains Mono', 'JetBrainsMono NF', 'CommitMono', 'Monaspace Neon', ...` |
+| Terminal Font Stack | `'Maple Mono NF', 'Monaspace Neon NF', 'GeistMono NF', 'JetBrainsMono NF', ...` | `'JetBrainsMono NF', 'JetBrainsMono Nerd Font', 'Monaspace Neon NF', ...` |
+| OpenType Ligatures | `'calt', 'liga', 'zero', 'ss03', 'ss07', 'ss08'` (`fontVariations: true`) | `'calt', 'liga', 'zero'` (`fontVariations: true`) |
+| Sizing & Density | Editor `14px` / line-height `1.65`, Terminal `13px`, indent `16`, tabs `default` | Editor `13px` / line-height `1.55`, Terminal `12px`, indent `14`, tabs `compact` |
+
 <details>
-  <summary><strong>Web (Astro)</strong> — web-astro-(crisp|retina)</summary>
+<summary><strong>Recommended free Homebrew fonts & extra theme packs (`themes-pack`)</strong></summary>
 
-- `akamud.vscode-theme-onedark`
-- `catppuccin.catppuccin-vsc`
-- `catppuccin.catppuccin-vsc-icons`
-- `dracula-theme.theme-dracula`
-- `eamodio.gitlens`
-- `enkia.tokyo-night`
-- `foxundermoon.shell-format`
-- `github.vscode-github-actions`
-- `github.vscode-pull-request-github`
-- `mikestead.dotenv`
-- `ms-azuretools.vscode-docker`
-- `ms-vsliveshare.vsliveshare`
-- `mutantdino.resourcemonitor`
-- `oderwat.indent-rainbow`
-- `pkief.material-icon-theme`
-- `redhat.vscode-yaml`
-- `sdras.night-owl`
-- `sonarsource.sonarlint-vscode`
-- `streetsidesoftware.code-spell-checker`
-- `usernamehw.errorlens`
-- `vscode-icons-team.vscode-icons`
-- `zhuangtongfa.Material-theme`
-- `astro-build.astro-vscode`
-- `ecmel.vscode-html-css`
-- `stylelint.vscode-stylelint`
-- `clinyong.vscode-css-modules`
-- `naumovs.color-highlight`
-- `pranaygp.vscode-css-peek`
-- `dbaeumer.vscode-eslint`
-- `esbenp.prettier-vscode`
-- `bradlc.vscode-tailwindcss`
-- `christian-kohler.npm-intellisense`
-- `eg2.vscode-npm-script`
-- `christian-kohler.path-intellisense`
-- `tamasfe.even-better-toml`
-- `github.copilot`
-- `github.copilot-chat`
-
-Install all (CLI):
+Install the exact macOS/Linux font stacks used by `retina`, `crisp`, and `ai-agents` ghost text (`Monaspace Krypton NF`):
 
 ```bash
-# web-astro-crisp
-jq -r '.[].identifier.id' profiles/web-astro-crisp/extensions.json \
-  | xargs -n1 -I{} code --profile "web-astro-crisp" --install-extension "{}"
-
-# web-astro-retina
-jq -r '.[].identifier.id' profiles/web-astro-retina/extensions.json \
-  | xargs -n1 -I{} code --profile "web-astro-retina" --install-extension "{}"
+brew install --cask \
+  font-maple-mono-nf \
+  font-jetbrains-mono \
+  font-jetbrains-mono-nerd-font \
+  font-monaspace \
+  font-monaspace-nf \
+  font-geist-mono \
+  font-geist-mono-nerd-font \
+  font-commit-mono \
+  font-lilex \
+  font-fira-code
 ```
 
- </details>
-
-<a id="ext-java-profile"></a>
-<details>
-  <summary><strong>Java (General)</strong> — java-profile-(crisp|retina)</summary>
-
-- `akamud.vscode-theme-onedark`
-- `catppuccin.catppuccin-vsc`
-- `catppuccin.catppuccin-vsc-icons`
-- `dracula-theme.theme-dracula`
-- `eamodio.gitlens`
-- `editorconfig.editorconfig`
-- `enkia.tokyo-night`
-- `esbenp.prettier-vscode`
-- `foxundermoon.shell-format`
-- `gabrielbb.vscode-lombok`
-- `github.vscode-github-actions`
-- `github.vscode-pull-request-github`
-- `mikestead.dotenv`
-- `ms-azuretools.vscode-docker`
-- `ms-vsliveshare.vsliveshare`
-- `mutantdino.resourcemonitor`
-- `oderwat.indent-rainbow`
-- `pkief.material-icon-theme`
-- `pmd.pmd`
-- `redhat.java`
-- `redhat.vscode-xml`
-- `redhat.vscode-yaml`
-- `richardwillis.vscode-gradle`
-- `sdras.night-owl`
-- `shengchen.vscode-checkstyle`
-- `sonarsource.sonarlint-vscode`
-- `streetsidesoftware.code-spell-checker`
-- `timonwong.shellcheck`
-- `usernamehw.errorlens`
-- `vscjava.vscode-gradle`
-- `vscjava.vscode-java-debug`
-- `vscjava.vscode-java-dependency`
-- `vscjava.vscode-java-pack`
-- `vscjava.vscode-java-test`
-- `vscjava.vscode-maven`
-- `vscode-icons-team.vscode-icons`
-- `zhuangtongfa.Material-theme`
-- `fill-labs.dependi`
-- `github.copilot`
-- `github.copilot-chat`
-- `tamasfe.even-better-toml`
-
-Install all (CLI):
-
-```bash
-# java-profile-crisp
-jq -r '.[].identifier.id' profiles/java-profile-crisp/extensions.json \
-  | xargs -n1 -I{} code --profile "java-profile-crisp" --install-extension "{}"
-
-# java-profile-retina
-jq -r '.[].identifier.id' profiles/java-profile-retina/extensions.json \
-  | xargs -n1 -I{} code --profile "java-profile-retina" --install-extension "{}"
-```
-
- </details>
-
-<a id="ext-rust"></a>
-<details>
-  <summary><strong>Rust</strong> — rust-profile-(crisp|retina)</summary>
-
-- `akamud.vscode-theme-onedark`
-- `catppuccin.catppuccin-vsc`
-- `catppuccin.catppuccin-vsc-icons`
-- `dracula-theme.theme-dracula`
-- `eamodio.gitlens`
-- `enkia.tokyo-night`
-- `fill-labs.dependi`
-- `foxundermoon.shell-format`
-- `github.vscode-github-actions`
-- `github.vscode-pull-request-github`
-- `mikestead.dotenv`
-- `ms-azuretools.vscode-docker`
-- `ms-vsliveshare.vsliveshare`
-- `mutantdino.resourcemonitor`
-- `oderwat.indent-rainbow`
-- `panicbit.cargo`
-- `pkief.material-icon-theme`
-- `redhat.vscode-yaml`
-- `rust-lang.rust-analyzer`
-- `sdras.night-owl`
-- `sonarsource.sonarlint-vscode`
-- `streetsidesoftware.code-spell-checker`
-- `tamasfe.even-better-toml`
-- `timonwong.shellcheck`
-- `usernamehw.errorlens`
-- `vadimcn.vscode-lldb`
-- `vscode-icons-team.vscode-icons`
-- `zhuangtongfa.Material-theme`
-- `github.copilot`
-- `github.copilot-chat`
-
-Install all (CLI):
-
-```bash
-# rust-profile-crisp
-jq -r '.[].identifier.id' profiles/rust-profile-crisp/extensions.json \
-  | xargs -n1 -I{} code --profile "rust-profile-crisp" --install-extension "{}"
-
-# rust-profile-retina
-jq -r '.[].identifier.id' profiles/rust-profile-retina/extensions.json \
-  | xargs -n1 -I{} code --profile "rust-profile-retina" --install-extension "{}"
-```
-
- </details>
-
-<a id="ext-cpp-clangd"></a>
-<details>
-  <summary><strong>C/C++ (clangd)</strong> — cpp-clangd-(crisp|retina)</summary>
-
-- `akamud.vscode-theme-onedark`
-- `catppuccin.catppuccin-vsc`
-- `catppuccin.catppuccin-vsc-icons`
-- `dracula-theme.theme-dracula`
-- `eamodio.gitlens`
-- `enkia.tokyo-night`
-- `foxundermoon.shell-format`
-- `github.vscode-github-actions`
-- `github.vscode-pull-request-github`
-- `jeff-hykin.better-cpp-syntax`
-- `llvm-vs-code-extensions.vscode-clangd`
-- `mikestead.dotenv`
-- `ms-azuretools.vscode-docker`
-- `ms-vscode.cmake-tools`
-- `ms-vscode.cpptools`
-- `ms-vsliveshare.vsliveshare`
-- `mutantdino.resourcemonitor`
-- `notskm.clang-tidy`
-- `oderwat.indent-rainbow`
-- `pkief.material-icon-theme`
-- `redhat.vscode-yaml`
-- `sdras.night-owl`
-- `sonarsource.sonarlint-vscode`
-- `streetsidesoftware.code-spell-checker`
-- `timonwong.shellcheck`
-- `twxs.cmake`
-- `usernamehw.errorlens`
-- `vadimcn.vscode-lldb`
-- `vscode-icons-team.vscode-icons`
-- `zhuangtongfa.Material-theme`
-- `fill-labs.dependi`
-- `github.copilot`
-- `github.copilot-chat`
-- `tamasfe.even-better-toml`
-
-Install all (CLI):
-
-```bash
-# cpp-clangd-crisp
-jq -r '.[].identifier.id' profiles/cpp-clangd-crisp/extensions.json \
-  | xargs -n1 -I{} code --profile "cpp-clangd-crisp" --install-extension "{}"
-
-# cpp-clangd-retina
-jq -r '.[].identifier.id' profiles/cpp-clangd-retina/extensions.json \
-  | xargs -n1 -I{} code --profile "cpp-clangd-retina" --install-extension "{}"
-```
-
- </details>
-
-<a id="ext-cpp-cpptools"></a>
-<details>
-  <summary><strong>C/C++ (cpptools)</strong> — cpp-intellisense-(crisp|retina)</summary>
-
-- `akamud.vscode-theme-onedark`
-- `catppuccin.catppuccin-vsc`
-- `catppuccin.catppuccin-vsc-icons`
-- `dracula-theme.theme-dracula`
-- `eamodio.gitlens`
-- `enkia.tokyo-night`
-- `foxundermoon.shell-format`
-- `github.vscode-github-actions`
-- `github.vscode-pull-request-github`
-- `jeff-hykin.better-cpp-syntax`
-- `mikestead.dotenv`
-- `ms-azuretools.vscode-docker`
-- `ms-vscode.cmake-tools`
-- `ms-vscode.cpptools`
-- `ms-vscode.cpptools-extension-pack`
-- `ms-vsliveshare.vsliveshare`
-- `mutantdino.resourcemonitor`
-- `oderwat.indent-rainbow`
-- `pkief.material-icon-theme`
-- `redhat.vscode-yaml`
-- `sdras.night-owl`
-- `sonarsource.sonarlint-vscode`
-- `streetsidesoftware.code-spell-checker`
-- `timonwong.shellcheck`
-- `twxs.cmake`
-- `usernamehw.errorlens`
-- `vadimcn.vscode-lldb`
-- `vscode-icons-team.vscode-icons`
-- `zhuangtongfa.Material-theme`
-- `fill-labs.dependi`
-- `github.copilot`
-- `github.copilot-chat`
-- `tamasfe.even-better-toml`
-
-Install all (CLI):
-
-```bash
-# cpp-intellisense-crisp
-jq -r '.[].identifier.id' profiles/cpp-intellisense-crisp/extensions.json \
-  | xargs -n1 -I{} code --profile "cpp-intellisense-crisp" --install-extension "{}"
-
-# cpp-intellisense-retina
-jq -r '.[].identifier.id' profiles/cpp-intellisense-retina/extensions.json \
-  | xargs -n1 -I{} code --profile "cpp-intellisense-retina" --install-extension "{}"
-```
-
- </details>
-
-<a id="ext-java-gradle"></a>
-<details>
-  <summary><strong>Java (Gradle‑first)</strong> — java-gradle-(crisp|retina)</summary>
-
-- `akamud.vscode-theme-onedark`
-- `catppuccin.catppuccin-vsc`
-- `catppuccin.catppuccin-vsc-icons`
-- `dracula-theme.theme-dracula`
-- `eamodio.gitlens`
-- `editorconfig.editorconfig`
-- `enkia.tokyo-night`
-- `foxundermoon.shell-format`
-- `gabrielbb.vscode-lombok`
-- `github.vscode-github-actions`
-- `github.vscode-pull-request-github`
-- `mikestead.dotenv`
-- `ms-azuretools.vscode-docker`
-- `ms-vsliveshare.vsliveshare`
-- `mutantdino.resourcemonitor`
-- `naco-siren.gradle-language`
-- `oderwat.indent-rainbow`
-- `pkief.material-icon-theme`
-- `pmd.pmd`
-- `redhat.java`
-- `redhat.vscode-xml`
-- `redhat.vscode-yaml`
-- `richardwillis.vscode-gradle`
-- `sdras.night-owl`
-- `shengchen.vscode-checkstyle`
-- `sonarsource.sonarlint-vscode`
-- `streetsidesoftware.code-spell-checker`
-- `timonwong.shellcheck`
-- `usernamehw.errorlens`
-- `vscjava.vscode-gradle`
-- `vscjava.vscode-java-debug`
-- `vscjava.vscode-java-dependency`
-- `vscjava.vscode-java-pack`
-- `vscjava.vscode-java-test`
-- `vscode-icons-team.vscode-icons`
-- `zhuangtongfa.Material-theme`
-- `fill-labs.dependi`
-- `github.copilot`
-- `github.copilot-chat`
-- `tamasfe.even-better-toml`
-
-Install all (CLI):
-
-```bash
-# java-gradle-crisp
-jq -r '.[].identifier.id' profiles/java-gradle-crisp/extensions.json \
-  | xargs -n1 -I{} code --profile "java-gradle-crisp" --install-extension "{}"
-
-# java-gradle-retina
-jq -r '.[].identifier.id' profiles/java-gradle-retina/extensions.json \
-  | xargs -n1 -I{} code --profile "java-gradle-retina" --install-extension "{}"
-```
-
- </details>
-
-<a id="ext-java-maven"></a>
-<details>
-  <summary><strong>Java (Maven‑first)</strong> — java-maven-(crisp|retina)</summary>
-
-- `akamud.vscode-theme-onedark`
-- `catppuccin.catppuccin-vsc`
-- `catppuccin.catppuccin-vsc-icons`
-- `dracula-theme.theme-dracula`
-- `eamodio.gitlens`
-- `editorconfig.editorconfig`
-- `enkia.tokyo-night`
-- `foxundermoon.shell-format`
-- `gabrielbb.vscode-lombok`
-- `github.vscode-github-actions`
-- `github.vscode-pull-request-github`
-- `mikestead.dotenv`
-- `ms-azuretools.vscode-docker`
-- `ms-vsliveshare.vsliveshare`
-- `mutantdino.resourcemonitor`
-- `oderwat.indent-rainbow`
-- `pkief.material-icon-theme`
-- `pmd.pmd`
-- `redhat.java`
-- `redhat.vscode-xml`
-- `redhat.vscode-yaml`
-- `sdras.night-owl`
-- `shengchen.vscode-checkstyle`
-- `shirdows.vscode-maven-dependency-explorer`
-- `sonarsource.sonarlint-vscode`
-- `streetsidesoftware.code-spell-checker`
-- `timonwong.shellcheck`
-- `usernamehw.errorlens`
-- `vscjava.vscode-java-debug`
-- `vscjava.vscode-java-dependency`
-- `vscjava.vscode-java-pack`
-- `vscjava.vscode-java-test`
-- `vscjava.vscode-maven`
-- `vscode-icons-team.vscode-icons`
-- `zhuangtongfa.Material-theme`
-- `fill-labs.dependi`
-- `github.copilot`
-- `github.copilot-chat`
-- `tamasfe.even-better-toml`
-
-Install all (CLI):
-
-```bash
-# java-maven-crisp
-jq -r '.[].identifier.id' profiles/java-maven-crisp/extensions.json \
-  | xargs -n1 -I{} code --profile "java-maven-crisp" --install-extension "{}"
-
-# java-maven-retina
-jq -r '.[].identifier.id' profiles/java-maven-retina/extensions.json \
-  | xargs -n1 -I{} code --profile "java-maven-retina" --install-extension "{}"
-```
-
- </details>
-
-<a id="ext-java-spring"></a>
-<details>
-  <summary><strong>Java (Spring)</strong> — java-spring-(crisp|retina)</summary>
-
-- `akamud.vscode-theme-onedark`
-- `catppuccin.catppuccin-vsc`
-- `catppuccin.catppuccin-vsc-icons`
-- `dracula-theme.theme-dracula`
-- `eamodio.gitlens`
-- `editorconfig.editorconfig`
-- `enkia.tokyo-night`
-- `foxundermoon.shell-format`
-- `gabrielbb.vscode-lombok`
-- `github.vscode-github-actions`
-- `mikestead.dotenv`
-- `ms-azuretools.vscode-docker`
-- `ms-vsliveshare.vsliveshare`
-- `mutantdino.resourcemonitor`
-- `oderwat.indent-rainbow`
-- `pivotal.vscode-spring-boot`
-- `pkief.material-icon-theme`
-- `pmd.pmd`
-- `redhat.java`
-- `redhat.vscode-xml`
-- `redhat.vscode-yaml`
-- `richardwillis.vscode-gradle`
-- `sdras.night-owl`
-- `shengchen.vscode-checkstyle`
-- `shirdows.vscode-maven-dependency-explorer`
-- `sonarsource.sonarlint-vscode`
-- `streetsidesoftware.code-spell-checker`
-- `timonwong.shellcheck`
-- `usernamehw.errorlens`
-- `vscjava.vscode-gradle`
-- `vscjava.vscode-java-debug`
-- `vscjava.vscode-java-dependency`
-- `vscjava.vscode-java-pack`
-- `vscjava.vscode-java-test`
-- `vscjava.vscode-maven`
-- `vscjava.vscode-spring-boot-dashboard`
-- `vscjava.vscode-spring-cloud`
-- `vscjava.vscode-spring-initializr`
-- `vscode-icons-team.vscode-icons`
-- `zhuangtongfa.Material-theme`
-- `github.vscode-pull-request-github`
-- `fill-labs.dependi`
-- `github.copilot`
-- `github.copilot-chat`
-- `tamasfe.even-better-toml`
-
-Install all (CLI):
-
-```bash
-# java-spring-crisp
-jq -r '.[].identifier.id' profiles/java-spring-crisp/extensions.json \
-  | xargs -n1 -I{} code --profile "java-spring-crisp" --install-extension "{}"
-
-# java-spring-retina
-jq -r '.[].identifier.id' profiles/java-spring-retina/extensions.json \
-  | xargs -n1 -I{} code --profile "java-spring-retina" --install-extension "{}"
-```
-
- </details>
-<a id="ext-ai"></a>
-<details>
-  <summary><strong>AI (Copilot)</strong> — ai-profile-(crisp|retina)</summary>
-
-- `catppuccin.catppuccin-vsc`
-- `catppuccin.catppuccin-vsc-icons`
-- `enkia.tokyo-night`
-- `zhuangtongfa.Material-theme`
-- `sdras.night-owl`
-- `akamud.vscode-theme-onedark`
-- `dracula-theme.theme-dracula`
-- `pkief.material-icon-theme`
-- `vscode-icons-team.vscode-icons`
-- `eamodio.gitlens`
-- `usernamehw.errorlens`
-- `oderwat.indent-rainbow`
-- `streetsidesoftware.code-spell-checker`
-- `ms-vsliveshare.vsliveshare`
-- `ms-azuretools.vscode-docker`
-- `github.vscode-pull-request-github`
-- `sonarsource.sonarlint-vscode`
-- `mutantdino.resourcemonitor`
-- `fill-labs.dependi`
-- `mikestead.dotenv`
-- `foxundermoon.shell-format`
-- `timonwong.shellcheck`
-- `redhat.vscode-yaml`
-- `github.vscode-github-actions`
-- `github.copilot`
-- `github.copilot-chat`
-- `tamasfe.even-better-toml`
-
-Install all (CLI):
-
-```bash
-# ai-profile-crisp
-jq -r '.[].identifier.id' profiles/ai-profile-crisp/extensions.json \
-  | xargs -n1 -I{} code --profile "ai-profile-crisp" --install-extension "{}"
-
-# ai-profile-retina
-jq -r '.[].identifier.id' profiles/ai-profile-retina/extensions.json \
-  | xargs -n1 -I{} code --profile "ai-profile-retina" --install-extension "{}"
-```
+Need extra color or icon themes beyond Tokyo Night and Catppuccin Mocha? Include `themes-pack` (`ai-plus` includes all 30 curated packs automatically, or pass `--with themes-pack` to `vspcli apply`).
 
 </details>
 
-<a id="ext-ai-plus"></a>
+---
+
+## Security & Supply-Chain Controls
+
+- **GlassWorm Compromise Remediation (`jscearcy.rust-doc-viewer`)**: Marked `status: "compromised"` in [`catalog/extensions.json`](catalog/extensions.json), listed in `rust` `unwantedRecommendations`, unconditionally uninstalled first (Step 0) by `vspcli reconcile` even when network installs fail, and flagged **`FAIL`** by `vspcli doctor` across every profile including Default.
+- **Install-Time SHA-256 VSIX Pins & Verified Local Cache ([`catalog/extension-pins.json`](catalog/extension-pins.json))**: The 8 universal core/UX extensions (`catppuccin.catppuccin-vsc`, `catppuccin.catppuccin-vsc-icons`, `editorconfig.editorconfig`, `enkia.tokyo-night`, `miguelsolorio.fluent-icons`, `pkief.material-icon-theme`, `pkief.material-product-icons`, `tamasfe.even-better-toml`) download from official `https://` Marketplace URLs, verify SHA-256 digests before installation, and reuse a zero-TOCTOU copy-before-hash content-addressed cache (`VSCODE_VSIX_CACHE_DIR`, `0700`/`0600` private permissions). Refresh pins via `bash scripts/refresh-pins.sh`.
+- **Trusted Bundle Settings Guard**: `scripts/import-profile.sh` verifies `<bundle-dir>/SHA256SUMS` and blocks autonomy/process-wrapper bypass keys (`chat.tools.*.autoApprove`, `bypassPermissions`, `claudeProcessWrapper`, `antigravity.serverArgs`, `antigravity.releaseBaseUrl`, `antigravity.caCertificates`, `chatgpt.cliExecutable`, `geminicodeassist.agentYoloMode`, etc.) unless `--allow-unsafe-settings` is explicitly passed.
+- **Exact Active-Module Publisher Allowlist ([`catalog/publishers.json`](catalog/publishers.json))**: Enforced across `install-extensions.sh`, `import-profile.sh`, `vspcli install-ext`, and `vspcli reconcile` (`ARTAGON_VSCODE_TRUST_UNKNOWN_PUBLISHER=1` for explicit per-run override).
+- **Application-Scope Settings (VS Code `1.147.0`)**: `telemetry.telemetryLevel`, `security.workspace.trust.untrustedFiles`, `extensions.autoUpdate`, `extensions.autoCheckUpdates`, `update.mode`, `update.showReleaseNotes`, `window.titleBarStyle`, `window.nativeTabs`, `window.autoDetectHighContrast`, `catppuccin.*`, and `antigravity.keybindingScheme` are `APPLICATION`-scoped (`scope: 1`) and take effect from the **Default** VS Code profile (`<CODE_USER_DIR>/settings.json`). Run `bash scripts/vspcli doctor --strict` to verify your host Default profile.
+- **Graceful Theme Fallback on Import**: If a theme, icon-theme, or product-icon-theme extension fails to install during `import-profile.sh`, dangling `workbench.colorTheme`, `workbench.preferredDarkColorTheme`, `workbench.iconTheme`, and `workbench.productIconTheme` keys are stripped before VS Code reads the profile.
+
+---
+
+## Shell Formatting & RTK Terminal Wrappers
+
 <details>
-  <summary><strong>AI‑Plus (Copilot + Cody + Continue)</strong> — ai-plus-(crisp|retina)</summary>
+<summary><strong>Shell / Zsh formatting safety (`.editorconfig`) & portable XDG RTK terminal wrappers</strong></summary>
 
-- `catppuccin.catppuccin-vsc`
-- `catppuccin.catppuccin-vsc-icons`
-- `enkia.tokyo-night`
-- `zhuangtongfa.Material-theme`
-- `sdras.night-owl`
-- `akamud.vscode-theme-onedark`
-- `dracula-theme.theme-dracula`
-- `pkief.material-icon-theme`
-- `vscode-icons-team.vscode-icons`
-- `eamodio.gitlens`
-- `usernamehw.errorlens`
-- `oderwat.indent-rainbow`
-- `streetsidesoftware.code-spell-checker`
-- `ms-vsliveshare.vsliveshare`
-- `ms-azuretools.vscode-docker`
-- `github.vscode-pull-request-github`
-- `sonarsource.sonarlint-vscode`
-- `mutantdino.resourcemonitor`
-- `fill-labs.dependi`
-- `mikestead.dotenv`
-- `foxundermoon.shell-format`
-- `timonwong.shellcheck`
-- `redhat.vscode-yaml`
-- `github.vscode-github-actions`
-- `github.copilot`
-- `github.copilot-chat`
-- `sourcegraph.cody-ai`
-- `continue.continue`
-- `tamasfe.even-better-toml`
+### Shell & Zsh Formatting (`modules/capabilities/shell`)
 
-Install all (CLI):
+Every compiled profile includes `bash-ide-vscode`, `shellcheck`, `mkhl.shfmt`, `bmalehorn.vscode-fish`, `jeff-hykin.better-shellscript-syntax`, and `kherring.bats-test-runner` while preserving VS Code's built-in `shellscript` grammar.
 
-```bash
-# ai-plus-crisp
-jq -r '.[].identifier.id' profiles/ai-plus-crisp/extensions.json \
-  | xargs -n1 -I{} code --profile "ai-plus-crisp" --install-extension "{}"
+Because `shfmt` does not parse Zsh syntax reliably, `modules/capabilities/shell` sets `[shellscript].editor.formatOnSave: false`, `shfmt.formatIgnored: false`, and excludes Zsh files from `shellcheck.ignorePatterns`. To opt into format-on-save for POSIX/Bash scripts while protecting Zsh files per repository, add `.editorconfig`:
 
-# ai-plus-retina
-jq -r '.[].identifier.id' profiles/ai-plus-retina/extensions.json \
-  | xargs -n1 -I{} code --profile "ai-plus-retina" --install-extension "{}"
+```ini
+root = true
+
+[*.{sh,bash}]
+indent_style = space
+indent_size = 2
+
+[*.zsh]
+shfmt_ignore = true
 ```
+
+### RTK Terminal Wrappers (Zsh, Fish, Bash)
+
+[`modules/capabilities/rtk-terminal`](modules/capabilities/rtk-terminal) installs wrappers atomically (`--no-follow`) into `${XDG_CONFIG_HOME:-~/.config}/artagon-vscode/rtk/`:
+- **Zsh (`ZDOTDIR` proxy)**: Preserves user `ARTAGON_ORIG_ZDOTDIR` and restores it cleanly in `.zshrc` (non-login) or `.zlogin` (login).
+- **Bash (`rtk-init.bash`)**: Uses an isolated `_ARTAGON_RTK_RC_LOADED` recursion guard before sourcing `~/.bash_profile` / `~/.bashrc` and wraps commands via `type -P` + `unalias`.
+- **Fish (`rtk-init.fish`)**: Resolves `command -v rtk` safely even when paths contain spaces.
+
+Workspace `.vscode/tasks.json` uses portable plain `cargo doc` commands by default; pass `--rtk-in-workspace` to emit `rtk`-prefixed tasks and workspace terminal profiles.
 
 </details>
 
-## Guides (Step‑by‑Step)
+---
 
-Below are copy‑pasteable shell snippets for each stack. Each block shows: compose → open (register) → install → a minimal smoke test. Replace `*-crisp` with `*-retina` if you prefer the HiDPI baseline.
+## CLI Quick Reference
 
-### Web (Astro/Node)
-Install Node LTS, compose/open the profile, install extensions, and scaffold an Astro app.
+| Command | Purpose |
+| :--- | :--- |
+| `bash scripts/vspcli list` | List all 15 compiled profile recipes |
+| `bash scripts/vspcli build` | Compile `_merged/`, `profiles/*/`, `exports/`, 22 legacy symlinks, and `exports/SHA256SUMS` |
+| `bash scripts/vspcli validate` | Run all JSON/JSONC, catalog/publisher, `GROUP_ORDER`, DAG, collision, scope, and security checks |
+| `bash scripts/vspcli detect [--json] <path>` | Detect workspace toolchains from `modules/*/*/module.json` |
+| `bash scripts/vspcli apply [flags] <path>` | Compile & write workspace, profile, or global config |
+| `bash scripts/vspcli import [--ux=...] [--no-ai] [--no-batch] <name> <bundle>` | Verify, install extensions (batched + SHA-256 VSIX pins), and register a VS Code profile |
+| `bash scripts/vspcli reconcile [flags]` | Sync installed profile extensions & remove compromised extensions first (Step 0) |
+| `bash scripts/vspcli doctor [--strict]` | Audit tools, catalog, Default-profile application scopes, pin drift, and security |
+| `bash scripts/refresh-pins.sh` | Refresh live SHA-256 VSIX pins in `catalog/extension-pins.json` |
+| `bash scripts/check-extension-compatibility.sh --all --marketplace-only --json` | Live VS Code Marketplace compatibility audit across all 15 profiles |
+| `bash scripts/install-hooks.sh` | Configure `core.hooksPath = scripts/git-hooks` |
+| `bash scripts/tests/run.sh` | Run full hermetic offline script + 127-test BATS suite |
 
-```bash
-# 1) Node.js LTS (pick your favorite version manager)
-#    macOS example with nvm:
-export NVM_DIR="$HOME/.nvm" && [ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && . "/opt/homebrew/opt/nvm/nvm.sh"
-nvm install --lts && nvm use --lts
-node -v && npm -v
+---
 
-# 2) Compose + open (register profile without installing extensions)
-bash scripts/compose-settings.sh web-astro-crisp
-vspcli --open-profiles --skip-install web-astro-crisp
+## Repository Layout & Maintainer Workflow
 
-# 3) Install extensions declared by the profile
-bash scripts/install-extensions.sh web-astro-crisp
-
-# 4) Create and run an Astro project
-npm create astro@latest my-astro-app -- --template starter
-cd my-astro-app
-npm install
-npm run dev
-
-# Notes: Prettier/ESLint format on save for JS/TS/HTML/CSS/JSON.
-# Astro files use the Astro formatter; Emmet works in .astro.
-# Tailwind IntelliSense mapped for Astro.
-```
-
-### Java (jenv; Gradle/Maven/Spring)
-Use jenv so profiles can resolve the active JDK automatically.
-
-```bash
-# 1) Install jenv and register JDKs (macOS example)
-brew install jenv
-echo 'export PATH="$HOME/.jenv/bin:$PATH"' >> ~/.zshrc
-echo 'eval "$(jenv init -)"'          >> ~/.zshrc
-source ~/.zshrc
-
-jenv add /Library/Java/JavaVirtualMachines/<jdk>/Contents/Home
-jenv global <version>
-
-# 2) Compose + open (register), then install extensions
-bash scripts/compose-settings.sh java-profile-crisp
-vspcli --open-profiles --skip-install java-profile-crisp
-bash scripts/install-extensions.sh java-profile-crisp
-
-# Tips: use java-gradle-* / java-maven-* / java-spring-* for focused workflows.
-# Profiles read the JDK via ${command:jenv.javaHome} — no manual JAVA_HOME.
-```
-
-### Rust
-Install the toolchain and compose/open/install the profile.
-
-```bash
-# 1) Toolchain + components
-curl https://sh.rustup.rs -sSf | sh -s -- -y
-source "$HOME/.cargo/env"
-rustup component add rust-src rustfmt clippy
-
-# 2) Compose + open (register), then install extensions
-bash scripts/compose-settings.sh rust-profile-crisp
-vspcli --open-profiles --skip-install rust-profile-crisp
-bash scripts/install-extensions.sh rust-profile-crisp
-
-# Notes: rust-analyzer + clippy on save; CodeLLDB for debugging; Dependi + Even Better TOML.
-```
-
-### C/C++ (clangd or Microsoft cpptools)
-Pick either clangd (fast/precise LSP) or cpptools (Microsoft IntelliSense). Install build tools, then compose/open/install.
-
-```bash
-# 1) Build tools (macOS examples)
-brew install cmake ninja llvm   # clangd in LLVM for the clangd profile
-
-# 2) Compose + open (clangd example) and install extensions
-bash scripts/compose-settings.sh cpp-clangd-crisp
-vspcli --open-profiles --skip-install cpp-clangd-crisp
-bash scripts/install-extensions.sh cpp-clangd-crisp
-
-# Alternative: Microsoft C/C++ IntelliSense profile
-# bash scripts/compose-settings.sh cpp-intellisense-crisp
-# vspcli --open-profiles --skip-install cpp-intellisense-crisp
-# bash scripts/install-extensions.sh cpp-intellisense-crisp
-
-# Tips: build dir defaults to ${workspaceFolder}/build (watcher excludes set).
-# clangd profile disables Microsoft IntelliSense; cpptools uses CMake Tools provider
-# and compile_commands.json for accurate navigation/completion.
-```
-
-### AI (Copilot)
-Open the AI profile, install Copilot + Chat, then sign in when prompted.
-
-```bash
-vspcli --open-profiles --skip-install ai-profile-crisp
-bash scripts/install-extensions.sh ai-profile-crisp
-
-# Sign in to GitHub Copilot and Copilot Chat when prompted.
-# Policy: other AI assistants are intentionally excluded.
-```
-
-## XDG vs Non‑XDG Environments
-
-These profiles work whether you keep this repo under `~/.config/vscode` (XDG‑style) or anywhere else.
-
-### Where profiles live (this repo)
-- `profiles/<name>/extensions.json` declares the profile’s extensions
-- `profiles/<name>/settings.json` is a symlink to `_merged/<name>.json` (managed by the composer)
-
-### Where VS Code stores profile state (editor cache)
-When you open a profile with `code --profile <name>`, VS Code registers it and caches profile data under your platform’s User directory:
-
-| Platform | VS Code User directory |
-|---|---|
-| macOS | `~/Library/Application Support/Code/User` |
-| Linux | `${XDG_CONFIG_HOME:-~/.config}/Code/User` |
-| Windows | `%APPDATA%\Code\User` |
-
-Our `open-profiles.sh` also copies the merged `settings.json` into VS Code’s cached profile directory (`User/profiles/<id>/settings.json`) when possible, so your window reflects new settings immediately.
-
-### XDG‑style usage
-```bash
-# Keep repo under ~/.config/vscode (optional, but neat)
-mkdir -p ~/.config && cd ~/.config
-git clone git@github.com:artagon/artagon-vscode-profiles.git vscode
-cd vscode
-bash scripts/validate-json.sh && bash scripts/compose-settings.sh
-vspcli --open-profiles --skip-install web-astro-crisp
-```
-
-### Non‑XDG usage
-```bash
-# Keep repo anywhere (e.g., ~/Projects)
-git clone git@github.com:artagon/artagon-vscode-profiles.git ~/Projects/artagon-vscode-profiles
-cd ~/Projects/artagon-vscode-profiles
-bash scripts/validate-json.sh && bash scripts/compose-settings.sh
-vspcli --open-profiles --skip-install web-astro-crisp
-
-# Profiles still register in the VS Code User directory for your OS (table above).
-```
-
-> Note: Extensions are installed by VS Code into its extension directory and enabled per profile. The profile manifests in this repo remain the source of truth for what each profile should enable.
-
-## Layout Overview
-
-Directory tree (top‑level):
-
-```
+```text
 .
-├─ _shared/           # editor baselines (crisp/retina)
-├─ _overrides/        # per‑profile settings (strict JSON; supports "@extends")
-├─ _merged/           # merged settings (generated)
-├─ profiles/          # per‑profile extensions.json + settings symlink
-├─ scripts/           # helpers (compose/export/validate/open/install, CLI)
-├─ exports/           # .code-profile bundles (for VS Code import)
-├─ agents/            # maintainer/LLM docs
-├─ branding/          # social preview assets
-└─ .github/           # issue/PR templates, CODEOWNERS, funding
+├─ catalog/          # Authoritative registries (extensions, publishers, defaults, pins, setting-scopes)
+├─ modules/
+│  ├─ capabilities/  # 14 vertical capabilities (core-editor, ai-agents, ai-copilot, dx-pro, shell, rtk-terminal, ...)
+│  ├─ toolchains/    # 15 language toolchains (rust, java-*, python*, ts-base, astro, biome, cpp-*)
+│  └─ ux/            # 15-key symmetric UX presets (crisp, retina) + empty default
+├─ profiles/         # 15 thin profile.json recipes + compiled settings.json symlink & extensions.json
+├─ _merged/          # Compiled UX-agnostic profile settings (generated; do not edit)
+├─ exports/          # Compiled .code-profile bundles, 22 legacy v1 symlinks, and SHA256SUMS (generated)
+├─ scripts/          # vspcli, scripts/lib/ (Bash 3.2 libraries), hooks, completions, and BATS test suite
+├─ docs/             # Stack documentation (e.g. docs/rust.md)
+└─ openspec/         # OpenSpec specifications, research notes, and adversarial review ledgers
 ```
 
-Paths and purpose:
+1. Edit source definitions under [`catalog/`](catalog), [`modules/`](modules), or [`profiles/<name>/profile.json`](profiles) — never hand-edit `_merged/`, `profiles/*/extensions.json`, or `exports/`.
+2. Run `bash scripts/vspcli build` to regenerate compiled artifacts and `exports/SHA256SUMS`.
+3. Run `bash scripts/generate-readme-matrix.sh --write` whenever profiles or modules change.
+4. Run `bash scripts/vspcli validate` and `bash scripts/tests/run.sh`.
+5. Stage source and generated changes together (`git add catalog/ modules/ profiles/ _merged/ exports/`).
 
-| Path | Purpose | Notes |
-|---|---|---|
-| `_shared/` | Base editor/terminal settings | JSONC files: `editor-crisp.jsonc`, `editor-retina.jsonc` |
-| `_overrides/` | Per‑profile overrides | Strict JSON; supports `"@extends"` chains |
-| `_merged/` | Generated merged settings | Do not edit; created by composer |
-| `profiles/` | Profile manifests | `extensions.json` + `settings.json` symlink into `_merged/` |
-| `scripts/` | Tooling scripts + CLI | compose/export/validate/open/install, git hooks, tests, `vspcli` |
-| `exports/` | Portable bundles | Import via `scripts/import-profile.sh` (UI import does not install missing extensions) |
-| `agents/` | Docs for maintainers/LLMs | Architecture + maintenance workflow |
-| `branding/` | Social preview assets | `social-preview.svg` (export PNG, upload in repo settings) |
-| `.github/` | Repo metadata | Issue/PR templates, CODEOWNERS, FUNDING |
+---
 
-Scripts quick reference:
+## Troubleshooting & FAQ
 
-| Script | Action | Example |
-|---|---|---|
-| `scripts/compose-settings.sh` | Merge shared + overrides → `_merged/` and refresh symlinks | `bash scripts/compose-settings.sh java-spring-*` |
-| `scripts/export-profiles.sh` | Build `.code-profile` bundles | `bash scripts/export-profiles.sh web-astro-crisp` |
-| `scripts/validate-json.sh` | Validate JSON/JSONC fragments and extensions lists | `bash scripts/validate-json.sh` |
-| `scripts/open-profiles.sh` | Open/register profiles (optionally skip installs) | `scripts/open-profiles.sh --skip-install rust-profile-crisp` |
-| `scripts/install-extensions.sh` | Install declared extensions (group filters supported) | `bash scripts/install-extensions.sh <profile> --group General` |
-| `scripts/vspcli` | Unified CLI for list/open/install/compose/export | `vspcli --open-profiles --skip-install <profiles...>` |
-| `scripts/tests/run.sh` | Smoke test: validate→compose→export→open (mock) | `bash scripts/tests/run.sh` |
+| Symptom | Cause | Fix |
+| :--- | :--- | :--- |
+| Extensions are missing after importing a `.code-profile` | Imported via VS Code UI instead of `import-profile.sh` | Re-import via `bash scripts/import-profile.sh <name> exports/<name>.code-profile` |
+| `vspcli doctor --strict` warns on Default-profile settings | `APPLICATION`-scoped keys (`telemetry.telemetryLevel`, `security.workspace.trust.untrustedFiles`, `extensions.autoUpdate`) are read from the Default profile | Set those keys in your local VS Code Default `User/settings.json` and re-run `vspcli doctor --strict` |
+| `vspcli doctor` reports `FAIL` for `jscearcy.rust-doc-viewer` | Compromised GlassWorm extension is installed in a profile or Default | Run `bash scripts/vspcli reconcile --all --compromised-only` |
+| `import-profile.sh` rejects a bundle with unsafe settings | Bundle contains an autonomy or CLI-wrapper bypass setting | Inspect the reported key; only pass `--allow-unsafe-settings` for explicitly trusted local overrides |
+| Batched extension install hits a Marketplace hiccup | A single extension error can trigger per-extension retry fallback | Pass `--no-batch` to force serial installation, or rerun `vspcli reconcile --profile <name>` |
+| `import-profile.sh` refuses to overwrite while VS Code is open | VS Code `1.147+` holds `storage.json` while running | Quit VS Code cleanly (detected across macOS `Contents/MacOS/Code` and Linux) and re-run |
 
-## Standalone install (non-XDG environments)
-1. Clone the repo wherever it is convenient (no need for `~/.config`). Example: `git clone https://… ~/src/vscode-profiles`.
-2. From that directory, run `bash scripts/validate-json.sh` and `bash scripts/compose-settings.sh` to refresh `_merged/` and recreate the relative `profiles/*/settings.json` links.
-3. Export the profiles you need via `bash scripts/export-profiles.sh` so coworkers can import `exports/<profile>.code-profile` via `bash scripts/import-profile.sh <name> exports/<profile>.code-profile`.
-4. The VS Code UI import (Settings → Profiles → Import) does NOT install missing extensions; recipients should use `scripts/import-profile.sh` instead. If you must seed extensions out of band, `bash scripts/install-extensions.sh <profile>` covers it.
-5. Use CLI helpers via absolute paths (e.g., `~/src/vscode-profiles/scripts/vspcli --list`) or add the repo’s `scripts/` directory to `$PATH`. No additional environment variables or host-level symlinks are required.
-
-## Common Tasks
-> Workflow rule: break non-trivial requests into plan steps and, after finishing each step, immediately run `scripts/validate-json.sh` (plus `code --version` when CLI usage is involved) before continuing. This keeps JSON/CLI regressions localized to the step that introduced them.
-1. **Plan & edit**: For non-trivial work, outline steps, then edit `_shared/`, `_overrides/`, or `profiles/*/extensions.json` as needed.
-2. **Validate JSON**: `bash ~/.config/vscode/scripts/validate-json.sh`
-3. **Compose settings**: `bash ~/.config/vscode/scripts/compose-settings.sh` (optionally pass profile names).
-4. **Export profiles**: `bash ~/.config/vscode/scripts/export-profiles.sh`
-5. **Install extensions for a profile** (first-time setup / new machine): `bash ~/.config/vscode/scripts/install-extensions.sh <profile>` (or `vsext-install <profile>`). The installer groups output by stack (AI, CMake, Java, Rust, General) so it’s easy to see what’s being installed. Use `--group <name>` (repeatable) to install only a subset (e.g., `--group AI --group Java`), or pass `all` as the profile name to cover every profile at once. Run this the first time you open a profile so VS Code has the declared extensions ready.
-6. **Smoke tests**: `bash ~/.config/vscode/scripts/tests/run.sh` (validates, composes, exports, then mocks `code --profile` calls and checks logs).
-7. **Open profiles**: `bash ~/.config/vscode/scripts/open-profiles.sh [profile ...]` to register either every profile (no args) or a filtered list with the VS Code CLI. The script installs extensions (set `VSCODE_SKIP_EXTENSION_INSTALL=1` to skip during automation) **and** now copies the freshly merged `profiles/<name>/settings.json` into VS Code’s cached profile directory (uses `jq` + `~/Library/Application Support/Code/User` on macOS; override with `VSCODE_USER_DIR` if needed) so the editor immediately reflects the latest fonts/theme tweaks even if you previously imported a profile snapshot.
-8. **Import a `.code-profile` bundle via CLI**: `bash ~/.config/vscode/scripts/import-profile.sh <profile> <path/to/file>` (or `vspcli --profile-import <profile> <file>`). The importer writes the bundle’s settings into VS Code’s cached profile store and installs every listed extension so teammates can restore shared profiles headlessly.
-9. **Add AI tooling everywhere**: run `bash ~/.config/vscode/scripts/install-extensions.sh <profile>` after pulling the repo to ensure AI extensions (Copilot, Claude, Gemini, Continue, Codeium, OpenAI, Tabnine, GitHub Actions helpers, etc.) are installed for that profile. All non-AI profiles now include the AI bundle directly in their `extensions.json`.
-
-### Shell helpers
-- Bash/Zsh: defined in `~/.config/shell/xdg.sh` and sourced from the respective rc files.
-- Fish: defined in `~/.config/fish/conf.d/xdg-vscode.fish`.
-- Commands:
-- `vsp <profile> [path]` / `vspi <profile> [path]` — call `code --profile` / `code-insiders --profile`.
-- `vspl` / `vspli` — list the managed profiles (reads `profiles/`).
-- `vsext-list <profile>` — list extensions currently installed for a profile via `code --profile ... --list-extensions`.
-- `vsext-install <profile>` — run the installer script to synchronize extensions declared in `profiles/<profile>/extensions.json`.
-- `vsregen [<profiles...>]` — run `validate-json.sh` + `compose-settings.sh` (all profiles if none specified).
-- `vsexport [<profiles...>]` — run `export-profiles.sh` (all profiles if none specified).
-- `scripts/vspcli` provides the same workflows via a getopt-style CLI.
-
-## Git Hooks
-Enable the provided hooks so commits automatically validate and rebuild profiles:
-```bash
-git config core.hooksPath ~/.config/vscode/scripts/git-hooks
-```
-
-## Java & jenv
-Shell init enables `jenv enable-plugin export`, so `JAVA_HOME` always matches the active jenv JDK. Every Java-oriented profile (including Gradle, Maven, and Spring variants) reads `${env:JAVA_HOME}` for JDT LS, Gradle, Maven, and Spring tooling—no manual path edits required.
-
-## Rust toolchain prerequisites
-Rust-oriented profiles expect the following components to be installed once per host:
-```bash
-rustup component add rust-src rustfmt clippy
-```
-`rust-src` powers IntelliSense/hover docs, while `rustfmt` and `clippy` back format-on-save and linting tasks.
-Make sure the VS Code extension `rust-lang.rust-analyzer` remains enabled for the Rust profiles (disabling it once disables it per-profile).
-
-### Quick setup
-- Run `bash ~/.config/vscode/scripts/setup-rust-toolchain.sh [profile]` to install the required rustup components and synchronize VS Code extensions for the given profile (defaults to `rust-profile-crisp`).
-- Copy `profiles/rust-profile-*/tasks.example.json` into `.vscode/tasks.json` if you want Cargo build/test/clippy commands available in the VS Code Tasks UI.
-
-## Java toolchain automation
-- Run `bash ~/.config/vscode/scripts/setup-java-toolchain.sh <profile> [workspace]` to ensure extensions are installed for the Java profile and (optionally) copy the tasks template into your workspace `.vscode/tasks.json`. The script checks `jenv`/`JAVA_HOME` and reminds you to enable the export plugin if needed.
-- Tasks templates live under `profiles/java-*/tasks.example.json` (Gradle-only, Maven-only, or combined depending on the profile).
-
-## AI collaboration profiles
-- `ai-profile-crisp` and `ai-profile-retina` ship with the popular AI coding extensions (GitHub Copilot + Copilot Chat, Claude Code, Gemini AI Studio, Continue, Codeium, Tabnine, YAML/GitHub Actions helpers, etc.).
-- Use `vsp ai-profile-crisp <path>` (or retina) to open a workspace with the command center targeting AI chats by default.
-- First-time setup: `bash ~/.config/vscode/scripts/install-extensions.sh ai-profile-crisp` so VS Code installs the bundle on your machine. Sign in to Copilot, Claude, Gemini, etc., via their respective panels afterward.
-
-## CLI helper (vspcli)
-`scripts/vspcli` exposes common operations from the terminal:
-
-```bash
-vspcli --list
-vspcli --install ai-profile-crisp
-vspcli --open ai-profile-crisp /path/to/workspace
-vspcli --compose cpp-clangd cpp-intellisense
-vspcli --export java-profile-crisp
-vspcli --install-ext rust-profile-retina github.copilot
-vspcli --profile-import rust-profile-retina ~/Downloads/team-standard.code-profile
-vspcli --open-profiles rust-profile-retina java-profile-retina
-vspcli --install all
-vspcli --install-groups java-profile-crisp AI Rust
-```
-
-Combine flags as needed; run `vspcli --help` for details.
-
-Both the script and CLI accept `--group` filters (`AI`, `CMake`, `Java`, `Rust`, `General`). Example: `vspcli --install java-profile-crisp --group AI --group Java` installs only those stacks, while `vspcli --install all` covers every profile.
-
-Install shell completions (optional):
-```bash
-vspcli --completion bash  >> ~/.config/shell/completions/vspcli.bash
-vspcli --completion zsh   >> ~/.config/zsh/completions/_vspcli
-vspcli --completion fish  >> ~/.config/fish/completions/vspcli.fish
-```
-Adjust the target paths to whatever your shell sources so the CLI works even on machines where the helper functions are absent.
-
-## Adding a Profile
-1. Create `profiles/<name>/extensions.json` describing required extensions.
-2. Add `_overrides/<name>.jsonc` (strict JSON). Use `"@extends"` to reuse existing fragments if possible.
-3. Run the compose + export scripts and smoke tests (steps above).
-4. Optionally generate `exports/<name>.code-profile` via the export script for easy sharing.
-
-For more detail, see `agents/project.md` (architecture) and `agents/instructions.md` (maintenance workflow). Host-wide (non-editor-specific) policies remain in `~/.config/agents/project.md` and `~/.config/agents/instructions.md`; update those whenever a change should apply beyond VS Code.
-## Custom toolchains (C/C++)
-By default the C/C++ profiles rely on whatever toolchain is on `$PATH` (e.g., `/usr/bin/clang`). For custom setups:
-
-1. Copy `profiles/<profile>/cmake-kits.example.json` to `.vscode/cmake-kits.json`. Use `scripts/setup-cpp-toolchain.sh <profile>` to automate this copy (also populates `cmake/toolchains/`).
-2. Edit the kits with your compiler paths (Homebrew LLVM, MSVC). Optional: supply a toolchain file under `cmake/toolchains/` and reference it from the kit.
-3. Copy `profiles/<profile>/cmake/tasks.example.json` to `.vscode/tasks.json` if you want ready-made configure/build/test commands on the command palette.
-4. Use `CMake: Select Kit` in VS Code to pick the kit locally; avoid committing machine-specific paths to `_overrides`.
+See [`ABOUT.md`](ABOUT.md), [`CHANGELOG.md`](CHANGELOG.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), and [`SECURITY.md`](SECURITY.md) for project guarantees, release history, contribution rules, and vulnerability reporting.

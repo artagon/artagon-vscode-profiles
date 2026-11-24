@@ -9,8 +9,9 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-LIB="$ROOT/scripts/lib"
+SCRIPT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT="${VSPCLI_ROOT:-${SCRIPT_ROOT}}"
+LIB="${SCRIPT_ROOT}/scripts/lib"
 
 if [[ "${1:-}" == "--check" ]]; then
   CHECK_ONLY=1
@@ -22,7 +23,7 @@ fi
 SOURCE="$ROOT/docs/rust.md"
 TARGETS=("$ROOT/AGENTS.md" "$ROOT/CLAUDE.md" "$ROOT/CODEX.md" "$ROOT/GEMINI.md")
 
-POLICY=$(bash "$LIB/extract-rust-policy.sh" "$SOURCE")
+POLICY=$("${BASH}" "$LIB/extract-rust-policy.sh" "$SOURCE")
 [[ -n "$POLICY" ]] || { echo "error: empty policy extracted" >&2; exit 1; }
 
 BLOCK=$(printf '<!-- BEGIN RUST-DOCS-POLICY -->\n%s\n<!-- END RUST-DOCS-POLICY -->' "$POLICY")
@@ -50,12 +51,20 @@ for target in "${TARGETS[@]}"; do
       drift=1
       continue
     fi
-    # Replace.
-    awk -v block="$BLOCK" '
-      /<!-- BEGIN RUST-DOCS-POLICY -->/ { in_block=1; print block; next }
+    # Replace using temp block file so BSD macOS awk handles multiline content safely.
+    block_tmp="$(mktemp "${TMPDIR:-/tmp}/rust-policy.XXXXXX")"
+    printf '%s\n' "$BLOCK" > "$block_tmp"
+    awk -v bfile="$block_tmp" '
+      /<!-- BEGIN RUST-DOCS-POLICY -->/ {
+        in_block=1
+        while ((getline bline < bfile) > 0) print bline
+        close(bfile)
+        next
+      }
       /<!-- END RUST-DOCS-POLICY -->/ { in_block=0; next }
       !in_block { print }
     ' "$target" > "$target.tmp"
+    rm -f "$block_tmp"
     mv -f "$target.tmp" "$target"
   else
     if [[ $CHECK_ONLY -eq 1 ]]; then

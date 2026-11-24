@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "id": "cpp-base",
+  "kind": "toolchain",
+  "description": "Shared C/C++ CMake Tools, CodeLLDB debugger, and syntax highlighting (portable, zero hardcoded host paths)",
+  "requires": ["core-editor"],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [
+      "ms-vscode.cmake-tools",
+      "vadimcn.vscode-lldb",
+      "jeff-hykin.better-cpp-syntax"
+    ],
+    "profile": [],
+    "unwanted": [
+      "twxs.cmake",
+      "ms-vscode.cpptools-extension-pack"
+    ]
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": null
+  },
+  "tasks": null,
+  "detect": null
+}

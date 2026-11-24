@@ -1,0 +1,83 @@
+// Core workspace-safe project settings (no personal UX, no machine/application keys).
+// Provides universal validation, SchemaStore auto-completion, and formatting for JSON/JSONC,
+// YAML, TOML, and INI/Properties across all 15 compiled profiles and workspaces.
+// (XML workspace settings live in java-base where redhat.vscode-xml is workspace-recommended,
+// and in core-editor/settings.profile.jsonc for all 15 compiled profiles.)
+{
+  "editor.hover.enabled": "on",
+  "editor.hover.delay": 200,
+  "editor.parameterHints.enabled": true,
+  "editor.parameterHints.cycle": true,
+  "editor.tabSize": 2,
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "files.exclude": {
+    "**/.DS_Store": true,
+    "**/Thumbs.db": true
+  },
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/node_modules/**": true,
+    "**/.cache/**": true
+  },
+  "search.exclude": {
+    "**/node_modules/**": true,
+    "**/.cache/**": true
+  },
+
+  "json.validate.enable": true,
+  "json.format.enable": true,
+  "json.schemaDownload.enable": true,
+  "json.maxItemsComputed": 5000,
+  "[json]": {
+    "editor.defaultFormatter": "vscode.json-language-features",
+    "editor.formatOnSave": true,
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "vscode.json-language-features",
+    "editor.formatOnSave": true,
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  },
+
+  "yaml.validate": true,
+  "yaml.completion": true,
+  "yaml.hover": true,
+  "yaml.hoverSchemaSource": true,
+  "yaml.schemaStore.enable": true,
+  "yaml.format.enable": true,
+  "yaml.format.printWidth": 100,
+  "yaml.format.singleQuote": false,
+  "yaml.format.bracketSpacing": true,
+  "yaml.format.proseWrap": "preserve",
+  "[yaml]": {
+    "editor.defaultFormatter": "redhat.vscode-yaml",
+    "editor.formatOnSave": true,
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  },
+
+  "evenBetterToml.schema.enabled": true,
+  "evenBetterToml.syntax.semanticTokens": true,
+  "evenBetterToml.formatter.indentString": "  ",
+  "evenBetterToml.formatter.columnWidth": 100,
+  "evenBetterToml.formatter.arrayTrailingComma": true,
+  "evenBetterToml.formatter.trailingNewline": true,
+  "evenBetterToml.formatter.allowedBlankLines": 1,
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml",
+    "editor.formatOnSave": true
+  },
+
+  "[ini]": {
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  },
+  "[properties]": {
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  }
+}

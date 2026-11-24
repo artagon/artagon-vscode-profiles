@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "id": "python-base",
+  "kind": "toolchain",
+  "description": "Shared Python runtime, debugger, Python Environments (venv/uv), Ruff formatter/linter, and pytest configuration",
+  "requires": ["core-editor"],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [
+      "ms-python.python",
+      "ms-python.debugpy",
+      "ms-python.vscode-python-envs",
+      "charliermarsh.ruff"
+    ],
+    "profile": [],
+    "unwanted": [
+      "ms-pyright.pyright"
+    ]
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": "settings.profile.jsonc"
+  },
+  "tasks": null,
+  "detect": null
+}

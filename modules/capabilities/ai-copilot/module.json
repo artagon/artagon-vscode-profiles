@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "ai-copilot",
+  "kind": "capability",
+  "description": "Strict Copilot-only AI capability (unified GitHub Copilot Chat, excludes Antigravity, Claude Code, and Codex)",
+  "requires": ["core-editor"],
+  "defaultWith": [],
+  "conflicts": ["ai-agents"],
+  "extensions": {
+    "workspace": [],
+    "profile": [
+      "github.copilot-chat"
+    ],
+    "unwanted": [
+      "github.copilot",
+      "google.google-antigravity",
+      "google.geminicodeassist",
+      "anthropic.claude-code",
+      "openai.chatgpt"
+    ]
+  },
+  "settings": {
+    "workspace": null,
+    "profile": "settings.profile.jsonc"
+  },
+  "tasks": null,
+  "detect": null
+}

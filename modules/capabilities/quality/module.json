@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "id": "quality",
+  "kind": "capability",
+  "description": "Optional SonarQube for IDE (SonarLint) static analysis",
+  "requires": ["core-editor"],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [],
+    "profile": [
+      "sonarsource.sonarlint-vscode"
+    ],
+    "unwanted": []
+  },
+  "settings": {
+    "workspace": null,
+    "profile": "settings.profile.jsonc"
+  },
+  "tasks": null,
+  "detect": null
+}

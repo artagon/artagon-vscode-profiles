@@ -1,0 +1,6 @@
+// SonarQube for IDE profile preferences (telemetry disabled, new-code focus, generated-dir exclusions).
+{
+  "sonarlint.disableTelemetry": true,
+  "sonarlint.focusOnNewCode": true,
+  "sonarlint.analysisExcludesStandalone": "**/.venv/**,**/node_modules/**,**/dist/**,**/build/**,**/target/**,**/.astro/**"
+}

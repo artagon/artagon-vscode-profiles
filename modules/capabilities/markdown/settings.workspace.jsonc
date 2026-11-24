@@ -1,0 +1,21 @@
+// Markdown workspace editing settings: preserves two-space hard line breaks and validates links.
+{
+  "[markdown]": {
+    "files.trimTrailingWhitespace": false,
+    "editor.wordWrap": "on",
+    "editor.rulers": [80, 120],
+    "editor.quickSuggestions": {
+      "comments": "off",
+      "strings": "off",
+      "other": "off"
+    }
+  },
+  "markdown.validate.enabled": true,
+  "markdown.updateLinksOnFileMove.enabled": "prompt",
+  "markdown.occurrencesHighlight.enabled": true,
+  "markdown.preview.scrollPreviewWithEditor": true,
+  "markdown.preview.scrollEditorWithPreview": true,
+  "markdown.preview.markEditorSelection": true,
+  "markdownlint.run": "onSave",
+  "markdownlint.focusMode": true
+}

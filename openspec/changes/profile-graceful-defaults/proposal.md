@@ -1,3 +1,6 @@
+> [!WARNING]
+> **SUPERSEDED by `refactor-capability-modules-and-defaults`** — archive ONLY with `openspec archive <change-id> --skip-specs` so retired `_shared/`, `_overrides/`, `_catalog/`, and legacy Decision-15 deltas do not re-enter `openspec/specs/`.
+
 ## Why
 
 Generated `.code-profile` bundles list theme and icon-theme extensions in

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "general-minimal",
+  "description": "AI-free general developer profile (excludes ai-agents and disables built-in VS Code AI features)",
+  "useDefaults": true,
+  "modules": [],
+  "excludeModules": ["ai-agents"],
+  "ux": "default",
+  "overrides": {
+    "workspace": {},
+    "profile": {
+      "chat.disableAIFeatures": true
+    }
+  }
+}

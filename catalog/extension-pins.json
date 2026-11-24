@@ -1,0 +1,54 @@
+{
+  "note": "Install-time verified SHA-256 VSIX pins for universal core/UX extensions. Refresh via scripts/refresh-pins.sh.",
+  "pins": {
+    "catppuccin.catppuccin-vsc": {
+      "sha256": "ebf347664837edbe91c9920ff3d14c96d4a28beeec0b95137c76058326329780",
+      "verified_at": "2026-11-24T12:22:45Z",
+      "version": "3.19.0",
+      "vsix_url": "https://Catppuccin.gallerycdn.vsassets.io/extensions/catppuccin/catppuccin-vsc/3.19.0/1777714479763/Microsoft.VisualStudio.Services.VSIXPackage"
+    },
+    "catppuccin.catppuccin-vsc-icons": {
+      "sha256": "57566136d0a8ba8d040eb6e5be866c88ccbb04f3d219d3a7e52a19978900ff3d",
+      "verified_at": "2026-11-24T12:22:45Z",
+      "version": "1.26.0",
+      "vsix_url": "https://Catppuccin.gallerycdn.vsassets.io/extensions/catppuccin/catppuccin-vsc-icons/1.26.0/1760305508250/Microsoft.VisualStudio.Services.VSIXPackage"
+    },
+    "editorconfig.editorconfig": {
+      "sha256": "cbc0370ff204bc16d84a3ee6830536fc04355856fa0e895ab064e1a03cfcb84a",
+      "verified_at": "2026-11-24T12:22:45Z",
+      "version": "0.18.2",
+      "vsix_url": "https://EditorConfig.gallerycdn.vsassets.io/extensions/editorconfig/editorconfig/0.18.2/1775654237423/Microsoft.VisualStudio.Services.VSIXPackage"
+    },
+    "enkia.tokyo-night": {
+      "sha256": "a16d1b90b2a29a9723cf14dbff28d285a823c954d4144835f7ca0f6d8e49da13",
+      "verified_at": "2026-11-24T12:22:45Z",
+      "version": "1.1.2",
+      "vsix_url": "https://enkia.gallerycdn.vsassets.io/extensions/enkia/tokyo-night/1.1.2/1738784080756/Microsoft.VisualStudio.Services.VSIXPackage"
+    },
+    "miguelsolorio.fluent-icons": {
+      "sha256": "39f3d287449aa53f9839f8b4733ddea7c8448600931e98ecd457e6800ca3379f",
+      "verified_at": "2026-11-24T12:22:45Z",
+      "version": "0.0.19",
+      "vsix_url": "https://miguelsolorio.gallerycdn.vsassets.io/extensions/miguelsolorio/fluent-icons/0.0.19/1729895481238/Microsoft.VisualStudio.Services.VSIXPackage"
+    },
+    "pkief.material-icon-theme": {
+      "sha256": "55b565f200881abfd807baf9be52fce45fd52fef013ba71b0f8394984ce1ae06",
+      "verified_at": "2026-11-24T12:22:45Z",
+      "version": "5.40.0",
+      "vsix_url": "https://PKief.gallerycdn.vsassets.io/extensions/pkief/material-icon-theme/5.40.0/1793017860653/Microsoft.VisualStudio.Services.VSIXPackage"
+    },
+    "pkief.material-product-icons": {
+      "sha256": "9276111b88fc714e9facb5d2a70bda4b213e11615dd677bf72d61ae64aa9e5bc",
+      "verified_at": "2026-11-24T12:22:45Z",
+      "version": "1.7.1",
+      "vsix_url": "https://PKief.gallerycdn.vsassets.io/extensions/pkief/material-product-icons/1.7.1/1720860434568/Microsoft.VisualStudio.Services.VSIXPackage"
+    },
+    "tamasfe.even-better-toml": {
+      "sha256": "21b8d66af4285eee31e21a4492f921ab36dffcd859a67f1115d2930274650808",
+      "verified_at": "2026-11-24T12:22:45Z",
+      "version": "0.21.2",
+      "vsix_url": "https://tamasfe.gallerycdn.vsassets.io/extensions/tamasfe/even-better-toml/0.21.2/1734716634992/Microsoft.VisualStudio.Services.VSIXPackage"
+    }
+  },
+  "version": 1
+}
