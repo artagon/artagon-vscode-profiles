@@ -413,7 +413,12 @@ compiler_workspace_state_file() {
 # while switching git branches preserves managed-key retirement cleanly.
 compiler_workspace_fingerprint() {
   local ws_canon="${1}"
-  local inode=""
-  inode="$(stat -f '%i' "${ws_canon}" 2>/dev/null || stat -c '%i' "${ws_canon}" 2>/dev/null || printf '0')"
+  local inode="0"
+  local candidate=""
+  if candidate="$(stat -c '%i' "${ws_canon}" 2>/dev/null)" && [[ "${candidate}" =~ ^[0-9]+$ ]]; then
+    inode="${candidate}"
+  elif candidate="$(stat -f '%i' "${ws_canon}" 2>/dev/null)" && [[ "${candidate}" =~ ^[0-9]+$ ]]; then
+    inode="${candidate}"
+  fi
   printf '%s|%s' "${ws_canon}" "${inode}" | sha256_for_file -
 }

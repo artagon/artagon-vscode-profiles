@@ -141,3 +141,42 @@ load test_helper
     jq -e '.[] | select(.identifier.id == "mechatroner.rainbow-csv")' "${REPO_ROOT}/profiles/${p}/extensions.json" >/dev/null
   done
 }
+
+@test "compiler: workspace fingerprint is stable across both GNU stat (-c %i) and BSD stat (-f %i)" {
+  ws="$(make_workspace fp-stat Cargo.toml)"
+  fake_gnu_bin="${TEST_TMP}/fake-gnu-stat"
+  mkdir -p "${fake_gnu_bin}"
+  counter_file="${TEST_TMP}/stat-counter"
+  printf '0\n' > "${counter_file}"
+  # Simulate GNU coreutils stat: -c '%i' returns decimal inode, while -f treats '%i' as a missing
+  # path AND prints changing filesystem free-block output for the second arg before exiting 1.
+  cat > "${fake_gnu_bin}/stat" <<EOF
+#!/bin/sh
+if [ "\${1:-}" = "-c" ] && [ "\${2:-}" = "%i" ]; then
+  printf '424242\n'
+  exit 0
+fi
+if [ "\${1:-}" = "-f" ]; then
+  n=\$(cat "${counter_file}")
+  n=\$((n + 1))
+  printf '%s\n' "\$n" > "${counter_file}"
+  printf '  File: "%s"\nBlocks: Free: %s\n' "\${3:-}" "\$n"
+  echo "stat: cannot read file system information for '\${2:-}': No such file or directory" >&2
+  exit 1
+fi
+exit 1
+EOF
+  chmod 0755 "${fake_gnu_bin}/stat"
+
+  # Under simulated GNU stat, fingerprint must be stable across repeated calls and match sha256(ws|424242).
+  run env PATH="${fake_gnu_bin}:${PATH}" bash -c '
+    set -euo pipefail
+    source "'"${LIB_DIR}"'/common.sh"
+    source "'"${LIB_DIR}"'/compiler.sh"
+    fp1="$(compiler_workspace_fingerprint "'"${ws}"'")"
+    fp2="$(compiler_workspace_fingerprint "'"${ws}"'")"
+    expected="$(printf "%s|424242" "'"${ws}"'" | sha256_for_file -)"
+    [[ "${fp1}" == "${fp2}" && "${fp1}" == "${expected}" ]]
+  '
+  [[ "${status}" -eq 0 ]]
+}

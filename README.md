@@ -277,7 +277,7 @@ Workspace `.vscode/tasks.json` uses portable plain `cargo doc` commands by defau
 | `bash scripts/refresh-pins.sh` | Refresh live SHA-256 VSIX pins in `catalog/extension-pins.json` |
 | `bash scripts/check-extension-compatibility.sh --all --marketplace-only --json` | Live VS Code Marketplace compatibility audit across all 15 profiles |
 | `bash scripts/install-hooks.sh` | Configure `core.hooksPath = scripts/git-hooks` |
-| `bash scripts/tests/run.sh` | Run full hermetic offline script + 127-test BATS suite |
+| `bash scripts/tests/run.sh` | Run full hermetic offline script + 128-test BATS suite |
 
 ---
 

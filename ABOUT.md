@@ -39,7 +39,7 @@ See [`README.md#profile--module-matrix`](README.md#profile--module-matrix) for t
 
 - **Dual-OS CI**: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and pull request across `ubuntu-latest` and `macos-latest` using each platform's Bash environment without pinning to a specific shell version.
 - **Static & Structural Gates**: `shellcheck` across all production/test Bash scripts, `zsh -n` across all Zsh `ZDOTDIR` RTK scripts, `fish -n` on Fish RTK scripts, `vspcli build` artifact-sync gate, `validate-json.sh` (JSON/JSONC syntax, `catalog/` referential integrity, `GROUP_ORDER` completeness, module DAG & collision checks, application-scope & forbidden-key guards), `check-ux-symmetry.sh`, Rust docs policy sync (`apply-rust-policy.sh --check`), and `generate-readme-matrix.sh --check`.
-- **Hermetic Offline Tests & Live Audits**: `scripts/tests/run.sh` runs **127** hermetic offline `bats-core` tests and smoke checks in an isolated checkout copy; live Marketplace compatibility (`scripts/check-extension-compatibility.sh --all --marketplace-only --json`), pin refresh (`scripts/refresh-pins.sh`), and host health (`vspcli doctor --strict`) verify runtime state end to end.
+- **Hermetic Offline Tests & Live Audits**: `scripts/tests/run.sh` runs **128** hermetic offline `bats-core` tests and smoke checks in an isolated checkout copy; live Marketplace compatibility (`scripts/check-extension-compatibility.sh --all --marketplace-only --json`), pin refresh (`scripts/refresh-pins.sh`), and host health (`vspcli doctor --strict`) verify runtime state end to end.
 
 ## Quick Links
 
