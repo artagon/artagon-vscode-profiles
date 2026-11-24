@@ -29,9 +29,12 @@ Vertical capability-module architecture for Visual Studio Code (`1.147+`) profil
 # Full stack with default AI agent suite (Antigravity + Claude Code + Codex + Copilot Chat)
 bash scripts/import-profile.sh rust exports/rust.code-profile
 
-# Apply your personal Retina or Crisp UX preset on import
-bash scripts/import-profile.sh --ux=retina rust exports/rust.code-profile
-bash scripts/import-profile.sh --ux=crisp java-gradle exports/java-gradle.code-profile
+# Import a profile, then apply your personal Retina or Crisp UX preset
+bash scripts/import-profile.sh rust exports/rust.code-profile
+bash scripts/vspcli apply --target=profile --profile rust --ux=retina
+
+bash scripts/import-profile.sh java-gradle exports/java-gradle.code-profile
+bash scripts/vspcli apply --target=profile --profile java-gradle --ux=crisp
 
 # Strict Copilot-only (never adds Antigravity, Claude Code, or Codex)
 bash scripts/import-profile.sh ai-copilot exports/ai-copilot.code-profile
@@ -271,7 +274,7 @@ Workspace `.vscode/tasks.json` uses portable plain `cargo doc` commands by defau
 | `bash scripts/vspcli validate` | Run all JSON/JSONC, catalog/publisher, `GROUP_ORDER`, DAG, collision, scope, and security checks |
 | `bash scripts/vspcli detect [--json] <path>` | Detect workspace toolchains from `modules/*/*/module.json` |
 | `bash scripts/vspcli apply [flags] <path>` | Compile & write workspace, profile, or global config |
-| `bash scripts/vspcli import [--ux=...] [--no-ai] [--no-batch] <name> <bundle>` | Verify, install extensions (batched + SHA-256 VSIX pins), and register a VS Code profile |
+| `bash scripts/vspcli import [--no-ai] [--no-batch] <name> <bundle>` | Verify, install extensions (batched + SHA-256 VSIX pins), and register a VS Code profile (follow with `vspcli apply --target=profile --profile <name> --ux=retina` for UX presets) |
 | `bash scripts/vspcli reconcile [flags]` | Sync installed profile extensions & remove compromised extensions first (Step 0) |
 | `bash scripts/vspcli doctor [--strict]` | Audit tools, catalog, Default-profile application scopes, pin drift, and security |
 | `bash scripts/refresh-pins.sh` | Refresh live SHA-256 VSIX pins in `catalog/extension-pins.json` |

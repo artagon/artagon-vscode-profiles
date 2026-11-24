@@ -180,3 +180,34 @@ EOF
   '
   [[ "${status}" -eq 0 ]]
 }
+
+@test "compiler: compiler_build_profile propagates ln -sfn failure and cleans up temp dir" {
+  fixture="${TEST_TMP}/ln-fail-repo"
+  mkdir -p "${fixture}/profiles/rust"
+  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${fixture}/"
+  cp "${REPO_ROOT}/profiles/rust/profile.json" "${fixture}/profiles/rust/"
+
+  fail_bin="${TEST_TMP}/fail-ln-bin"
+  mkdir -p "${fail_bin}"
+  cat > "${fail_bin}/ln" <<'EOF'
+#!/bin/sh
+echo "ln: simulated symlink failure" >&2
+exit 1
+EOF
+  chmod 0755 "${fail_bin}/ln"
+
+  build_tmp="${TEST_TMP}/build-tmp"
+  mkdir -p "${build_tmp}"
+
+  # Deliberately run WITHOUT set -e so compiler_build_profile must explicitly check and propagate ln -sfn failure.
+  run --separate-stderr env TMPDIR="${build_tmp}" PATH="${fail_bin}:${PATH}" "${BASH}" -c "
+    source '${LIB_DIR}/common.sh'
+    source '${LIB_DIR}/module-resolver.sh'
+    source '${LIB_DIR}/compiler.sh'
+    compiler_build_profile '${fixture}' rust
+  "
+  [[ "${status}" -ne 0 ]]
+  [[ "${stderr}" == *"failed to symlink"* ]]
+  leftover="$(find "${build_tmp}" -mindepth 1 -maxdepth 1 -name 'vsp-build-prof.*' | wc -l | tr -d ' ')"
+  [[ "${leftover}" -eq 0 ]]
+}
