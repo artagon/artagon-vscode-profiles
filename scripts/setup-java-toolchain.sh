@@ -41,9 +41,15 @@ fi
 
 TASKS_SRC="${PROFILE_DIR}/tasks.example.json"
 if [[ -n "${WORKSPACE}" && -f "${TASKS_SRC}" ]]; then
+  TASKS_DST="${WORKSPACE}/.vscode/tasks.json"
+  if [[ -e "${TASKS_DST}" || -L "${TASKS_DST}" ]]; then
+    printf 'Error: refusing to overwrite existing %s (custom user tasks preserved).\n' "${TASKS_DST}" >&2
+    printf "Run 'bash scripts/vspcli apply --target=workspace --toolchain %s %s' for label-aware task merge.\n" "${PROFILE}" "${WORKSPACE}" >&2
+    exit 1
+  fi
   mkdir -p "${WORKSPACE}/.vscode"
-  cp "${TASKS_SRC}" "${WORKSPACE}/.vscode/tasks.json"
-  echo "Copied ${TASKS_SRC} -> ${WORKSPACE}/.vscode/tasks.json" >&2
+  cp "${TASKS_SRC}" "${TASKS_DST}"
+  echo "Copied ${TASKS_SRC} -> ${TASKS_DST}" >&2
 fi
 
 echo "Java toolchain ready."

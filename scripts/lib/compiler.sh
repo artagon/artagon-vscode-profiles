@@ -384,7 +384,10 @@ compiler_build_profile() {
     return 1
   fi
 
-  mkdir -p "${root}/_merged" "${root}/profiles/${profile_name}"
+  if ! mkdir -p "${root}/_merged" "${root}/profiles/${profile_name}"; then
+    rm -rf "${tmp_dir}"
+    return 1
+  fi
   if ! atomic_write_file --no-follow "${root}/_merged/${profile_name}.json" "${tmp_dir}/merged.json" 0644; then
     rm -rf "${tmp_dir}"
     return 1
@@ -393,7 +396,11 @@ compiler_build_profile() {
     rm -rf "${tmp_dir}"
     return 1
   fi
-  ln -sfn "../../_merged/${profile_name}.json" "${root}/profiles/${profile_name}/settings.json"
+  if ! ln -sfn "../../_merged/${profile_name}.json" "${root}/profiles/${profile_name}/settings.json"; then
+    printf 'error: failed to symlink %s -> ../../_merged/%s.json\n' "${root}/profiles/${profile_name}/settings.json" "${profile_name}" >&2
+    rm -rf "${tmp_dir}"
+    return 1
+  fi
   rm -rf "${tmp_dir}"
   return 0
 }

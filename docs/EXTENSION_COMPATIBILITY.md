@@ -2,7 +2,7 @@
 
 This guide explains how to detect and handle incompatible VS Code extensions in your profiles.
 
-> **CLI integration**: as of the `workspace-toolchain-and-ux-layering` change, `vspcli --detect --target=workspace` runs this checker automatically before writing `.vscode/extensions.json`. Default mode is `--check-compat=warn` (stderr notice; install proceeds). Set `--check-compat=block` to abort on any incompatibility, or `--check-compat=off` to skip the check entirely. The standalone invocation below is preserved for ad-hoc audits.
+> **CLI integration**: `vspcli apply --target=workspace` (and legacy `vspcli --detect --target=workspace`) runs this checker automatically before writing `.vscode/extensions.json`. Default mode is `--check-compat=warn` (stderr notice; install proceeds), while default `--dry-run` skips the implicit Marketplace query unless `--check-compat=warn|block` is passed explicitly. Set `--check-compat=block` to abort on any incompatibility, or `--check-compat=off` to skip the check entirely. The standalone invocation below is preserved for ad-hoc audits.
 
 ## Quick Start
 
@@ -15,13 +15,13 @@ bash scripts/check-extension-compatibility.sh --all
 ### Check Specific Profile
 
 ```bash
-bash scripts/check-extension-compatibility.sh github-workflows-crisp
+bash scripts/check-extension-compatibility.sh github-workflows
 ```
 
 ### Check Multiple Profiles
 
 ```bash
-bash scripts/check-extension-compatibility.sh java-profile-crisp web-astro-crisp
+bash scripts/check-extension-compatibility.sh java-gradle astro
 ```
 
 ## Understanding Extension Compatibility
@@ -42,48 +42,28 @@ VS Code extensions specify which VS Code versions they support using the `engine
 
 ### Command Options
 
-```bash
-scripts/check-extension-compatibility.sh [OPTIONS] [PROFILE...]
-
-OPTIONS:
-  --all                 Check all profiles
-  --json                Output results as JSON
-  --verbose, -v         Show detailed information
-  --no-cache            Skip cache, fetch fresh data
-  --marketplace-only    Only check Marketplace API (faster, skips checking installed extensions)
-  --help, -h            Show help message
+```text
+Usage: check-extension-compatibility.sh [options] [profile...]
+Options:
+  --all                      Audit all profiles under profiles/
+  --extensions-file <path>   Audit extension IDs from a file (newline-separated or JSON array)
+  --marketplace-only         Query Marketplace engines without requiring installed local extensions
+  --vscode-version <ver>     Override detected local VS Code version (e.g. 1.147.0)
+  --json                     Emit structured JSON report on stdout
+  -h, --help                 Show help
 ```
 
 ### Examples
 
-#### 1. Basic Check with Verbose Output
+#### 1. Check a Single Profile
 
 ```bash
-bash scripts/check-extension-compatibility.sh --verbose github-workflows-crisp
+bash scripts/check-extension-compatibility.sh github-workflows
 ```
 
 **Output:**
-```
-VS Code version: 1.107.1 (1.107)
-
-📦 Checking profile: github-workflows-crisp
-────────────────────────────────────────────────────────────
-✓ akamud.vscode-theme-onedark (2.3.0) - Requires: ^1.12.0
-✓ catppuccin.catppuccin-vsc (3.18.1) - Requires: ^1.80.0
-✓ github.copilot (1.388.0) - Requires: ^1.103.0
-...
-
-════════════════════════════════════════════════════════════
-📊 SUMMARY
-════════════════════════════════════════════════════════════
-VS Code Version: 1.107.1
-Total Extensions: 27
-✓ Compatible: 27
-Incompatible: 0
-Unknown: 0
-════════════════════════════════════════════════════════════
-
-✅ All extensions are compatible with VS Code 1.107.1
+```text
+VS Code version: 1.147.0 | total=29 compatible=29 incompatible=0 not_found=0
 ```
 
 #### 2. Check All Profiles (Marketplace Only)
@@ -92,21 +72,21 @@ Unknown: 0
 bash scripts/check-extension-compatibility.sh --all --marketplace-only
 ```
 
-This skips checking if extensions are installed (faster).
+Queries Marketplace engine metadata without requiring extensions to be installed locally.
 
 #### 3. JSON Output for Automation
 
 ```bash
-bash scripts/check-extension-compatibility.sh --json github-workflows-crisp | jq '.summary'
+bash scripts/check-extension-compatibility.sh --json github-workflows | jq '.summary'
 ```
 
 **Output:**
 ```json
 {
-  "total": 27,
-  "compatible": 27,
+  "total": 29,
+  "compatible": 29,
   "incompatible": 0,
-  "unknown": 0
+  "not_found": 0
 }
 ```
 
@@ -117,10 +97,13 @@ bash scripts/check-extension-compatibility.sh --json --all | \
   jq '.extensions[] | select(.status == "incompatible")'
 ```
 
-#### 5. Check Without Cache (Fresh Data)
+#### 5. Audit an Extensions File with an Explicit VS Code Version
 
 ```bash
-bash scripts/check-extension-compatibility.sh --no-cache github-workflows-crisp
+bash scripts/check-extension-compatibility.sh \
+  --extensions-file profiles/rust/extensions.json \
+  --vscode-version 1.147.0 \
+  --marketplace-only --json
 ```
 
 ## Manual Compatibility Checking
@@ -246,18 +229,12 @@ Make it executable:
 chmod +x .git/hooks/pre-commit
 ```
 
-## Caching
+## Live Marketplace Queries
 
-The script caches Marketplace API responses in:
-```
-~/.cache/vscode-extension-check/
-```
+The script queries the VS Code Marketplace API directly in batches of up to 40 extensions with a 30-second timeout per batch (`--max-time 30`). In headless or CI environments without a local `code` CLI, pass `--vscode-version <ver>` to specify the target VS Code version explicitly:
 
-**Cache TTL:** 1 hour
-
-**Clear cache:**
 ```bash
-rm -rf ~/.cache/vscode-extension-check/
+bash scripts/check-extension-compatibility.sh --all --marketplace-only --vscode-version 1.147.0 --json
 ```
 
 ## Troubleshooting
@@ -280,11 +257,8 @@ rm -rf ~/.cache/vscode-extension-check/
 
 **Solution:**
 ```bash
-# Try with cache
-bash scripts/check-extension-compatibility.sh --all
-
-# Or increase timeout (edit script)
-# Change: timeout=30  # to longer value
+# Audit a single profile to narrow down timeouts
+bash scripts/check-extension-compatibility.sh --marketplace-only rust
 ```
 
 ### Issue: False Positives
@@ -340,22 +314,20 @@ Subscribe to extension repositories for:
 
 ```json
 {
-  "vscodeVersion": "1.107.1",
+  "vscode_version": "1.147.0",
   "summary": {
-    "total": 27,
-    "compatible": 25,
+    "total": 29,
+    "compatible": 27,
     "incompatible": 2,
-    "unknown": 0
+    "not_found": 0
   },
   "extensions": [
     {
-      "profile": "github-workflows-crisp",
-      "extension": "github.copilot",
+      "id": "github.copilot-chat",
       "status": "compatible",
-      "latestVersion": "1.388.0",
-      "engine": "^1.103.0",
-      "installedVersion": "1.388.0",
-      "lastUpdated": "2025-12-20T10:00:00Z"
+      "version": "0.26.0",
+      "engine": "^1.99.0",
+      "prerelease": false
     }
   ]
 }
@@ -363,8 +335,8 @@ Subscribe to extension repositories for:
 
 **Status values:**
 - `compatible` - Extension works with current VS Code
-- `incompatible` - Extension requires newer VS Code
-- `unknown` - Cannot determine compatibility
+- `incompatible` - Extension requires a different VS Code version
+- `NOT_FOUND` - Extension was not returned by the Marketplace API
 
 ## Further Reading
 

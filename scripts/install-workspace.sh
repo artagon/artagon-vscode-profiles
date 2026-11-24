@@ -29,6 +29,7 @@ RTK_IN_WORKSPACE=0
 NO_RTK=0
 ALLOW_COMMENT_LOSS=0
 CHECK_COMPAT="warn"
+CHECK_COMPAT_EXPLICIT=0
 DRY_RUN=0
 NO_DETECT=0
 FORCE=0
@@ -60,7 +61,7 @@ Options:
   --icon-theme <id>                   Override workbench.iconTheme
   --rtk-in-workspace                  Emit RTK terminal profiles and rtk task wrappers in workspace
   --no-rtk                            Skip RTK wrapper emission
-  --check-compat=off|warn|block       Pre-write extension compatibility gate (default: warn)
+  --check-compat=off|warn|block       Pre-write extension compatibility gate (default: warn; skipped on --dry-run unless explicit)
   --allow-comment-loss                Allow overwriting interior comments in user settings after backup
   --force                             Allow storage.json mutation while VS Code is running
   --dry-run                           Show planned writes without mutating any files
@@ -108,8 +109,8 @@ while [[ $# -gt 0 ]]; do
     --icon-theme)   need_val "${1}" "${2:-}"; ICON_THEME_OVERRIDE="${2}"; shift 2 ;;
     --rtk-in-workspace) RTK_IN_WORKSPACE=1; shift ;;
     --no-rtk)      NO_RTK=1; shift ;;
-    --check-compat=*) CHECK_COMPAT="${1#*=}"; shift ;;
-    --check-compat)   need_val "${1}" "${2:-}"; CHECK_COMPAT="${2}"; shift 2 ;;
+    --check-compat=*) CHECK_COMPAT="${1#*=}"; CHECK_COMPAT_EXPLICIT=1; shift ;;
+    --check-compat)   need_val "${1}" "${2:-}"; CHECK_COMPAT="${2}"; CHECK_COMPAT_EXPLICIT=1; shift 2 ;;
     --allow-comment-loss) ALLOW_COMMENT_LOSS=1; shift ;;
     --force)       FORCE=1; shift ;;
     --dry-run)     DRY_RUN=1; shift ;;
@@ -387,7 +388,12 @@ run_compat_gate() {
   return 0
 }
 
-run_compat_gate || exit 1
+COMPAT_CHECK_SKIPPED=0
+if [[ "${DRY_RUN}" -eq 1 && "${CHECK_COMPAT_EXPLICIT}" -eq 0 ]]; then
+  COMPAT_CHECK_SKIPPED=1
+else
+  run_compat_gate || exit 1
+fi
 
 # Handle --target=workspace
 if [[ "${TARGET}" == "workspace" ]]; then
@@ -431,6 +437,11 @@ if [[ "${TARGET}" == "workspace" ]]; then
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     echo "DRY-RUN: target=workspace path=${WS_CANON}"
     echo "DRY-RUN: modules=${RESOLVED_MODS[*]+"${RESOLVED_MODS[*]}"}"
+    if [[ "${COMPAT_CHECK_SKIPPED}" -eq 1 ]]; then
+      echo "DRY-RUN: compatibility=unchecked (skipped implicit Marketplace check; pass --check-compat=warn|block to run)"
+    elif [[ "${CHECK_COMPAT}" == "off" ]]; then
+      echo "DRY-RUN: compatibility=off"
+    fi
     echo "DRY-RUN: would write ${WS_CANON}/.vscode/settings.json"
     echo "DRY-RUN: would write ${WS_CANON}/.vscode/extensions.json"
     [[ -n "${WS_TASKS_JSON}" ]] && echo "DRY-RUN: would write ${WS_CANON}/.vscode/tasks.json (mode=${RTK_TASK_MODE})"
@@ -441,6 +452,53 @@ if [[ "${TARGET}" == "workspace" ]]; then
   if [[ "${RTK_IN_WORKSPACE}" -eq 1 && "${NO_RTK}" -eq 0 ]]; then
     XDG_RTK_DIR="$(compiler_install_rtk_xdg "${ROOT}")" || exit 1
     RTK_PROF_JSON="$(compiler_rtk_terminal_settings_json "${XDG_RTK_DIR}")" || exit 1
+    # Guard against leaking literal $HOME absolute host paths into team-shareable .vscode/settings.json.
+    ws_home="${HOME%/}"
+    ws_home_canon=""
+    if [[ -n "${ws_home}" && -d "${ws_home}" ]]; then
+      ws_home_canon="$(canonical_path "${ws_home}" 2>/dev/null || true)"
+      ws_home_canon="${ws_home_canon%/}"
+    fi
+    if [[ -n "${ws_home}" && "${ws_home}" != "/" ]]; then
+      if printf '%s\n' "${RTK_PROF_JSON}" | jq -e --arg h "${ws_home}" --arg hc "${ws_home_canon}" '
+        def matches_home:
+          (. == $h or startswith($h + "/"))
+          or ($hc != "" and $hc != "/" and (. == $hc or startswith($hc + "/")));
+        [.. | strings | select(matches_home)] | length > 0
+      ' >/dev/null 2>&1; then
+        printf "install-workspace: warning: --rtk-in-workspace rewrote literal \$HOME paths to \${userHome} in .vscode/settings.json (prefer --target=profile or --target=global for personal RTK profiles)\n" >&2
+        # shellcheck disable=SC2016
+        RTK_PROF_JSON="$(printf '%s\n' "${RTK_PROF_JSON}" | jq --arg h "${ws_home}" --arg hc "${ws_home_canon}" '
+          def portabilize:
+            if type == "string" then
+              if . == $h then "${userHome}"
+              elif startswith($h + "/") then "${userHome}" + .[$h | length:]
+              elif ($hc != "" and $hc != "/" and . == $hc) then "${userHome}"
+              elif ($hc != "" and $hc != "/" and startswith($hc + "/")) then "${userHome}" + .[$hc | length:]
+              else . end
+            elif type == "array" then map(portabilize)
+            elif type == "object" then with_entries(.value |= portabilize)
+            else . end;
+          portabilize
+        ')"
+      fi
+    fi
+    if [[ "${XDG_RTK_DIR}" == /* ]]; then
+      rtk_under_home=0
+      if [[ -n "${ws_home}" && "${ws_home}" != "/" ]]; then
+        if [[ "${XDG_RTK_DIR}" == "${ws_home}" || "${XDG_RTK_DIR}" == "${ws_home}/"* ]]; then
+          rtk_under_home=1
+        fi
+      fi
+      if [[ "${rtk_under_home}" -eq 0 && -n "${ws_home_canon}" && "${ws_home_canon}" != "/" ]]; then
+        if [[ "${XDG_RTK_DIR}" == "${ws_home_canon}" || "${XDG_RTK_DIR}" == "${ws_home_canon}/"* ]]; then
+          rtk_under_home=1
+        fi
+      fi
+      if [[ "${rtk_under_home}" -eq 0 ]]; then
+        printf 'install-workspace: warning: --rtk-in-workspace embeds absolute host path (%s) in .vscode/settings.json; avoid committing host-specific paths to shared repos\n' "${XDG_RTK_DIR}" >&2
+      fi
+    fi
     WS_SETTINGS_JSON="$(printf '%s\n' "${WS_SETTINGS_JSON}" | jq --argjson rtk "${RTK_PROF_JSON}" '. * $rtk')"
   fi
 
@@ -578,6 +636,7 @@ if [[ "${TARGET}" == "workspace" ]]; then
     CODE_STORE_USER_DIR=""
     CODE_STORE_DATA_ROOT=""
     resolve_code_store || exit $?
+    : "${CODE_STORE_DATA_ROOT}"
     ux_dest=""
     if [[ "${UX_TARGET}" == "user" ]]; then
       ux_dest="${CODE_STORE_USER_DIR}/settings.json"
@@ -621,6 +680,11 @@ fi
 if [[ "${DRY_RUN}" -eq 1 ]]; then
   echo "DRY-RUN: target=${TARGET} profile=${PROFILE_NAME:-default}"
   echo "DRY-RUN: modules=${RESOLVED_MODS[*]+"${RESOLVED_MODS[*]}"}"
+  if [[ "${COMPAT_CHECK_SKIPPED}" -eq 1 ]]; then
+    echo "DRY-RUN: compatibility=unchecked (skipped implicit Marketplace check; pass --check-compat=warn|block to run)"
+  elif [[ "${CHECK_COMPAT}" == "off" ]]; then
+    echo "DRY-RUN: compatibility=off"
+  fi
   echo "DRY-RUN: extensions=$(jq -r 'length' <<<"${PROF_EXT_ARR}")"
   exit 0
 fi
@@ -634,6 +698,7 @@ fi
 CODE_STORE_USER_DIR=""
 CODE_STORE_DATA_ROOT=""
 resolve_code_store || exit $?
+: "${CODE_STORE_DATA_ROOT}"
 
 if [[ "${TARGET}" == "global" ]]; then
   DEST_SETTINGS="${CODE_STORE_USER_DIR}/settings.json"
