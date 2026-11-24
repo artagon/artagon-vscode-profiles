@@ -4,7 +4,28 @@
 # import, completions, list, open, install-ext) AND backwards-compatible legacy flags.
 set -euo pipefail
 
-SCRIPT_ROOT="$(CDPATH='' cd -- "$(dirname -- "${0}")/.." && pwd -P)"
+_vsp_self="${BASH_SOURCE[0]:-${0}}"
+case "${_vsp_self}" in
+  */*) ;;
+  *)   _vsp_self="./${_vsp_self}" ;;
+esac
+_vsp_hops=0
+while [[ -L "${_vsp_self}" ]]; do
+  _vsp_hops=$((_vsp_hops + 1))
+  if [[ "${_vsp_hops}" -gt 40 ]]; then
+    printf 'vspcli: symlink loop detected resolving %s\n' "${_vsp_self}" >&2
+    exit 1
+  fi
+  _vsp_dir="$(CDPATH='' cd -P -- "$(dirname -- "${_vsp_self}")" && pwd -P)"
+  _vsp_target="$(readlink "${_vsp_self}")"
+  case "${_vsp_target}" in
+    /*) _vsp_self="${_vsp_target}" ;;
+    *)  _vsp_self="${_vsp_dir}/${_vsp_target}" ;;
+  esac
+done
+_vsp_script_dir="$(CDPATH='' cd -P -- "$(dirname -- "${_vsp_self}")" && pwd -P)"
+SCRIPT_ROOT="$(CDPATH='' cd -P -- "${_vsp_script_dir}/.." && pwd -P)"
+unset _vsp_self _vsp_hops _vsp_dir _vsp_target _vsp_script_dir
 ROOT="${VSPCLI_ROOT:-${SCRIPT_ROOT}}"
 SCRIPTS_DIR="${SCRIPT_ROOT}/scripts"
 LIB_DIR="${SCRIPTS_DIR}/lib"
@@ -238,7 +259,7 @@ _reconcile_one() {
   rm -f "${err_tmp}"
 
   local installed_lc=()
-  local line lc
+  local line
   while IFS= read -r line; do
     line="$(printf '%s' "${line}" | tr -d '[:space:]')"
     [[ -n "${line}" ]] || continue
@@ -261,9 +282,18 @@ _reconcile_one() {
       printf 'reconcile: missing recipe extensions file: %s\n' "${ext_file}" >&2
       return 1
     fi
+    if ! jq -e -s 'length == 1 and (.[0] | type == "array")' "${ext_file}" >/dev/null 2>&1; then
+      printf 'reconcile: invalid or malformed recipe extensions JSON: %s\n' "${ext_file}" >&2
+      return 1
+    fi
+    local desired_raw=""
+    if ! desired_raw="$(jq -r -s '.[0][] | .identifier.id // empty' "${ext_file}")"; then
+      printf 'reconcile: failed to parse recipe extensions JSON: %s\n' "${ext_file}" >&2
+      return 1
+    fi
     while IFS= read -r line; do
       [[ -n "${line}" ]] && desired_lc+=("$(to_lower "${line}")")
-    done < <(jq -r '.[] | .identifier.id // empty' "${ext_file}")
+    done <<< "${desired_raw}"
   fi
 
   # Compute FULL ordered plan BEFORE any mutation!
@@ -601,10 +631,11 @@ cmd_doctor() {
     local us_clean
     if us_clean="$(LC_ALL=C awk -f "${strip}" "${user_settings}" 2>/dev/null)" \
        && printf '%s\n' "${us_clean}" | jq -e -s 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1; then
-      local tel trust auto_upd
+      local tel trust auto_upd_type auto_upd_val
       tel="$(printf '%s\n' "${us_clean}" | jq -r '."telemetry.telemetryLevel" // "MISSING"')"
       trust="$(printf '%s\n' "${us_clean}" | jq -r '."security.workspace.trust.untrustedFiles" // "MISSING"')"
-      auto_upd="$(printf '%s\n' "${us_clean}" | jq -r 'if has("extensions.autoUpdate") then (."extensions.autoUpdate" | tostring) else "MISSING" end')"
+      auto_upd_type="$(printf '%s\n' "${us_clean}" | jq -r 'if has("extensions.autoUpdate") then (."extensions.autoUpdate" | type) else "missing" end')"
+      auto_upd_val="$(printf '%s\n' "${us_clean}" | jq -r 'if has("extensions.autoUpdate") then (."extensions.autoUpdate" | tojson) else "MISSING" end')"
       if [[ "${tel}" != "off" ]]; then
         warn_msg "Default profile (${user_settings}) has telemetry.telemetryLevel=${tel} (VS Code 1.147 application-scope ignores named profile overrides; set \"off\" in Default profile)"
       else
@@ -615,10 +646,10 @@ cmd_doctor() {
       else
         pass_msg "Default profile security.workspace.trust.untrustedFiles == prompt"
       fi
-      if [[ "${auto_upd}" == "true" || "${auto_upd}" == "on" ]]; then
-        warn_msg "Default profile (${user_settings}) has extensions.autoUpdate=${auto_upd} (application-scope; auto-updates may advance install-time VSIX pins)"
+      if [[ "${auto_upd_type}" == "boolean" && "${auto_upd_val}" == "false" ]]; then
+        pass_msg "Default profile extensions.autoUpdate == false"
       else
-        pass_msg "Default profile extensions.autoUpdate (${auto_upd}) does not force pin drift"
+        warn_msg "Default profile (${user_settings}) has extensions.autoUpdate=${auto_upd_val} (type=${auto_upd_type}; application-scope requires boolean false to prevent auto-updates advancing install-time VSIX pins)"
       fi
     else
       warn_msg "Default profile settings.json could not be parsed: ${user_settings}"
@@ -646,11 +677,26 @@ cmd_doctor() {
 
     local pins_file
     pins_file="$(pins_file_path "${ROOT}")"
-    local sp ext_lines el id_only ver_only st pin_ver
+    local sp ext_lines el id_only ver_only st pin_ver list_rc err_tmp err_detail
     for sp in "${scan_profiles[@]}"; do
       local p_args=("${code_root_args[@]+"${code_root_args[@]}"}")
       [[ "${sp}" != "default" ]] && p_args+=(--profile "${sp}")
-      ext_lines="$(code "${p_args[@]+"${p_args[@]}"}" --list-extensions --show-versions 2>/dev/null || true)"
+      err_tmp="$(mktemp "${TMPDIR:-/tmp}/vsp-doc-err.XXXXXX")"
+      ext_lines=""
+      list_rc=0
+      if ext_lines="$(code "${p_args[@]+"${p_args[@]}"}" --list-extensions --show-versions 2>"${err_tmp}")"; then
+        rm -f "${err_tmp}"
+      else
+        list_rc=$?
+        err_detail="$(tr '\n' ' ' < "${err_tmp}" | sed 's/[[:space:]]*$//')"
+        rm -f "${err_tmp}"
+        if [[ -n "${err_detail}" ]]; then
+          fail_msg "audit incomplete — failed to list extensions for profile '${sp}' (exit=${list_rc}: ${err_detail})"
+        else
+          fail_msg "audit incomplete — failed to list extensions for profile '${sp}' (exit=${list_rc})"
+        fi
+        continue
+      fi
       [[ -n "${ext_lines}" ]] || continue
       while IFS= read -r el; do
         [[ -n "${el}" ]] || continue
@@ -741,6 +787,7 @@ case "${1}" in
     ;;
   --detect)
     shift
+    printf "Warning: legacy 'vspcli --detect' is deprecated and mutates the workspace; use read-only 'vspcli detect' to inspect toolchains or 'vspcli apply' to write configuration.\n" >&2
     "${BASH}" "${SCRIPTS_DIR}/install-workspace.sh" "${@+"${@}"}"
     ;;
   *)

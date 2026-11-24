@@ -116,3 +116,96 @@ setup() {
   ARTAGON_VSCODE_PINS_FILE="${pins}" run vspcli doctor --strict
   [[ "${status}" -eq 1 ]]
 }
+
+@test "doctor: failing code --list-extensions exits 1 with audit-incomplete FAIL while still scanning remaining profiles" {
+  data_root="${TEST_TMP}/vscode"
+  printf '{"userDataProfiles":[{"name":"broken-prof","location":"aaaa1111"},{"name":"other-prof","location":"bbbb2222"}]}\n' \
+    > "${VSCODE_USER_DIR}/globalStorage/storage.json"
+  seed_code_mock_exts "other-prof" "${data_root}" -- "JScearcy.rust-doc-viewer@4.2.1"
+
+  fail_bin="${TEST_TMP}/fail-code-bin"
+  mkdir -p "${fail_bin}"
+  cat > "${fail_bin}/code" <<WRAP
+#!/usr/bin/env bash
+set -euo pipefail
+want_fail=0
+is_list=0
+prev=""
+for arg in "\$@"; do
+  if [[ "\${prev}" == "--profile" && "\${arg}" == "broken-prof" ]]; then
+    want_fail=1
+  fi
+  if [[ "\${arg}" == "--list-extensions" ]]; then
+    is_list=1
+  fi
+  prev="\${arg}"
+done
+if [[ "\${want_fail}" -eq 1 && "\${is_list}" -eq 1 ]]; then
+  echo "action=list_failed profile=broken-prof" >> "${CODE_LOG}"
+  echo "profile database locked" >&2
+  exit 1
+fi
+exec "${TEST_TMP}/bin/code" "\$@"
+WRAP
+  chmod 0755 "${fail_bin}/code"
+
+  PATH="${fail_bin}:${PATH}" run vspcli doctor
+  [[ "${status}" -eq 1 ]]
+  [[ "${output}" == *"FAIL: audit incomplete — failed to list extensions for profile 'broken-prof'"* ]]
+  [[ "${output}" == *"profile database locked"* ]]
+  [[ "${output}" == *"FAIL: SECURITY: compromised extension 'jscearcy.rust-doc-viewer' installed in profile 'other-prof'"* ]]
+  grep -q 'action=list profile=default' "${CODE_LOG}"
+  grep -q 'action=list_failed profile=broken-prof' "${CODE_LOG}"
+  grep -q 'action=list profile=other-prof' "${CODE_LOG}"
+}
+
+@test "doctor: extensions.autoUpdate passes ONLY on boolean false; missing, true, onlyEnabledExtensions, and string false warn and fail --strict" {
+  mkdir -p "${XDG_CONFIG_HOME}/artagon-vscode/rtk"
+  : > "${XDG_CONFIG_HOME}/artagon-vscode/rtk/rtk-init.bash"
+  : > "${XDG_CONFIG_HOME}/artagon-vscode/rtk/rtk-init.fish"
+  : > "${XDG_CONFIG_HOME}/artagon-vscode/rtk/rtk-init.zsh"
+
+  # 1. Missing extensions.autoUpdate -> WARN and fail --strict.
+  printf '{"telemetry.telemetryLevel":"off","security.workspace.trust.untrustedFiles":"prompt"}\n' \
+    > "${VSCODE_USER_DIR}/settings.json"
+  run vspcli doctor
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == *"WARN: Default profile"*"extensions.autoUpdate=MISSING"* ]]
+  run vspcli doctor --strict
+  [[ "${status}" -eq 1 ]]
+
+  # 2. "onlyEnabledExtensions" -> WARN and fail --strict.
+  printf '{"telemetry.telemetryLevel":"off","security.workspace.trust.untrustedFiles":"prompt","extensions.autoUpdate":"onlyEnabledExtensions"}\n' \
+    > "${VSCODE_USER_DIR}/settings.json"
+  run vspcli doctor
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == *"WARN: Default profile"*"extensions.autoUpdate=\"onlyEnabledExtensions\""* ]]
+  run vspcli doctor --strict
+  [[ "${status}" -eq 1 ]]
+
+  # 3. Boolean true -> WARN and fail --strict.
+  printf '{"telemetry.telemetryLevel":"off","security.workspace.trust.untrustedFiles":"prompt","extensions.autoUpdate":true}\n' \
+    > "${VSCODE_USER_DIR}/settings.json"
+  run vspcli doctor
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == *"WARN: Default profile"*"extensions.autoUpdate=true"* ]]
+  run vspcli doctor --strict
+  [[ "${status}" -eq 1 ]]
+
+  # 4. String "false" (wrong JSON type) -> WARN and fail --strict.
+  printf '{"telemetry.telemetryLevel":"off","security.workspace.trust.untrustedFiles":"prompt","extensions.autoUpdate":"false"}\n' \
+    > "${VSCODE_USER_DIR}/settings.json"
+  run vspcli doctor
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == *"WARN: Default profile"*"type=string"* ]]
+  run vspcli doctor --strict
+  [[ "${status}" -eq 1 ]]
+
+  # 5. Exact boolean false -> PASS and --strict exits 0.
+  printf '{"telemetry.telemetryLevel":"off","security.workspace.trust.untrustedFiles":"prompt","extensions.autoUpdate":false}\n' \
+    > "${VSCODE_USER_DIR}/settings.json"
+  run vspcli doctor --strict
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == *"PASS: Default profile extensions.autoUpdate == false"* ]]
+  [[ "${output}" == *"0 fail(s), 0 warning(s)"* ]]
+}
