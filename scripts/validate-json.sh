@@ -229,27 +229,29 @@ if [[ -f "${CAT_EXT}" && -f "${CAT_PUB}" ]]; then
     diff_out="$(diff -u <(printf '%s\n' "${expected_pubs}") <(printf '%s\n' "${actual_pubs_sorted}") || true)"
     err "catalog/publishers.json drifted from active module publishers:\n${diff_out}"
   fi
+fi
 
-  # Check pins file has lowercase unique keys, 64-hex sha256, and strict official Marketplace https URLs.
-  if [[ -f "${CAT_PINS}" ]]; then
-    pin_errs="$(jq -r '
-      (.pins // {}) | to_entries[]
-      | .key as $k | .value as $v
-      | (if $k != ($k | ascii_downcase) then "non-lowercase pin key: \($k)" else empty end),
-        (if (($v.sha256 // "") | test("^[0-9a-f]{64}$") | not) then "invalid sha256 for pin \($k)" else empty end)
-    ' "${CAT_PINS}")"
-    if [[ -n "${pin_errs}" ]]; then
-      while IFS= read -r line; do
-        [[ -n "${line}" ]] && err "catalog/extension-pins.json: ${line}"
-      done <<< "${pin_errs}"
-    fi
-    while IFS=$'\t' read -r pk pu; do
-      [[ -n "${pk}" ]] || continue
-      if ! ARTAGON_VSCODE_ALLOW_TEST_PIN_URL=0 _vsix_pin_validate_url "${pu}" >/dev/null 2>&1; then
-        err "catalog/extension-pins.json: invalid or non-Marketplace vsix_url for pin ${pk}: ${pu}"
-      fi
-    done < <(jq -r '(.pins // {}) | to_entries[] | "\(.key)\t\(.value.vsix_url // "")"' "${CAT_PINS}")
+# Require catalog/extension-pins.json to exist and pass schema/URL checks (fail closed — never silently skip).
+if [[ ! -f "${CAT_PINS}" || ! -r "${CAT_PINS}" ]]; then
+  err "catalog/extension-pins.json is missing or unreadable"
+else
+  pin_errs="$(jq -r '
+    (.pins // {}) | to_entries[]
+    | .key as $k | .value as $v
+    | (if $k != ($k | ascii_downcase) then "non-lowercase pin key: \($k)" else empty end),
+      (if (($v.sha256 // "") | test("^[0-9a-f]{64}$") | not) then "invalid sha256 for pin \($k)" else empty end)
+  ' "${CAT_PINS}")"
+  if [[ -n "${pin_errs}" ]]; then
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] && err "catalog/extension-pins.json: ${line}"
+    done <<< "${pin_errs}"
   fi
+  while IFS=$'\t' read -r pk pu; do
+    [[ -n "${pk}" ]] || continue
+    if ! ARTAGON_VSCODE_ALLOW_TEST_PIN_URL=0 _vsix_pin_validate_url "${pu}" >/dev/null 2>&1; then
+      err "catalog/extension-pins.json: invalid or non-Marketplace vsix_url for pin ${pk}: ${pu}"
+    fi
+  done < <(jq -r '(.pins // {}) | to_entries[] | "\(.key)\t\(.value.vsix_url // "")"' "${CAT_PINS}")
 fi
 
 # ---------------------------------------------------------------------------
