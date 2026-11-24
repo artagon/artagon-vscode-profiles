@@ -2,14 +2,14 @@
 
 [![CI](https://github.com/Artagon/artagon-vscode-profiles/actions/workflows/ci.yml/badge.svg)](https://github.com/Artagon/artagon-vscode-profiles/actions/workflows/ci.yml)
 [![Platforms: macOS & Linux](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-0969da)](ABOUT.md#overview)
-[![Runtime: Bash 3.2+ + jq](https://img.shields.io/badge/runtime-Bash%203.2%2B%20%2B%20jq-4a7bbb)](ABOUT.md#design-guarantees)
+[![Runtime: Bash + jq](https://img.shields.io/badge/runtime-Bash%20%2B%20jq-4a7bbb)](ABOUT.md#design-guarantees)
 [![VS Code: 1.147+](https://img.shields.io/badge/VS%20Code-1.147%2B-007acc)](#profile--module-matrix)
 [![Profiles: 15](https://img.shields.io/badge/profiles-15-8250df)](#profile--module-matrix)
 [![Modules: 32](https://img.shields.io/badge/modules-32-bf3989)](#profile--module-matrix)
 [![VSIX Pins: SHA-256](https://img.shields.io/badge/VSIX%20pins-SHA--256-2ea44f)](#security--supply-chain-controls)
 [![About](https://img.shields.io/badge/about-design%20%26%20verification-57606a)](ABOUT.md)
 
-Vertical capability-module architecture for Visual Studio Code (`1.147+`) profiles, team-shareable workspace toolchains, IntelliJ-grade developer ergonomics, multi-agent AI coexistence, and supply-chain-hardened extension management. Runs strictly on **Bash 3.2+ (`/bin/bash` on macOS) + `jq`** with zero Python, Node, or Rust runtime dependencies.
+Vertical capability-module architecture for Visual Studio Code (`1.147+`) profiles, team-shareable workspace toolchains, IntelliJ-grade developer ergonomics, multi-agent AI coexistence, and supply-chain-hardened extension management. Runs on **portable Bash + `jq`** (stock macOS and Linux Bash) with zero Python, Node, or Rust runtime dependencies.
 
 > [!IMPORTANT]
 > **Security & Non-Invasiveness Contract**
@@ -293,7 +293,7 @@ Workspace `.vscode/tasks.json` uses portable plain `cargo doc` commands by defau
 ├─ profiles/         # 15 thin profile.json recipes + compiled settings.json symlink & extensions.json
 ├─ _merged/          # Compiled UX-agnostic profile settings (generated; do not edit)
 ├─ exports/          # Compiled .code-profile bundles, 22 legacy v1 symlinks, and SHA256SUMS (generated)
-├─ scripts/          # vspcli, scripts/lib/ (Bash 3.2 libraries), hooks, completions, and BATS test suite
+├─ scripts/          # vspcli, scripts/lib/ (portable Bash libraries), hooks, completions, and BATS test suite
 ├─ docs/             # Stack documentation (e.g. docs/rust.md)
 └─ openspec/         # OpenSpec specifications, research notes, and adversarial review ledgers
 ```

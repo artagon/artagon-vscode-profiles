@@ -4,14 +4,14 @@
 
 `artagon-vscode-profiles` is a modular profile compiler, workspace toolchain configurator, and supply-chain-hardened extension manager for Visual Studio Code (`1.147+`). It ships **15** compiled profile recipes and **32** composable vertical modules (**14** capabilities, **15** toolchains, **3** UX presets) backed by an authoritative catalog of **103** active Marketplace-verified extensions and **8** install-time SHA-256 VSIX pins.
 
-The entire compiler, validator, importer, reconciler, and doctor CLI (`scripts/vspcli`) runs strictly on **Bash 3.2+ (`/bin/bash` on macOS) + `jq`** across macOS and Linux with zero Python, Node, or Rust runtime dependencies. Live profile recipes, module manifests, catalog entries, and compiled bundles live in [`catalog/`](catalog), [`modules/`](modules), [`profiles/`](profiles), [`exports/`](exports), and [`README.md`](README.md).
+The entire compiler, validator, importer, reconciler, and doctor CLI (`scripts/vspcli`) runs on **portable Bash + `jq`** across macOS and Linux with zero Python, Node, or Rust runtime dependencies. Live profile recipes, module manifests, catalog entries, and compiled bundles live in [`catalog/`](catalog), [`modules/`](modules), [`profiles/`](profiles), [`exports/`](exports), and [`README.md`](README.md).
 
 ## Design Guarantees
 
 - **Strict workspace-vs-personal separation**: `vspcli apply --target=workspace` writes only team-shareable `extensions.workspace[]`, `settings.workspace.jsonc`, and portable plain `tasks.json` into `.vscode/`. Personal AI agents, UX presets (`crisp`, `retina`), and RTK terminal wiring never leak into team workspaces unless explicitly opted in (`--ux-in-workspace`, `--rtk-in-workspace`).
 - **Hardened local-first & non-autonomous defaults**: Shipped profiles default to `security.workspace.trust.untrustedFiles: "prompt"`, disable telemetry (`telemetry.telemetryLevel: "off"`), preserve explicit AI opt-outs (`ai-copilot`, `general-minimal`, `--no-ai`, `--without ai-agents`), and block auto-approve / CLI-wrapper bypass settings via the trusted bundle autonomy deny-list.
 - **Supply-chain verification & GlassWorm remediation**: Universal core/UX extensions install from SHA-256-pinned official `https://` Marketplace VSIX packages through a zero-TOCTOU content-addressed local cache (`0700`/`0600` private permissions); publisher allowlists (`catalog/publishers.json`) gate every install; and compromised `jscearcy.rust-doc-viewer` is uninstalled unconditionally as Step 0 in `vspcli reconcile` and flagged `FAIL` across all profiles (including Default) by `vspcli doctor`.
-- **Pure Bash 3.2 + `jq` deterministic builds & atomic writes**: Rebuilding with `vspcli build` deterministically emits `_merged/*.json`, `profiles/*/{extensions,settings}.json`, `exports/*.code-profile`, 22 legacy v1 symlinks, and `exports/SHA256SUMS` using atomic temp-file swaps (`0644`/`0600`) and graceful theme fallback on partial extension installs.
+- **Portable Bash + `jq` deterministic builds & atomic writes**: Rebuilding with `vspcli build` deterministically emits `_merged/*.json`, `profiles/*/{extensions,settings}.json`, `exports/*.code-profile`, 22 legacy v1 symlinks, and `exports/SHA256SUMS` using atomic temp-file swaps (`0644`/`0600`) and graceful theme fallback on partial extension installs.
 
 ## Capability Domains
 
@@ -37,15 +37,15 @@ See [`README.md#profile--module-matrix`](README.md#profile--module-matrix) for t
 
 ## Pipeline & Verification
 
-- **Dual-OS CI**: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and pull request across `ubuntu-latest` and `macos-latest` with a PATH-pinned `/bin/bash` `3.2` shim enforcing real macOS Bash 3.2 execution.
-- **Static & Structural Gates**: Static Bash 4+ construct lint, `shellcheck` across all production/test Bash scripts, `zsh -n` across all Zsh `ZDOTDIR` RTK scripts, `fish -n` on Fish RTK scripts, `vspcli build` artifact-sync gate, `validate-json.sh` (JSON/JSONC syntax, `catalog/` referential integrity, `GROUP_ORDER` completeness, module DAG & collision checks, application-scope & forbidden-key guards), `check-ux-symmetry.sh`, Rust docs policy sync (`apply-rust-policy.sh --check`), and `generate-readme-matrix.sh --check`.
+- **Dual-OS CI**: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and pull request across `ubuntu-latest` and `macos-latest` using each platform's Bash environment without pinning to a specific shell version.
+- **Static & Structural Gates**: `shellcheck` across all production/test Bash scripts, `zsh -n` across all Zsh `ZDOTDIR` RTK scripts, `fish -n` on Fish RTK scripts, `vspcli build` artifact-sync gate, `validate-json.sh` (JSON/JSONC syntax, `catalog/` referential integrity, `GROUP_ORDER` completeness, module DAG & collision checks, application-scope & forbidden-key guards), `check-ux-symmetry.sh`, Rust docs policy sync (`apply-rust-policy.sh --check`), and `generate-readme-matrix.sh --check`.
 - **Hermetic Offline Tests & Live Audits**: `scripts/tests/run.sh` runs **127** hermetic offline `bats-core` tests and smoke checks in an isolated checkout copy; live Marketplace compatibility (`scripts/check-extension-compatibility.sh --all --marketplace-only --json`), pin refresh (`scripts/refresh-pins.sh`), and host health (`vspcli doctor --strict`) verify runtime state end to end.
 
 ## Quick Links
 
 - [`README.md`](README.md) — quick start, security contract, capability highlights, auto-generated profile & module matrix, CLI reference, and troubleshooting
 - [`CHANGELOG.md`](CHANGELOG.md) — release and architecture change history
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — contributor workflow, git hooks (`scripts/install-hooks.sh`), and Bash 3.2 + `jq` rules
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — contributor workflow, git hooks (`scripts/install-hooks.sh`), and portable Bash + `jq` guidelines
 - [`SECURITY.md`](SECURITY.md) — vulnerability disclosure policy and GitHub Security Advisories channel
 - [`docs/rust.md`](docs/rust.md) — Rust documentation policy, `rust-analyzer` hover/signature settings, and `cargo doc` workflow
 - [`catalog/`](catalog) — authoritative `extensions.json`, `publishers.json`, `extension-pins.json`, `setting-scopes.json`, and `defaults.json`
