@@ -1,0 +1,41 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Cargo: Build",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build"],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$rustc"],
+      "presentation": { "reveal": "silent", "panel": "shared" }
+    },
+    {
+      "label": "Cargo: Test",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["test"],
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": ["$rustc"],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Cargo: Clippy",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"],
+      "group": { "kind": "build", "isDefault": false },
+      "problemMatcher": ["$rustc"],
+      "presentation": { "reveal": "silent", "panel": "shared" }
+    },
+    {
+      "label": "Cargo: Run",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["run"],
+      "group": { "kind": "build", "isDefault": false },
+      "problemMatcher": ["$rustc"],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    }
+  ]
+}

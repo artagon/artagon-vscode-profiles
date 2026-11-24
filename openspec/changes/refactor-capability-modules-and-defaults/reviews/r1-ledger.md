@@ -1,0 +1,29 @@
+# Adversarial Review Round 1 Consolidation Ledger
+
+Reviewers:
+- **Opus** (`claude-opus-5-5@high#adversarial-reviewer`, `.cache/ntm-swarm/vsp-review/r1/opus.md`): 14 findings (4 HIGH, 8 MED, 2 LOW)
+- **Astra** (`gpt-6.2-astra@high#reviewer`, `.cache/ntm-swarm/vsp-review/r1/astra.md`): 20 findings (10 HIGH, 10 MED)
+- **Sol** (`gpt-6.2-sol@high#qa-reviewer`, `.cache/ntm-swarm/vsp-review/r1/sol.md`): 16 findings (9 HIGH, 7 MED)
+- **`bash-pro`** (internal subagent): 22 findings (5 CRIT, 9 HIGH, 6 MED, 2 LOW)
+- **`research`** (internal subagent): 25 findings (6 CRIT, 10 HIGH, 6 MED, 3 LOW)
+
+All Critical, High, and substantive Medium findings were resolved in OpenSpec v2 (`proposal.md`, `design.md`, `tasks.md`, and 12 delta specs under `specs/`):
+
+| Theme | Finding Sources | Resolution in v2 |
+|---|---|---|
+| Tracked `.agents/settings.local.json` (`bypassPermissions`) | Opus, Research | Added removal + `.gitignore` entry in `tasks.md` 1.1 and `validate-json.sh` tracked-file scan. |
+| GlassWorm compromised `JScearcy.rust-doc-viewer` | Research | Marked `status: "compromised"` in `catalog/extensions.json`, added to `rust` `unwanted[]`, dropped `jscearcy` from `publishers.json`, auto-uninstalled by `vspcli reconcile`. |
+| Autonomy/exec setting deny-list | Opus, Research | Added explicit CI/validator deny-list (`chat.tools.*autoApprove`, `claudeCode.allowDangerouslySkipPermissions`, `claudeCode.initialPermissionMode: "bypassPermissions"`, `claudeCode.claudeProcessWrapper`, `claudeCode.environmentVariables`, `"bypassPermissions"`). |
+| Missing/conflicting OpenSpec deltas & archive safety | Opus, Sol #16, Research | Added `specs/install-profile-extensions/`, `specs/import-profile-bundles/`, `specs/open-profiles/`; added `REMOVED`/`MODIFIED` deltas for retired `_overrides/`/`_shared/` requirements; documented supersession of unarchived changes in `proposal.md`. |
+| Legacy `ai-profile-*` silent upgrade & AI-free option | Opus, Astra | Repointed `exports/ai-profile-{crisp,retina}.code-profile` & `legacy-profile-name.sh` to `ai-copilot`; added `profiles/general-minimal/` (AI-free) and distinct `ai-plus` recipe. |
+| `ai-copilot` reconciliation leaving Claude/Codex + `openai.codex-audio` | Sol #6 | Added `packMembers: ["openai.codex-audio"]` to catalog and `--prune-unmanaged` in `vspcli reconcile` for strict policy transitions. |
+| Application-scoped VS Code settings (`telemetry`, `trust`, `autoUpdate`) | Sol #7, Opus, Research | Verified against local VS Code `1.147.0` binary (`scope: 1`); documented explicitly and added Default-profile check in `vspcli doctor`. |
+| Orphaned core extensions (`yaml`, `github-actions`, `pull-request-github`) | Sol #2, Astra | Assigned `redhat.vscode-yaml` -> `core-editor` (`workspace`), `github.vscode-pull-request-github` -> `git-pro` (`profile`), `github.vscode-github-actions` -> `github-workflows` (`workspace`); kept 4 universal pinned crisp/retina theme/icon packs in `core-editor` (`profile`). |
+| Undefined `conflicts[]` targets (`ts-base-eslint`, `python-pyright`) | Sol #4/#5, Astra, Opus | Split into real modules: `ts-base` + (`ts-eslint-prettier` <-> `biome`) + `astro`; `python-base` + (`python` <-> `python-ty`). |
+| Spring detection dropping Gradle/Maven | Sol #1, Astra | Made `java-spring` a non-conflicting framework layer over detected `java-gradle`/`java-maven` (`java-gradle` supersedes `java-maven` if both exist); `profiles/java-spring` explicitly includes `java-gradle` + `java-spring`. |
+| Publisher allowlist drift (`openai`, `akamud`, unused `astral-sh`) | Sol #3, Astra | Enforced exact active-module publisher set invariant + ID-prefix check in `validate-json.sh`. |
+| Dual scope separation (`extensions.workspace[]` vs `extensions.profile[]`) & `ignoreRecommendations` | Opus, Astra, Sol #13, Research | Split `extensions.workspace[]` and `extensions.profile[]` in `module.json`; set `extensions.ignoreRecommendations: false`; preserved user entries + subtracted excluded/deprecated IDs on `--without` rerun. |
+| `--ux` silent global mutation, `catppuccin-mocha`, 14-key UX & `--ux=default` reset | Sol #8/#9, Opus, Astra | Fixed icon theme ID to `catppuccin-mocha` (verified in manifest); moved 4 font keys into symmetric 14-key UX presets so export strips ALL 14 keys (incl. `--font`); required explicit `--ux-target` on workspace applies; defined `--ux=default` key deletion. |
+| Verified VS Code `1.147.0` setting fixes (`hover`, `shfmt`/Zsh, `python-envs`, `errorLens`, `testing`, `rust` quickSuggestions, `java`/`cpp`) | Sol #4/#10/#11/#12, Opus, Research | Verified against local VS Code `1.147.0` + installed manifests: `editor.hover.enabled: "on"`, `[rust].editor.hover.delay: 300`, `errorLens.messageMaxChars: 160`, `python-envs.defaultEnvManager: "ms-python.python:venv"`, `testing.automaticallyOpenTestResults`, Zsh `files.associations` + `[zsh].editor.formatOnSave: false`, removed `[rust].editor.quickSuggestions` & invalid Spring YAML schema & hardcoded `CC`/`CXX`. |
+| `vspcli reconcile` install-first & 5 lifecycle statuses | Opus, Astra, Sol #6, `bash-pro` | Split `status` into `active`/`superseded`/`removed`/`compromised`/`retired`; install first, abort on `code --list-extensions` error, lowercase diffs, uninstall `superseded` only if replacement installed, gate on catalog not `publishers.json`. |
+| Pure Bash 3.2, `canonical_path`, `jsonc-strip.awk`, `jsonc-merge.sh`, `rtk-init` (Bash alias + Zsh `ZDOTDIR`), `storage.json` lock, TOCTOU, `pre-commit`, CI macOS 3.2 | `bash-pro`, Opus, Sol #14/#15 | Specified 40-hop `canonical_path`, `dd+od` `rand_hex_8`, space-replacing `jsonc-strip.awk`, `unalias`+`eval` Bash RTK, real Zsh `ZDOTDIR` proxy, TOCTOU-free single copy + `mkdir` lock in `import-profile.sh`, `install-workspace --check-compat` pre-`.vscode/` audit, `pre-commit` col-2 regex, `macos-latest` `/bin/bash` 3.2 CI job with required BATS/Cargo, and isolated `test_helper.bash`. |

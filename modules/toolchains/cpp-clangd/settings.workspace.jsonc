@@ -1,0 +1,28 @@
+// clangd C/C++ language server settings (verified against clangd 21/23 CLI flags; disables cpptools IntelliSense).
+{
+  "clangd.onConfigChanged": "restart",
+  "clangd.checkUpdates": false,
+  "clangd.arguments": [
+    "--background-index",
+    "--background-index-priority=low",
+    "--clang-tidy",
+    "--completion-style=detailed",
+    "--all-scopes-completion",
+    "--function-arg-placeholders=1",
+    "--header-insertion=iwyu",
+    "--header-insertion-decorators",
+    "--enable-config",
+    "--pch-storage=memory"
+  ],
+  "clangd.detectExtensionConflicts": true,
+  "clangd.serverCompletionRanking": true,
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "[cpp]": {
+    "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
+    "editor.formatOnSave": true
+  },
+  "[c]": {
+    "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
+    "editor.formatOnSave": true
+  }
+}

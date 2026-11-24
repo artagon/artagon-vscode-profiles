@@ -1,3 +1,6 @@
+> [!WARNING]
+> **SUPERSEDED by `refactor-capability-modules-and-defaults`** — archive ONLY with `openspec archive <change-id> --skip-specs` so retired `_shared/`, `_overrides/`, `_catalog/`, and legacy Decision-15 deltas do not re-enter `openspec/specs/`.
+
 ## Why
 
 A three-reviewer adversarial review (Claude + Codex + Gemini, 2026-04-27) of the profile tooling found nine BLOCKER/HIGH issues and several MEDIUM issues spanning security, correctness, and supply-chain risk. A second adversarial pass on the original draft of this proposal (2026-04-28) caught a wrong-shape Spring fix, a missing spec contract for the highest-severity security finding, implementation-leaking spec scenarios, three silently-dropped pre-flagged findings, and several task-ordering and CI-coverage gaps. This revision incorporates those corrections.

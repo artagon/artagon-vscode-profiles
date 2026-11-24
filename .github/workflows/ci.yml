@@ -9,7 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  validate-and-test:
+  validate-and-test-ubuntu:
+    name: Ubuntu (Bash, Zsh, Fish, ShellCheck, BATS, Rust)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -17,22 +18,114 @@ jobs:
         # risk from a moved tag. Update the SHA when bumping versions.
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install jq and openssl
+      - name: Install jq, openssl, bats, fish, zsh, shellcheck
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y jq openssl
+          sudo apt-get install -y jq openssl bats fish zsh shellcheck
 
-      - name: Regenerate merged settings and exports
+      - name: Verify required tools (jq, bats, cargo, fish, zsh, shellcheck)
         run: |
-          bash scripts/compose-settings.sh
-          bash scripts/export-profiles.sh
+          for tool in jq openssl bats fish zsh shellcheck cargo; do
+            command -v "${tool}" >/dev/null || { echo "missing required CI tool: ${tool}" >&2; exit 1; }
+          done
 
-      - name: Assert merged and exports are in sync with sources
+      - name: ShellCheck all Bash scripts and syntax-check Zsh/Fish RTK scripts
         run: |
-          git diff --exit-code _merged/ exports/
+          shellcheck --exclude=SC1091 \
+            scripts/vspcli \
+            scripts/*.sh \
+            scripts/lib/*.sh \
+            scripts/git-hooks/pre-commit \
+            scripts/tests/check-ux-symmetry.sh \
+            scripts/tests/run.sh \
+            modules/capabilities/rtk-terminal/scripts/rtk-init.bash
+          zsh -n \
+            modules/capabilities/rtk-terminal/scripts/rtk-init.zsh \
+            modules/capabilities/rtk-terminal/scripts/zsh/.zshenv \
+            modules/capabilities/rtk-terminal/scripts/zsh/.zprofile \
+            modules/capabilities/rtk-terminal/scripts/zsh/.zshrc \
+            modules/capabilities/rtk-terminal/scripts/zsh/.zlogin
+          fish -n modules/capabilities/rtk-terminal/scripts/rtk-init.fish
 
-      - name: Validate JSON fragments
-        run: bash scripts/validate-json.sh
+      - name: Rebuild compiled artifacts and assert git sync
+        run: |
+          bash scripts/vspcli build
+          dirty="$(git status --porcelain --untracked-files=all -- _merged/ profiles/ exports/)"
+          if [[ -n "${dirty}" ]]; then
+            echo "ERROR: generated artifacts out of sync with catalog/modules/recipes:" >&2
+            printf '%s\n' "${dirty}" >&2
+            exit 1
+          fi
 
-      - name: Run script test suite
-        run: bash scripts/tests/run.sh
+      - name: Validate catalog, modules, UX symmetry, Rust docs policy, and README matrix
+        run: |
+          bash scripts/validate-json.sh
+          bash scripts/tests/check-ux-symmetry.sh
+          bash scripts/lib/apply-rust-policy.sh --check
+          bash scripts/generate-readme-matrix.sh --check
+
+      - name: Assert BATS test layout
+        run: |
+          extra="$(find scripts/tests/bats -maxdepth 1 -type f \
+            ! -name '*.bats' ! -name 'test_helper.bash' -print)"
+          test -z "${extra}"
+
+      - name: Run full test suite in isolated checkout copy
+        env:
+          CI: "true"
+        run: |
+          ISO_DIR="$(mktemp -d)"
+          trap 'rm -rf "${ISO_DIR}"' EXIT
+          cp -R . "${ISO_DIR}/repo"
+          bash "${ISO_DIR}/repo/scripts/tests/run.sh"
+
+  validate-and-test-macos:
+    name: macOS (Bash, Zsh, Fish, ShellCheck, BATS, Rust)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install jq, bats-core, fish, shellcheck
+        run: |
+          brew install jq bats-core fish shellcheck
+
+      - name: Verify required tools and run shell syntax checks
+        run: |
+          for tool in jq openssl bats fish zsh shellcheck cargo; do
+            command -v "${tool}" >/dev/null || { echo "missing required macOS CI tool: ${tool}" >&2; exit 1; }
+          done
+          shellcheck --exclude=SC1091 \
+            scripts/vspcli \
+            scripts/*.sh \
+            scripts/lib/*.sh \
+            scripts/git-hooks/pre-commit \
+            scripts/tests/check-ux-symmetry.sh \
+            scripts/tests/run.sh \
+            modules/capabilities/rtk-terminal/scripts/rtk-init.bash
+          zsh -n \
+            modules/capabilities/rtk-terminal/scripts/rtk-init.zsh \
+            modules/capabilities/rtk-terminal/scripts/zsh/.zshenv \
+            modules/capabilities/rtk-terminal/scripts/zsh/.zprofile \
+            modules/capabilities/rtk-terminal/scripts/zsh/.zshrc \
+            modules/capabilities/rtk-terminal/scripts/zsh/.zlogin
+          fish -n modules/capabilities/rtk-terminal/scripts/rtk-init.fish
+
+      - name: Validate, rebuild, and check idempotency
+        run: |
+          bash scripts/vspcli build
+          dirty="$(git status --porcelain --untracked-files=all -- _merged/ profiles/ exports/)"
+          test -z "${dirty}"
+          bash scripts/validate-json.sh
+          bash scripts/tests/check-ux-symmetry.sh
+          bash scripts/lib/apply-rust-policy.sh --check
+          bash scripts/generate-readme-matrix.sh --check
+
+      - name: Run full script + BATS test suite in isolated copy
+        env:
+          CI: "true"
+        run: |
+          ISO_DIR="$(mktemp -d)"
+          trap 'rm -rf "${ISO_DIR}"' EXIT
+          cp -R . "${ISO_DIR}/repo"
+          bash "${ISO_DIR}/repo/scripts/tests/run.sh"

@@ -1,0 +1,2 @@
+// Default UX preset — intentionally empty; explicit --ux=default deletes all 15 symmetric UX keys.
+{}

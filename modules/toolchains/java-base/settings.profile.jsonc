@@ -1,0 +1,4 @@
+// Application-scoped Java startup hint (effective in Default profile; forbidden in workspace).
+{
+  "java.project.importHint": false
+}

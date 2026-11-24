@@ -1,6 +1,0 @@
-{
-  "@extends": [
-    "github-workflows-base.jsonc"
-  ]
-}
-

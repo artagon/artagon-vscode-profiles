@@ -27,8 +27,8 @@ The CLI SHALL output completion scripts for bash, zsh, or fish that include the 
 The CLI SHALL open a workspace using `code --profile <name> <path>` and require the `code` CLI to be available on PATH.
 
 #### Scenario: Open workspace
-- **WHEN** `vspcli --open web-astro-crisp /tmp` runs
-- **THEN** it invokes `code --profile web-astro-crisp /tmp`.
+- **WHEN** `vspcli --open astro /tmp` runs
+- **THEN** it invokes `code --profile astro /tmp`.
 
 #### Scenario: Code CLI missing
 - **WHEN** `code` is not available on PATH
@@ -38,12 +38,12 @@ The CLI SHALL open a workspace using `code --profile <name> <path>` and require 
 The CLI SHALL install extensions by delegating to `scripts/install-extensions.sh` and SHALL support group filters and single-extension installs.
 
 #### Scenario: Install group filters
-- **WHEN** `vspcli --install java-profile-crisp --group Java --group AI` runs
+- **WHEN** `vspcli --install java-maven --group Java --group AI` runs
 - **THEN** it passes the group arguments to `scripts/install-extensions.sh` for that profile.
 
 #### Scenario: Install single extension
-- **WHEN** `vspcli --install-ext rust-profile-retina github.copilot` runs
-- **THEN** it invokes `code --profile rust-profile-retina --install-extension github.copilot`.
+- **WHEN** `vspcli --install-ext rust github.copilot` runs
+- **THEN** it invokes `code --profile rust --install-extension github.copilot`.
 
 ### Requirement: Delegate profile workflows
 The CLI SHALL delegate compose, export, open-profiles, and profile-import actions to the corresponding scripts.
@@ -53,13 +53,13 @@ The CLI SHALL delegate compose, export, open-profiles, and profile-import action
 - **THEN** it executes `scripts/compose-settings.sh cpp-clangd`.
 
 #### Scenario: Export selected profiles
-- **WHEN** `vspcli --export ai-profile-crisp` runs
-- **THEN** it executes `scripts/export-profiles.sh ai-profile-crisp`.
+- **WHEN** `vspcli --export ai` runs
+- **THEN** it executes `scripts/export-profiles.sh ai`.
 
 #### Scenario: Open profiles without installing extensions
 - **WHEN** `vspcli --open-profiles --skip-install` runs
 - **THEN** it sets `VSCODE_SKIP_EXTENSION_INSTALL=1` when invoking `scripts/open-profiles.sh`.
 
 #### Scenario: Import bundle
-- **WHEN** `vspcli --profile-import rust-profile-retina exports/rust-profile-retina.code-profile` runs
+- **WHEN** `vspcli --profile-import rust exports/rust.code-profile` runs
 - **THEN** it executes `scripts/import-profile.sh` with those arguments.

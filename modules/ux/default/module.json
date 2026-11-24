@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "default",
+  "kind": "ux",
+  "description": "UX-agnostic default preset (removes all 15 managed UX keys on explicit apply)",
+  "requires": ["core-editor"],
+  "defaultWith": [],
+  "conflicts": ["crisp", "retina"],
+  "extensions": {
+    "workspace": [],
+    "profile": [],
+    "unwanted": []
+  },
+  "settings": {
+    "workspace": null,
+    "profile": "settings.profile.jsonc"
+  },
+  "tasks": null,
+  "detect": null
+}

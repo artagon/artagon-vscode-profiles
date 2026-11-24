@@ -1,0 +1,322 @@
+[
+  {
+    "identifier": {
+      "id": "editorconfig.editorconfig"
+    }
+  },
+  {
+    "identifier": {
+      "id": "tamasfe.even-better-toml"
+    }
+  },
+  {
+    "identifier": {
+      "id": "dotenv.dotenv-vscode"
+    }
+  },
+  {
+    "identifier": {
+      "id": "redhat.vscode-yaml"
+    }
+  },
+  {
+    "identifier": {
+      "id": "redhat.vscode-xml"
+    }
+  },
+  {
+    "identifier": {
+      "id": "mechatroner.rainbow-csv"
+    }
+  },
+  {
+    "identifier": {
+      "id": "usernamehw.errorlens"
+    }
+  },
+  {
+    "identifier": {
+      "id": "streetsidesoftware.code-spell-checker"
+    }
+  },
+  {
+    "identifier": {
+      "id": "enkia.tokyo-night"
+    }
+  },
+  {
+    "identifier": {
+      "id": "pkief.material-icon-theme"
+    }
+  },
+  {
+    "identifier": {
+      "id": "pkief.material-product-icons"
+    }
+  },
+  {
+    "identifier": {
+      "id": "catppuccin.catppuccin-vsc"
+    }
+  },
+  {
+    "identifier": {
+      "id": "catppuccin.catppuccin-vsc-icons"
+    }
+  },
+  {
+    "identifier": {
+      "id": "miguelsolorio.fluent-icons"
+    }
+  },
+  {
+    "identifier": {
+      "id": "google.google-antigravity"
+    }
+  },
+  {
+    "identifier": {
+      "id": "anthropic.claude-code"
+    }
+  },
+  {
+    "identifier": {
+      "id": "openai.chatgpt"
+    }
+  },
+  {
+    "identifier": {
+      "id": "github.copilot-chat"
+    }
+  },
+  {
+    "identifier": {
+      "id": "yzhang.markdown-all-in-one"
+    }
+  },
+  {
+    "identifier": {
+      "id": "davidanson.vscode-markdownlint"
+    }
+  },
+  {
+    "identifier": {
+      "id": "bierner.markdown-mermaid"
+    }
+  },
+  {
+    "identifier": {
+      "id": "bierner.markdown-preview-github-styles"
+    }
+  },
+  {
+    "identifier": {
+      "id": "mads-hartmann.bash-ide-vscode"
+    }
+  },
+  {
+    "identifier": {
+      "id": "timonwong.shellcheck"
+    }
+  },
+  {
+    "identifier": {
+      "id": "mkhl.shfmt"
+    }
+  },
+  {
+    "identifier": {
+      "id": "bmalehorn.vscode-fish"
+    }
+  },
+  {
+    "identifier": {
+      "id": "jeff-hykin.better-shellscript-syntax"
+    }
+  },
+  {
+    "identifier": {
+      "id": "kherring.bats-test-runner"
+    }
+  },
+  {
+    "identifier": {
+      "id": "ms-azuretools.vscode-containers"
+    }
+  },
+  {
+    "identifier": {
+      "id": "alefragnani.bookmarks"
+    }
+  },
+  {
+    "identifier": {
+      "id": "alefragnani.project-manager"
+    }
+  },
+  {
+    "identifier": {
+      "id": "buenon.scratchpads"
+    }
+  },
+  {
+    "identifier": {
+      "id": "aaron-bond.better-comments"
+    }
+  },
+  {
+    "identifier": {
+      "id": "chrmarti.regex"
+    }
+  },
+  {
+    "identifier": {
+      "id": "johnpapa.vscode-peacock"
+    }
+  },
+  {
+    "identifier": {
+      "id": "bruno-api-client.bruno"
+    }
+  },
+  {
+    "identifier": {
+      "id": "hediet.vscode-drawio"
+    }
+  },
+  {
+    "identifier": {
+      "id": "eamodio.gitlens"
+    }
+  },
+  {
+    "identifier": {
+      "id": "github.vscode-pull-request-github"
+    }
+  },
+  {
+    "identifier": {
+      "id": "sonarsource.sonarlint-vscode"
+    }
+  },
+  {
+    "identifier": {
+      "id": "akamud.vscode-theme-onedark"
+    }
+  },
+  {
+    "identifier": {
+      "id": "antfu.icons-carbon"
+    }
+  },
+  {
+    "identifier": {
+      "id": "beardedbear.beardedicons"
+    }
+  },
+  {
+    "identifier": {
+      "id": "beardedbear.beardedtheme"
+    }
+  },
+  {
+    "identifier": {
+      "id": "chadalen.vscode-jetbrains-icon-theme"
+    }
+  },
+  {
+    "identifier": {
+      "id": "dracula-theme.theme-dracula"
+    }
+  },
+  {
+    "identifier": {
+      "id": "eliverlara.andromeda"
+    }
+  },
+  {
+    "identifier": {
+      "id": "fawwazfirdaus.poimandres-darker"
+    }
+  },
+  {
+    "identifier": {
+      "id": "github.github-vscode-theme"
+    }
+  },
+  {
+    "identifier": {
+      "id": "jdinhlife.gruvbox"
+    }
+  },
+  {
+    "identifier": {
+      "id": "littensy.charmed-icons"
+    }
+  },
+  {
+    "identifier": {
+      "id": "liviuschera.noctis"
+    }
+  },
+  {
+    "identifier": {
+      "id": "miguelsolorio.symbols"
+    }
+  },
+  {
+    "identifier": {
+      "id": "monokai.theme-monokai-pro-vscode"
+    }
+  },
+  {
+    "identifier": {
+      "id": "mvllow.rose-pine"
+    }
+  },
+  {
+    "identifier": {
+      "id": "nyoomengineering.oxocarbon-vscode"
+    }
+  },
+  {
+    "identifier": {
+      "id": "raunofreiberg.vesper"
+    }
+  },
+  {
+    "identifier": {
+      "id": "sdras.night-owl"
+    }
+  },
+  {
+    "identifier": {
+      "id": "teabyii.ayu"
+    }
+  },
+  {
+    "identifier": {
+      "id": "vscode-icons-team.vscode-icons"
+    }
+  },
+  {
+    "identifier": {
+      "id": "yatasun.jetbrains-product-icons"
+    }
+  },
+  {
+    "identifier": {
+      "id": "zguolee.tabler-icons"
+    }
+  },
+  {
+    "identifier": {
+      "id": "zhuangtongfa.material-theme"
+    }
+  },
+  {
+    "identifier": {
+      "id": "zxchhh.jetbrains-dark-new-ui"
+    }
+  }
+]

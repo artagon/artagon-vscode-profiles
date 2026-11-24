@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "id": "dx-pro",
+  "kind": "capability",
+  "description": "IntelliJ-grade developer experience toolkit (Bookmarks, Project Manager, Scratchpads, Better Comments, Regex Previewer, Peacock, Bruno HTTP, Draw.io)",
+  "requires": ["core-editor"],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [],
+    "profile": [
+      "alefragnani.bookmarks",
+      "alefragnani.project-manager",
+      "buenon.scratchpads",
+      "aaron-bond.better-comments",
+      "chrmarti.regex",
+      "johnpapa.vscode-peacock",
+      "bruno-api-client.bruno",
+      "hediet.vscode-drawio"
+    ],
+    "unwanted": []
+  },
+  "settings": {
+    "workspace": null,
+    "profile": "settings.profile.jsonc"
+  },
+  "tasks": null,
+  "detect": null
+}

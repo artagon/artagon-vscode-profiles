@@ -1,211 +1,392 @@
 #!/usr/bin/env bash
+# install-extensions.sh — Catalog-driven, pin-verified, allowlist-enforced extension installer
+# and safe catalog/packMembers-gated uninstaller for vspcli reconcile.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck source=lib/extension-id.sh
-source "$SCRIPT_DIR/lib/extension-id.sh"
+SCRIPT_ROOT="$(CDPATH='' cd -- "$(dirname -- "${0}")/.." && pwd -P)"
+ROOT="${VSPCLI_ROOT:-${SCRIPT_ROOT}}"
+LIB_DIR="${SCRIPT_ROOT}/scripts/lib"
+# shellcheck source=scripts/lib/common.sh
+source "${LIB_DIR}/common.sh"
+# shellcheck source=scripts/lib/catalog.sh
+source "${LIB_DIR}/catalog.sh"
+# shellcheck source=scripts/lib/extension-id.sh
+source "${LIB_DIR}/extension-id.sh"
+# shellcheck source=scripts/lib/vsix-pin.sh
+source "${LIB_DIR}/vsix-pin.sh"
+# shellcheck source=scripts/lib/legacy-profile-name.sh
+source "${LIB_DIR}/legacy-profile-name.sh"
+# shellcheck source=scripts/lib/module-resolver.sh
+source "${LIB_DIR}/module-resolver.sh"
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "jq is required for install-extensions.sh" >&2
-  exit 1
-fi
+usage() {
+  cat <<'EOF'
+Usage: install-extensions.sh <profile|all> [options]
+Options:
+  --target=profile|global   Install into named profile (default) or global default profile
+  --group <name>            Install only extensions in catalog group (repeatable)
+  --without-group <name>    Skip extensions in catalog group (repeatable)
+  --uninstall <id>          Uninstall a catalog-known extension or pack member (repeatable)
+  --no-batch                Install extensions one-by-one instead of batched
+  --dry-run                 Print planned actions without invoking code
+  -h, --help                Show help
+EOF
+}
 
-if ! command -v code >/dev/null 2>&1; then
-  echo "VS Code CLI 'code' not found in PATH" >&2
-  exit 1
-fi
-
-if [ "$#" -lt 1 ]; then
-  echo "Usage: $(basename "$0") <profile> [--group <name> ...]" >&2
-  echo "Use 'all' to install every tracked profile." >&2
+if [[ $# -lt 1 ]]; then
+  usage >&2
   exit 1
 fi
 
 PROFILE=""
-GROUP_FILTER=()
+TARGET="profile"
+DRY_RUN=0
+EXACT_PROFILE=0
+BATCH_INSTALL="${VSCODE_BATCH_INSTALL:-1}"
+FILTER_GROUPS=()
+EXCLUDE_GROUPS=()
+UNINSTALL_IDS=()
 
-normalize_group() {
-  local g
-  g="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-  case "$g" in
-    ai) echo "AI" ;;
-    cmake) echo "CMake" ;;
-    java) echo "Java" ;;
-    rust) echo "Rust" ;;
-    general) echo "General" ;;
-    *)
-      echo ""
+while [[ $# -gt 0 ]]; do
+  case "${1}" in
+    -h|--help)
+      usage
+      exit 0
       ;;
-  esac
-}
-
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --group|--groups)
-      if [ "$#" -lt 2 ]; then
-        echo "Error: $1 requires a value" >&2
-        exit 1
-      fi
-      IFS=',' read -ra groups <<<"$2"
-      for raw in "${groups[@]}"; do
-        norm="$(normalize_group "$raw")"
-        if [ -z "$norm" ]; then
-          echo "Warning: unknown group '$raw' (valid: AI, CMake, Java, Rust, General). Skipping." >&2
-          continue
+    --exact-profile)
+      EXACT_PROFILE=1
+      shift
+      ;;
+    --)
+      shift
+      if [[ $# -gt 0 ]]; then
+        if [[ -z "${PROFILE}" ]]; then
+          PROFILE="${1}"
+          shift
         fi
-        GROUP_FILTER+=("$norm")
-      done
+        if [[ $# -gt 0 ]]; then
+          printf 'install-extensions: unexpected argument %q\n' "${1}" >&2
+          exit 4
+        fi
+      fi
+      break
+      ;;
+    --target=*)
+      TARGET="${1#*=}"
+      shift
+      ;;
+    --target)
+      [[ $# -ge 2 ]] || { echo "install-extensions: --target requires a value" >&2; exit 4; }
+      TARGET="${2}"
       shift 2
       ;;
+    --group)
+      [[ $# -ge 2 ]] || { echo "install-extensions: --group requires a value" >&2; exit 4; }
+      FILTER_GROUPS+=("${2}")
+      shift 2
+      ;;
+    --group=*)
+      FILTER_GROUPS+=("${1#*=}")
+      shift
+      ;;
+    --without-group)
+      [[ $# -ge 2 ]] || { echo "install-extensions: --without-group requires a value" >&2; exit 4; }
+      EXCLUDE_GROUPS+=("${2}")
+      shift 2
+      ;;
+    --without-group=*)
+      EXCLUDE_GROUPS+=("${1#*=}")
+      shift
+      ;;
+    --uninstall)
+      [[ $# -ge 2 ]] || { echo "install-extensions: --uninstall requires a value" >&2; exit 4; }
+      UNINSTALL_IDS+=("${2}")
+      shift 2
+      ;;
+    --uninstall=*)
+      UNINSTALL_IDS+=("${1#*=}")
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    --no-batch)
+      BATCH_INSTALL=0
+      shift
+      ;;
+    -*)
+      printf 'install-extensions: unknown option %q\n' "${1}" >&2
+      exit 4
+      ;;
     *)
-      if [ -z "$PROFILE" ]; then
-        PROFILE="$1"
-        shift
+      if [[ -z "${PROFILE}" ]]; then
+        PROFILE="${1}"
       else
-        echo "Unknown argument: $1" >&2
-        exit 1
+        printf 'install-extensions: unexpected argument %q\n' "${1}" >&2
+        exit 4
       fi
+      shift
       ;;
   esac
 done
 
-if [ -z "$PROFILE" ]; then
-  echo "Error: profile is required" >&2
+if [[ -z "${PROFILE}" ]]; then
+  usage >&2
   exit 1
 fi
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-
-GROUP_ARGS=()
-if [ "${#GROUP_FILTER[@]}" -gt 0 ]; then
-  for g in "${GROUP_FILTER[@]}"; do
-    GROUP_ARGS+=("--group" "$g")
-  done
+if [[ "${TARGET}" != "profile" && "${TARGET}" != "global" ]]; then
+  printf 'install-extensions: invalid --target %q (expected profile or global)\n' "${TARGET}" >&2
+  exit 4
 fi
 
-if [ "$PROFILE" = "all" ]; then
-  ANY_FAILED=0
-  for dir in "$ROOT"/profiles/*; do
-    [ -d "$dir" ] || continue
-    name="$(basename "$dir")"
-    echo ">>> Installing extensions for $name"
-    if [ "${#GROUP_ARGS[@]}" -gt 0 ]; then
-      bash "$0" "$name" "${GROUP_ARGS[@]}" || ANY_FAILED=1
-    else
-      bash "$0" "$name" || ANY_FAILED=1
+if ! command -v jq >/dev/null 2>&1; then
+  echo "install-extensions: jq is required" >&2
+  exit 1
+fi
+if [[ "${DRY_RUN}" -eq 0 ]] && ! command -v code >/dev/null 2>&1; then
+  echo "install-extensions: VS Code 'code' CLI is required on PATH" >&2
+  exit 1
+fi
+
+# Verify single-store consistency before mutating VS Code.
+CODE_STORE_USER_DIR=""
+CODE_STORE_DATA_ROOT=""
+if [[ "${DRY_RUN}" -eq 0 ]]; then
+  resolve_code_store --require-data-root || exit $?
+else
+  resolve_code_store || true
+fi
+
+run_code_cmd() {
+  local args=()
+  if [[ -n "${CODE_STORE_DATA_ROOT}" ]]; then
+    args+=(--user-data-dir "${CODE_STORE_DATA_ROOT}")
+  fi
+  if [[ "${TARGET}" == "profile" && "${PROFILE}" != "default" ]]; then
+    args+=(--profile "${PROFILE}")
+  fi
+  args+=("${@+"${@}"}")
+  code "${args[@]}"
+}
+
+# Direct --uninstall path runs BEFORE 'all' expansion or legacy profile-name rewriting
+# so exact registered profile names (e.g. 'rust-profile-crisp' or 'all') are targeted literally!
+if [[ "${#UNINSTALL_IDS[@]}" -gt 0 ]]; then
+  if [[ "${PROFILE}" == "all" && "${EXACT_PROFILE}" -eq 0 ]]; then
+    echo "install-extensions: --uninstall cannot be combined with 'all' (pass --exact-profile for a literal profile named 'all')" >&2
+    exit 4
+  fi
+  if [[ "${EXACT_PROFILE}" -eq 0 ]]; then
+    legacy_res="$(resolve_legacy_profile_name "${PROFILE}")"
+    if [[ -n "${legacy_res}" ]]; then
+      PROFILE="${legacy_res%% *}"
+    fi
+  fi
+  failed_un=()
+  for uid in "${UNINSTALL_IDS[@]}"; do
+    validate_extension_id_syntax "${uid}" || { failed_un+=("${uid}"); continue; }
+    if ! catalog_is_known_for_uninstall "${uid}" "${ROOT}"; then
+      printf 'Error: refusing to uninstall non-catalog extension %q\n' "${uid}" >&2
+      failed_un+=("${uid}")
+      continue
+    fi
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      printf '[DRY-RUN] uninstall (%s:%s) %s\n' "${TARGET}" "${PROFILE}" "${uid}"
+      continue
+    fi
+    if ! run_code_cmd --uninstall-extension "${uid}"; then
+      failed_un+=("${uid}")
     fi
   done
-  exit "$ANY_FAILED"
-fi
-
-EXT_FILE="$ROOT/profiles/$PROFILE/extensions.json"
-
-if [ ! -f "$EXT_FILE" ]; then
-  echo "Extensions file not found: $EXT_FILE" >&2
-  exit 1
-fi
-
-EXT_IDS=()
-# Materialize jq output first so a parse/syntax failure produces a non-zero
-# exit instead of an empty pipe (which the loop would silently treat as
-# "no extensions" and exit 0). Process substitution swallows jq's status.
-EXT_LIST="$(jq -r '.[].identifier.id' "$EXT_FILE")" || {
-  echo "Error: failed to parse $EXT_FILE with jq" >&2
-  exit 1
-}
-while IFS= read -r ext; do
-  [ -z "$ext" ] && continue
-  if ! validate_extension_id "$ext"; then
-    echo "Error: invalid extension id in $EXT_FILE; aborting before any install" >&2
+  if [[ "${#failed_un[@]}" -gt 0 ]]; then
+    printf 'install-extensions: failed to uninstall: %s\n' "${failed_un[*]}" >&2
     exit 1
   fi
-  EXT_IDS+=("$ext")
-done <<<"$EXT_LIST"
-
-if [ "${#EXT_IDS[@]}" -eq 0 ]; then
-  echo "No extensions listed in $EXT_FILE" >&2
   exit 0
 fi
 
-DELAY="${VSCODE_EXTENSION_INSTALL_DELAY:-1}"
-FAILED_EXTS=()
+# Handle `all`: propagate --target, --dry-run, --group, --without-group to every profile!
+if [[ "${PROFILE}" == "all" && "${EXACT_PROFILE}" -eq 0 ]]; then
+  failed=0
+  while IFS= read -r prof_name; do
+    [[ -n "${prof_name}" ]] || continue
+    cmd=("${BASH}" "${0}" "${prof_name}" "--target=${TARGET}")
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      cmd+=(--dry-run)
+    fi
+    if [[ "${BATCH_INSTALL}" == "0" ]]; then
+      cmd+=(--no-batch)
+    fi
+    local_g=""
+    for local_g in "${FILTER_GROUPS[@]+"${FILTER_GROUPS[@]}"}"; do
+      cmd+=(--group "${local_g}")
+    done
+    for local_g in "${EXCLUDE_GROUPS[@]+"${EXCLUDE_GROUPS[@]}"}"; do
+      cmd+=(--without-group "${local_g}")
+    done
+    if ! "${cmd[@]}"; then
+      failed=1
+    fi
+  done < <(discover_profiles "${ROOT}")
+  exit "${failed}"
+fi
 
-should_install_group() {
-  local group="$1"
-  if [ "${#GROUP_FILTER[@]}" -eq 0 ]; then
-    return 0
+# Resolve legacy profile names cleanly unless --exact-profile was requested.
+if [[ "${EXACT_PROFILE}" -eq 0 ]]; then
+  legacy_res="$(resolve_legacy_profile_name "${PROFILE}")"
+  if [[ -n "${legacy_res}" ]]; then
+    PROFILE="${legacy_res%% *}"
   fi
-  for allowed in "${GROUP_FILTER[@]}"; do
-    if [ "$allowed" = "$group" ]; then
+fi
+
+EXT_FILE="${ROOT}/profiles/${PROFILE}/extensions.json"
+if [[ ! -f "${EXT_FILE}" ]]; then
+  printf 'install-extensions: missing extensions file: %s\n' "${EXT_FILE}" >&2
+  exit 1
+fi
+
+ALL_IDS=()
+while IFS= read -r id; do
+  [[ -n "${id}" ]] && ALL_IDS+=("${id}")
+done < <(jq -r '.[] | .identifier.id // empty' "${EXT_FILE}")
+
+if [[ "${#ALL_IDS[@]}" -eq 0 ]]; then
+  exit 0
+fi
+
+GROUP_ORDER=(AI Themes DX CMake Java Rust Python Web Shell Markdown Quality Git Containers Collaboration General)
+
+is_known_group() {
+  local want_lc
+  want_lc="$(to_lower "${1}")"
+  local g
+  for g in "${GROUP_ORDER[@]}"; do
+    if [[ "$(to_lower "${g}")" == "${want_lc}" ]]; then
       return 0
     fi
   done
   return 1
 }
 
-group_for_extension() {
-  local ext="$1"
-  case "$ext" in
-    github.copilot|github.copilot-chat|anthropic.claude-code|openai.chatgpt|googlecloudtools.cloudcode|Continue.continue|continue.continue|codeium.codeium|tabnine.tabnine-vscode|sourcegraph.cody-ai|sourcegraph.amp)
-      echo "AI"
-      ;;
-    ms-vscode.cmake-tools|twxs.cmake)
-      echo "CMake"
-      ;;
-    redhat.java|redhat.vscode-xml|richardwillis.vscode-gradle|vscjava.vscode-java-pack|vscjava.vscode-java-test|vscjava.vscode-java-debug|vscjava.vscode-java-dependency|vscjava.vscode-maven|vscjava.vscode-gradle|gabrielbb.vscode-lombok|shengchen.vscode-checkstyle|pmd.pmd)
-      echo "Java"
-      ;;
-    rust-lang.rust-analyzer|vadimcn.vscode-lldb|panicbit.cargo|serayuzgur.crates|tamasfe.even-better-toml|fill-labs.dependi)
-      echo "Rust"
-      ;;
-    *)
-      echo "General"
-      ;;
-  esac
-}
-
-declare -a ORDERED_GROUPS=("AI" "CMake" "Java" "Rust" "General")
-declare -a GROUPED_EXTS=()
-
-for ext in "${EXT_IDS[@]}"; do
-  GROUPED_EXTS+=("$(group_for_extension "$ext")|$ext")
+ALLOWED_GROUPS=()
+for g in "${FILTER_GROUPS[@]+"${FILTER_GROUPS[@]}"}"; do
+  if is_known_group "${g}"; then
+    ALLOWED_GROUPS+=("$(to_lower "${g}")")
+  else
+    printf 'Warning: unknown group %q — skipping\n' "${g}" >&2
+  fi
 done
 
-install_group() {
-  local group="$1"
-  local printed=0
-  for entry in "${GROUPED_EXTS[@]}"; do
-    IFS='|' read -r entry_group entry_ext <<<"$entry"
-    if [ "$entry_group" != "$group" ]; then
-      continue
-    fi
-    if ! should_install_group "$group"; then
-      continue
-    fi
-    if [ "$printed" -eq 0 ]; then
-      printf '\n=== %s extensions ===\n' "$group"
-      printed=1
-    fi
-    echo "Installing $entry_ext for profile $PROFILE"
-    if ! code --profile "$PROFILE" --install-extension "$entry_ext" >/dev/null; then
-      echo "Warning: failed to install $entry_ext" >&2
-      FAILED_EXTS+=("$entry_ext")
-    fi
-    sleep "$DELAY"
-  done
-}
-
-for group in "${ORDERED_GROUPS[@]}"; do
-  install_group "$group"
+EXCLUDED_GROUPS_LC=()
+for g in "${EXCLUDE_GROUPS[@]+"${EXCLUDE_GROUPS[@]}"}"; do
+  EXCLUDED_GROUPS_LC+=("$(to_lower "${g}")")
 done
 
-if [ "${#FAILED_EXTS[@]}" -gt 0 ]; then
-  printf '\nThe following extensions failed to install for %s:\n' "$PROFILE"
-  for ext in "${FAILED_EXTS[@]}"; do
-    printf '  - %s\n' "$ext"
+group_selected() {
+  local g_lc
+  g_lc="$(to_lower "${1}")"
+  local ex
+  for ex in "${EXCLUDED_GROUPS_LC[@]+"${EXCLUDED_GROUPS_LC[@]}"}"; do
+    [[ "${ex}" == "${g_lc}" ]] && return 1
   done
-  exit 1
+  if [[ "${#FILTER_GROUPS[@]}" -eq 0 ]]; then
+    return 0
+  fi
+  local inc
+  for inc in "${ALLOWED_GROUPS[@]+"${ALLOWED_GROUPS[@]}"}"; do
+    [[ "${inc}" == "${g_lc}" ]] && return 0
+  done
+  return 1
+}
+
+DELAY="${VSCODE_EXTENSION_INSTALL_DELAY:-1}"
+PINS_FILE="$(pins_file_path "${ROOT}")"
+export VSCODE_VSIX_CACHE_DIR="${VSCODE_VSIX_CACHE_DIR-${ROOT}/.cache/vsix}"
+VSIX_TMP="$(mktemp -d "${TMPDIR:-/tmp}/vsp-vsix.XXXXXX")"
+trap 'rm -rf "${VSIX_TMP}"' EXIT
+
+FAILED=()
+BATCH_IDS=()
+BATCH_TARGETS=()
+for grp in "${GROUP_ORDER[@]}"; do
+  group_selected "${grp}" || continue
+  for ext_id in "${ALL_IDS[@]}"; do
+    ext_grp="$(catalog_extension_group "${ext_id}" "${ROOT}")"
+    if [[ "$(to_lower "${ext_grp}")" != "$(to_lower "${grp}")" ]]; then
+      continue
+    fi
+
+    if ! validate_extension_id "${ext_id}"; then
+      FAILED+=("${ext_id}")
+      continue
+    fi
+
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      printf '[DRY-RUN] target=%s profile=%s [%s] %s\n' "${TARGET}" "${PROFILE}" "${grp}" "${ext_id}"
+      continue
+    fi
+
+    install_target="${ext_id}"
+    if ! bypass_pins_active; then
+      pin_out=""
+      if ! pin_out="$(lookup_pin "${ext_id}" "${PINS_FILE}")"; then
+        FAILED+=("${ext_id}")
+        continue
+      fi
+      if [[ -n "${pin_out}" ]]; then
+        pin_sha="$(printf '%s\n' "${pin_out}" | sed -n '2p')"
+        pin_url="$(printf '%s\n' "${pin_out}" | sed -n '3p')"
+        vsix_path="${VSIX_TMP}/${ext_id}.vsix"
+        if ! fetch_and_verify_vsix "${ext_id}" "${pin_url}" "${pin_sha}" "${vsix_path}"; then
+          FAILED+=("${ext_id}")
+          continue
+        fi
+        install_target="${vsix_path}"
+      fi
+    fi
+
+    BATCH_IDS+=("${ext_id}")
+    BATCH_TARGETS+=("${install_target}")
+  done
+done
+
+if [[ "${DRY_RUN}" -eq 0 && "${#BATCH_TARGETS[@]}" -gt 0 ]]; then
+  if [[ "${BATCH_INSTALL}" == "1" && "${#BATCH_TARGETS[@]}" -gt 1 ]]; then
+    batch_flags=()
+    for bt in "${BATCH_TARGETS[@]}"; do
+      batch_flags+=(--install-extension "${bt}")
+    done
+    if ! run_code_cmd "${batch_flags[@]}"; then
+      idx=0
+      while [[ "${idx}" -lt "${#BATCH_TARGETS[@]}" ]]; do
+        if ! run_code_cmd --install-extension "${BATCH_TARGETS[${idx}]}"; then
+          FAILED+=("${BATCH_IDS[${idx}]}")
+        fi
+        if [[ "${DELAY}" != "0" ]]; then
+          sleep "${DELAY}"
+        fi
+        idx=$((idx + 1))
+      done
+    fi
+  else
+    idx=0
+    while [[ "${idx}" -lt "${#BATCH_TARGETS[@]}" ]]; do
+      if ! run_code_cmd --install-extension "${BATCH_TARGETS[${idx}]}"; then
+        FAILED+=("${BATCH_IDS[${idx}]}")
+      fi
+      if [[ "${DELAY}" != "0" ]]; then
+        sleep "${DELAY}"
+      fi
+      idx=$((idx + 1))
+    done
+  fi
 fi
 
-echo ""
-echo "Finished installing extensions for $PROFILE"
+if [[ "${#FAILED[@]}" -gt 0 ]]; then
+  printf 'install-extensions: failed to install %d extension(s):\n' "${#FAILED[@]}" >&2
+  printf '  - %s\n' "${FAILED[@]}" >&2
+  exit 1
+fi
+exit 0

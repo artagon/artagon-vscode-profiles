@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "ai-copilot",
+  "description": "Strict Copilot-only AI profile (unified GitHub Copilot Chat without Antigravity, Claude Code, or Codex; target of legacy ai-profile-* links)",
+  "useDefaults": true,
+  "modules": ["ai-copilot"],
+  "excludeModules": ["ai-agents"],
+  "ux": "default",
+  "overrides": {
+    "workspace": {},
+    "profile": {
+      "chat.editor.fontSize": 14
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "java-spring",
+  "description": "Spring Boot development layered on Gradle (for Maven Spring, compose java-maven --with java-spring)",
+  "useDefaults": true,
+  "modules": ["java-gradle", "java-spring"],
+  "excludeModules": [],
+  "ux": "default",
+  "overrides": {
+    "workspace": {},
+    "profile": {}
+  }
+}

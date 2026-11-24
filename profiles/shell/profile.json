@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "shell",
+  "description": "Shell scripting profile with Bash IDE, ShellCheck, shfmt, Fish, and BATS Test Runner",
+  "useDefaults": true,
+  "modules": ["shell"],
+  "excludeModules": [],
+  "ux": "default",
+  "overrides": {
+    "workspace": {},
+    "profile": {}
+  }
+}

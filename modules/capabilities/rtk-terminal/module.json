@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "rtk-terminal",
+  "kind": "capability",
+  "description": "Portable XDG-installed RTK terminal wrappers for Fish, Bash, and Zsh (ZDOTDIR proxy)",
+  "requires": ["core-editor"],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [],
+    "profile": [],
+    "unwanted": []
+  },
+  "settings": {
+    "workspace": null,
+    "profile": null
+  },
+  "tasks": null,
+  "detect": null
+}

@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "id": "rust",
+  "kind": "toolchain",
+  "description": "Rust development with rust-analyzer, CodeLLDB, Dependi, Coverage Gutters, and strict docs tasks",
+  "requires": ["core-editor"],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [
+      "rust-lang.rust-analyzer",
+      "vadimcn.vscode-lldb",
+      "fill-labs.dependi",
+      "ryanluker.vscode-coverage-gutters"
+    ],
+    "profile": [],
+    "unwanted": [
+      "panicbit.cargo",
+      "serayuzgur.crates",
+      "barbosshack.crates-io",
+      "dustypomerleau.rust-syntax",
+      "jscearcy.rust-doc-viewer"
+    ]
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": "settings.profile.jsonc"
+  },
+  "tasks": "tasks.json",
+  "detect": {
+    "priority": 10,
+    "fallback": false,
+    "match": "any",
+    "supersedes": [],
+    "rules": [
+      { "type": "file", "path": "Cargo.toml" }
+    ]
+  }
+}

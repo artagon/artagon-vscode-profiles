@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "id": "python-ty",
+  "kind": "toolchain",
+  "description": "Optional Python toolchain using Astral ty type checker (mutually exclusive with python/BasedPyright)",
+  "requires": ["python-base"],
+  "defaultWith": [],
+  "conflicts": ["python"],
+  "extensions": {
+    "workspace": [
+      "astral-sh.ty"
+    ],
+    "profile": [],
+    "unwanted": [
+      "ms-pyright.pyright",
+      "detachhead.basedpyright"
+    ]
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": null
+  },
+  "tasks": null,
+  "detect": null
+}

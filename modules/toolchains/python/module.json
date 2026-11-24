@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "id": "python",
+  "kind": "toolchain",
+  "description": "Default Python toolchain with BasedPyright type checking (mutually exclusive with python-ty)",
+  "requires": ["python-base"],
+  "defaultWith": [],
+  "conflicts": ["python-ty"],
+  "extensions": {
+    "workspace": [
+      "detachhead.basedpyright"
+    ],
+    "profile": [],
+    "unwanted": [
+      "ms-pyright.pyright"
+    ]
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": null
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 50,
+    "fallback": false,
+    "match": "any",
+    "supersedes": [],
+    "rules": [
+      {
+        "type": "any_file",
+        "paths": [
+          "pyproject.toml",
+          "requirements.txt",
+          "setup.py",
+          "setup.cfg",
+          "uv.lock",
+          ".python-version"
+        ]
+      }
+    ]
+  }
+}

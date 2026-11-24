@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "id": "shell",
+  "kind": "capability",
+  "description": "Bash, POSIX sh, Fish, ShellCheck, shfmt, and BATS testing support",
+  "requires": ["core-editor"],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [
+      "mads-hartmann.bash-ide-vscode",
+      "timonwong.shellcheck",
+      "mkhl.shfmt",
+      "bmalehorn.vscode-fish",
+      "jeff-hykin.better-shellscript-syntax",
+      "kherring.bats-test-runner"
+    ],
+    "profile": [],
+    "unwanted": [
+      "foxundermoon.shell-format",
+      "jetmartin.bats"
+    ]
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": null
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 60,
+    "fallback": false,
+    "match": "any",
+    "supersedes": [],
+    "rules": [
+      { "type": "file", "path": ".shellcheckrc" },
+      { "type": "glob", "pattern": "*.bats", "max_depth": 3 }
+    ]
+  }
+}

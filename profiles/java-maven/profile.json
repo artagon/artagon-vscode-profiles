@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "java-maven",
+  "description": "Java development with Red Hat JDT LS (native Lombok), Apache Maven, JUnit, and Checkstyle",
+  "useDefaults": true,
+  "modules": ["java-maven"],
+  "excludeModules": [],
+  "ux": "default",
+  "overrides": {
+    "workspace": {},
+    "profile": {}
+  }
+}

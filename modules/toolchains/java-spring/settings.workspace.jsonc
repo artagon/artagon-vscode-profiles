@@ -1,0 +1,14 @@
+// Spring Boot workspace settings: activates Spring Boot YAML LSP selector, AOT CDS, and cron hints.
+{
+  "spring-boot.ls.java.vmargs": ["-Xms256m", "-Xmx2G", "-XX:+UseStringDeduplication"],
+  "spring-boot.ls.cds.enabled": true,
+  "boot-java.cron.inlay-hints": true,
+  "spring.initializr.serviceUrl": "https://start.spring.io",
+  "files.associations": {
+    "*.jsp": "jsp",
+    "application*.yml": "spring-boot-properties-yaml",
+    "application*.yaml": "spring-boot-properties-yaml",
+    "bootstrap*.yml": "spring-boot-properties-yaml",
+    "bootstrap*.yaml": "spring-boot-properties-yaml"
+  }
+}

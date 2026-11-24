@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "id": "markdown",
+  "kind": "capability",
+  "description": "Markdown authoring, linting, Mermaid diagrams, and GitHub preview styles",
+  "requires": ["core-editor"],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [
+      "yzhang.markdown-all-in-one",
+      "davidanson.vscode-markdownlint",
+      "bierner.markdown-mermaid",
+      "bierner.markdown-preview-github-styles"
+    ],
+    "profile": [],
+    "unwanted": [
+      "shd101wyy.markdown-preview-enhanced"
+    ]
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": null
+  },
+  "tasks": null,
+  "detect": null
+}

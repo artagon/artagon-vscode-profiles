@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "id": "astro",
+  "kind": "toolchain",
+  "description": "Astro web development with Tailwind CSS, Stylelint, and automatic ESLint+Prettier (or Biome when biome.json exists)",
+  "requires": ["ts-base"],
+  "defaultWith": ["ts-eslint-prettier"],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [
+      "astro-build.astro-vscode",
+      "bradlc.vscode-tailwindcss",
+      "stylelint.vscode-stylelint",
+      "clinyong.vscode-css-modules",
+      "ecmel.vscode-html-css",
+      "pranaygp.vscode-css-peek",
+      "naumovs.color-highlight"
+    ],
+    "profile": [],
+    "unwanted": [
+      "christian-kohler.npm-intellisense",
+      "christian-kohler.path-intellisense"
+    ]
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": null
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 20,
+    "fallback": false,
+    "match": "any",
+    "supersedes": ["ts-base"],
+    "rules": [
+      {
+        "type": "all_files",
+        "paths": ["package.json"],
+        "any_extra": [
+          "astro.config.mjs",
+          "astro.config.ts",
+          "astro.config.js",
+          "astro.config.cjs"
+        ]
+      }
+    ]
+  }
+}

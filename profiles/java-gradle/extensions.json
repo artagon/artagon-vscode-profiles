@@ -1,0 +1,172 @@
+[
+  {
+    "identifier": {
+      "id": "editorconfig.editorconfig"
+    }
+  },
+  {
+    "identifier": {
+      "id": "tamasfe.even-better-toml"
+    }
+  },
+  {
+    "identifier": {
+      "id": "dotenv.dotenv-vscode"
+    }
+  },
+  {
+    "identifier": {
+      "id": "redhat.vscode-yaml"
+    }
+  },
+  {
+    "identifier": {
+      "id": "redhat.vscode-xml"
+    }
+  },
+  {
+    "identifier": {
+      "id": "mechatroner.rainbow-csv"
+    }
+  },
+  {
+    "identifier": {
+      "id": "usernamehw.errorlens"
+    }
+  },
+  {
+    "identifier": {
+      "id": "streetsidesoftware.code-spell-checker"
+    }
+  },
+  {
+    "identifier": {
+      "id": "enkia.tokyo-night"
+    }
+  },
+  {
+    "identifier": {
+      "id": "pkief.material-icon-theme"
+    }
+  },
+  {
+    "identifier": {
+      "id": "pkief.material-product-icons"
+    }
+  },
+  {
+    "identifier": {
+      "id": "catppuccin.catppuccin-vsc"
+    }
+  },
+  {
+    "identifier": {
+      "id": "catppuccin.catppuccin-vsc-icons"
+    }
+  },
+  {
+    "identifier": {
+      "id": "miguelsolorio.fluent-icons"
+    }
+  },
+  {
+    "identifier": {
+      "id": "google.google-antigravity"
+    }
+  },
+  {
+    "identifier": {
+      "id": "anthropic.claude-code"
+    }
+  },
+  {
+    "identifier": {
+      "id": "openai.chatgpt"
+    }
+  },
+  {
+    "identifier": {
+      "id": "github.copilot-chat"
+    }
+  },
+  {
+    "identifier": {
+      "id": "yzhang.markdown-all-in-one"
+    }
+  },
+  {
+    "identifier": {
+      "id": "davidanson.vscode-markdownlint"
+    }
+  },
+  {
+    "identifier": {
+      "id": "bierner.markdown-mermaid"
+    }
+  },
+  {
+    "identifier": {
+      "id": "bierner.markdown-preview-github-styles"
+    }
+  },
+  {
+    "identifier": {
+      "id": "mads-hartmann.bash-ide-vscode"
+    }
+  },
+  {
+    "identifier": {
+      "id": "timonwong.shellcheck"
+    }
+  },
+  {
+    "identifier": {
+      "id": "mkhl.shfmt"
+    }
+  },
+  {
+    "identifier": {
+      "id": "bmalehorn.vscode-fish"
+    }
+  },
+  {
+    "identifier": {
+      "id": "jeff-hykin.better-shellscript-syntax"
+    }
+  },
+  {
+    "identifier": {
+      "id": "kherring.bats-test-runner"
+    }
+  },
+  {
+    "identifier": {
+      "id": "redhat.java"
+    }
+  },
+  {
+    "identifier": {
+      "id": "vscjava.vscode-java-debug"
+    }
+  },
+  {
+    "identifier": {
+      "id": "vscjava.vscode-java-test"
+    }
+  },
+  {
+    "identifier": {
+      "id": "vscjava.vscode-java-dependency"
+    }
+  },
+  {
+    "identifier": {
+      "id": "shengchen.vscode-checkstyle"
+    }
+  },
+  {
+    "identifier": {
+      "id": "vscjava.vscode-gradle"
+    }
+  }
+]

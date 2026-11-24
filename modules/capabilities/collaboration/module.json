@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "id": "collaboration",
+  "kind": "capability",
+  "description": "Real-time collaborative editing via Visual Studio Live Share",
+  "requires": ["core-editor"],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [],
+    "profile": [
+      "ms-vsliveshare.vsliveshare"
+    ],
+    "unwanted": []
+  },
+  "settings": {
+    "workspace": null,
+    "profile": null
+  },
+  "tasks": null,
+  "detect": null
+}

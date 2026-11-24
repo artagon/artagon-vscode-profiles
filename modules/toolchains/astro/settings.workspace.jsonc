@@ -1,0 +1,28 @@
+// Astro workspace settings (disables built-in CSS/SCSS/Less validation so Tailwind/Stylelint have zero false positives).
+{
+  "stylelint.validate": ["css", "scss", "postcss", "astro"],
+  "astro.content-intellisense": true,
+  "[astro]": {
+    "editor.defaultFormatter": "astro-build.astro-vscode",
+    "editor.formatOnSave": true
+  },
+  "files.associations": {
+    "*.astro": "astro"
+  },
+  "emmet.includeLanguages": {
+    "astro": "html"
+  },
+  "tailwindCSS.includeLanguages": {
+    "astro": "html"
+  },
+  "tailwindCSS.emmetCompletions": true,
+  "css.validate": false,
+  "scss.validate": false,
+  "less.validate": false,
+  "files.watcherExclude": {
+    "**/.astro/**": true
+  },
+  "search.exclude": {
+    "**/.astro/**": true
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "id": "github-workflows",
+  "kind": "capability",
+  "description": "GitHub Actions workflow schema validation, IntelliSense, and run inspection (additive on repos with .github/workflows)",
+  "requires": ["core-editor"],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [
+      "github.vscode-github-actions"
+    ],
+    "profile": [],
+    "unwanted": []
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": null
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 80,
+    "fallback": false,
+    "match": "any",
+    "supersedes": [],
+    "rules": [
+      { "type": "glob", "dir": ".github/workflows", "pattern": "*.yml", "max_depth": 1 },
+      { "type": "glob", "dir": ".github/workflows", "pattern": "*.yaml", "max_depth": 1 }
+    ]
+  }
+}

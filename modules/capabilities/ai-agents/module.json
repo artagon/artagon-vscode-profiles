@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "ai-agents",
+  "kind": "capability",
+  "description": "Default AI agent suite: Google Antigravity (default), Claude Code, OpenAI Codex IDE, and unified GitHub Copilot Chat (inline completions & NES)",
+  "requires": ["core-editor"],
+  "defaultWith": [],
+  "conflicts": ["ai-copilot"],
+  "extensions": {
+    "workspace": [],
+    "profile": [
+      "google.google-antigravity",
+      "anthropic.claude-code",
+      "openai.chatgpt",
+      "github.copilot-chat"
+    ],
+    "unwanted": [
+      "github.copilot",
+      "google.geminicodeassist"
+    ]
+  },
+  "settings": {
+    "workspace": null,
+    "profile": "settings.profile.jsonc"
+  },
+  "tasks": null,
+  "detect": null
+}

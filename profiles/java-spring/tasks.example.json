@@ -1,0 +1,53 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Gradle: Build",
+      "type": "shell",
+      "command": "./gradlew",
+      "args": ["build"],
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "silent", "panel": "shared" }
+    },
+    {
+      "label": "Gradle: Test",
+      "type": "shell",
+      "command": "./gradlew",
+      "args": ["test"],
+      "group": { "kind": "test", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Gradle: BootRun",
+      "type": "shell",
+      "command": "./gradlew",
+      "args": ["bootRun"],
+      "group": { "kind": "build", "isDefault": false },
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Maven: Package",
+      "type": "shell",
+      "command": "if [ -x ./mvnw ]; then ./mvnw -B clean package; else mvn -B clean package; fi",
+      "options": { "shell": { "executable": "/bin/sh", "args": ["-c"] } },
+      "group": { "kind": "build", "isDefault": false },
+      "presentation": { "reveal": "silent", "panel": "shared" }
+    },
+    {
+      "label": "Maven: Test",
+      "type": "shell",
+      "command": "if [ -x ./mvnw ]; then ./mvnw -B test; else mvn -B test; fi",
+      "options": { "shell": { "executable": "/bin/sh", "args": ["-c"] } },
+      "group": { "kind": "test", "isDefault": false },
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Maven: Spring Boot Run",
+      "type": "shell",
+      "command": "if [ -x ./mvnw ]; then ./mvnw -B spring-boot:run; else mvn -B spring-boot:run; fi",
+      "options": { "shell": { "executable": "/bin/sh", "args": ["-c"] } },
+      "group": { "kind": "build", "isDefault": false },
+      "presentation": { "reveal": "always", "panel": "shared" }
+    }
+  ]
+}

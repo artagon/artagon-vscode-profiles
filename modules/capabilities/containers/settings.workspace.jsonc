@@ -1,0 +1,11 @@
+// Container Tools workspace settings: strict Dockerfile bug diagnostics and safe multiline formatting.
+{
+  "[dockerfile]": {
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  },
+  "docker.languageserver.formatter.ignoreMultilineInstructions": true,
+  "docker.languageserver.diagnostics.instructionJSONInSingleQuotes": "error",
+  "docker.languageserver.diagnostics.instructionCmdMultiple": "error",
+  "docker.languageserver.diagnostics.instructionEntrypointMultiple": "error"
+}

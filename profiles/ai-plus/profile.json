@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "ai-plus",
+  "description": "Full-stack AI power profile adding GitLens + GitHub PRs, Container Tools, SonarQube for IDE, DX Pro (Bookmarks/Scratchpads/Project Manager/Bruno), and curated extra themes",
+  "useDefaults": true,
+  "modules": ["ai-agents", "git-pro", "containers", "quality", "dx-pro", "themes-pack"],
+  "excludeModules": [],
+  "ux": "default",
+  "overrides": {
+    "workspace": {},
+    "profile": {
+      "chat.editor.fontSize": 14
+    }
+  }
+}

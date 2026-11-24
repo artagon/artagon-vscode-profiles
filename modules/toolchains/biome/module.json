@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "id": "biome",
+  "kind": "toolchain",
+  "description": "Biome formatter and linter stack for TypeScript/JavaScript/JSON/CSS (mutually exclusive with ts-eslint-prettier)",
+  "requires": ["ts-base"],
+  "defaultWith": [],
+  "conflicts": ["ts-eslint-prettier"],
+  "extensions": {
+    "workspace": [
+      "biomejs.biome"
+    ],
+    "profile": [],
+    "unwanted": []
+  },
+  "settings": {
+    "workspace": "settings.workspace.jsonc",
+    "profile": null
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 22,
+    "fallback": false,
+    "match": "any",
+    "supersedes": ["ts-eslint-prettier"],
+    "rules": [
+      {
+        "type": "any_file",
+        "paths": ["biome.json", "biome.jsonc"]
+      }
+    ]
+  }
+}

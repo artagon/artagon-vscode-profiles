@@ -1,212 +1,186 @@
 #!/usr/bin/env bash
-# open-profiles.sh — open VS Code windows for managed profiles
-#
-# Usage:
-#   open-profiles.sh [--skip-install|-s] [--] [PROFILES...]
-#
-# Flags:
-#   --skip-install, -s  Skip installing extensions for each profile.
-#                       Same as setting env VSCODE_SKIP_EXTENSION_INSTALL=1.
-#
-# Environment:
-#   VSCODE_SKIP_EXTENSION_INSTALL=1  Skip extension installation (useful for
-#                                    first-run profile registration or theme preview).
-#
-# Notes:
-# - When not skipping, the script installs extensions declared in
-#   profiles/<name>/extensions.json using scripts/install-extensions.sh (cached by profile).
-# - It also syncs the merged settings to VS Code’s profile cache when available
-#   and opens a new Code window for each profile via `code --profile <name>`.
+# open-profiles.sh — Open VS Code profiles, install extensions with pin+store-keyed cache,
+# sync _merged/<name>.json preserving local 14-key UX settings, and guard `-- "$path"`.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PROFILES_DIR="$ROOT/profiles"
-INSTALL_SCRIPT="$ROOT/scripts/install-extensions.sh"
-INSTALL_CACHE="$ROOT/.cache/extensions-installed"
+SCRIPT_ROOT="$(CDPATH='' cd -- "$(dirname -- "${0}")/.." && pwd -P)"
+ROOT="${VSPCLI_ROOT:-${SCRIPT_ROOT}}"
+LIB_DIR="${SCRIPT_ROOT}/scripts/lib"
+# shellcheck source=scripts/lib/common.sh
+source "${LIB_DIR}/common.sh"
+# shellcheck source=scripts/lib/module-resolver.sh
+source "${LIB_DIR}/module-resolver.sh"
+# shellcheck source=scripts/lib/compiler.sh
+source "${LIB_DIR}/compiler.sh"
+# shellcheck source=scripts/lib/vscode-storage.sh
+source "${LIB_DIR}/vscode-storage.sh"
+# shellcheck source=scripts/lib/vsix-pin.sh
+source "${LIB_DIR}/vsix-pin.sh"
+# shellcheck source=scripts/lib/legacy-profile-name.sh
+source "${LIB_DIR}/legacy-profile-name.sh"
+
 SKIP_INSTALL="${VSCODE_SKIP_EXTENSION_INSTALL:-0}"
-if [ ! -d "$PROFILES_DIR" ]; then
-  echo "Profiles directory not found at $PROFILES_DIR" >&2
-  exit 1
-fi
+EXCLUDE_GROUPS=()
+REQUESTED=()
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "open-profiles: jq is required for profile cache syncing" >&2
-  exit 1
-fi
-
-detect_code_user_dir() {
-  if [ -n "${VSCODE_USER_DIR:-}" ]; then
-    printf '%s\n' "$VSCODE_USER_DIR"
-    return
-  fi
-  case "$(uname -s)" in
-    Darwin)
-      printf '%s\n' "$HOME/Library/Application Support/Code/User"
-      ;;
-    Linux)
-      printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/Code/User"
-      ;;
-    *)
-      if [ -n "${APPDATA:-}" ]; then
-        printf '%s\n' "$APPDATA/Code/User"
-      else
-        printf '%s\n' "$HOME/.config/Code/User"
-      fi
-      ;;
-  esac
-}
-
-CODE_USER_DIR="$(detect_code_user_dir)"
-PROFILE_STORAGE="$CODE_USER_DIR/globalStorage/storage.json"
-
-if ! command -v code >/dev/null 2>&1; then
-  echo "VS Code CLI 'code' not found in PATH" >&2
-  exit 1
-fi
-
-mkdir -p "$INSTALL_CACHE"
-
-HASH_CMD=""
-if command -v shasum >/dev/null 2>&1; then
-  HASH_CMD="shasum"
-elif command -v sha1sum >/dev/null 2>&1; then
-  HASH_CMD="sha1sum"
-else
-  HASH_CMD="cksum"
-fi
-
-hash_file() {
-  local file="$1"
-  # Quote $HASH_CMD so a future change to a flagged tool (e.g. "sha1sum --tag")
-  # doesn't word-split unsafely. Today the value is always a single command
-  # name, but the quoted shape is the right contract.
-  "$HASH_CMD" "$file" | awk '{print $1}'
-}
-
-# Parse CLI args: allow --skip-install flag and profiles list
-ARGS=()
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --skip-install|-s)
+while [[ $# -gt 0 ]]; do
+  case "${1}" in
+    --skip-install)
       SKIP_INSTALL=1
       shift
       ;;
-    --)
+    --without-group)
+      [[ $# -ge 2 ]] || { echo "open-profiles: --without-group requires a value" >&2; exit 4; }
+      EXCLUDE_GROUPS+=("${2}")
+      shift 2
+      ;;
+    --without-group=*)
+      EXCLUDE_GROUPS+=("${1#*=}")
       shift
-      break
       ;;
     -*)
-      echo "open-profiles: unknown option $1" >&2
-      exit 1
+      printf 'open-profiles: unknown option %q\n' "${1}" >&2
+      exit 4
       ;;
     *)
-      ARGS+=("$1")
+      REQUESTED+=("${1}")
       shift
       ;;
   esac
 done
 
-# Any remaining args after -- are treated as profiles
-if [ "$#" -gt 0 ]; then
-  while [ "$#" -gt 0 ]; do ARGS+=("$1"); shift; done
+if ! command -v code >/dev/null 2>&1; then
+  echo "open-profiles: VS Code 'code' CLI is required on PATH" >&2
+  exit 1
 fi
+if ! command -v jq >/dev/null 2>&1; then
+  echo "open-profiles: jq is required" >&2
+  exit 1
+fi
+
+CODE_STORE_USER_DIR=""
+CODE_STORE_DATA_ROOT=""
+resolve_code_store --require-data-root || exit $?
+CODE_USER_DIR="${CODE_STORE_USER_DIR}"
+
+CACHE_DIR="${VSCODE_EXT_CACHE_DIR:-${ROOT}/.cache/extensions-installed}"
+mkdir -p "${CACHE_DIR}"
+
+PINS_FILE="$(pins_file_path "${ROOT}")"
+UX_KEYS_JSON="$(compiler_ux_managed_keys_json "${ROOT}")" || exit 1
 
 PROFILES=()
-if [ "${#ARGS[@]}" -gt 0 ]; then
-  for arg in "${ARGS[@]}"; do
-    PROFILES+=("$arg")
+if [[ "${#REQUESTED[@]}" -gt 0 ]]; then
+  for req in "${REQUESTED[@]}"; do
+    legacy="$(resolve_legacy_profile_name "${req}")"
+    if [[ -n "${legacy}" ]]; then
+      PROFILES+=("${legacy%% *}")
+    else
+      PROFILES+=("${req}")
+    fi
   done
 else
-  while IFS= read -r name; do
-    [ -n "$name" ] && PROFILES+=("$name")
-  done < <(find "$PROFILES_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+  while IFS= read -r p; do
+    [[ -n "${p}" ]] && PROFILES+=("${p}")
+  done < <(discover_profiles "${ROOT}")
 fi
 
-FILTERED=()
-for name in "${PROFILES[@]}"; do
-  if [ -d "$PROFILES_DIR/$name" ]; then
-    FILTERED+=("$name")
+compute_cache_key() {
+  local ext_file="${1}"
+  local ext_sha pins_sha
+  ext_sha="$(sha256_for_file "${ext_file}")" || return 1
+  if [[ -f "${PINS_FILE}" ]]; then
+    pins_sha="$(sha256_for_file "${PINS_FILE}")" || return 1
   else
-    echo "Warning: profile directory not found for '$name'" >&2
+    pins_sha="none"
   fi
-done
+  printf '%s|%s|%s|%s' "${ext_sha}" "${pins_sha}" "${CODE_USER_DIR}" "${EXCLUDE_GROUPS[*]+"${EXCLUDE_GROUPS[*]}"}" | sha256_for_file -
+}
 
-if [ "${#FILTERED[@]}" -eq 0 ]; then
-  echo "No valid profiles to open." >&2
-  exit 1
-fi
+sync_profile_settings() {
+  local profile="${1}"
+  local merged="${ROOT}/_merged/${profile}.json"
+  [[ -f "${merged}" ]] || return 0
 
-PROFILES=("${FILTERED[@]}")
-
-ensure_extensions() {
-  local name="$1"
-  local marker="$INSTALL_CACHE/$name"
-  local ext_file="$PROFILES_DIR/$name/extensions.json"
-  local ext_hash=""
-  if [ -f "$ext_file" ]; then
-    ext_hash="$(hash_file "$ext_file" 2>/dev/null || true)"
-  fi
-  if [ "$SKIP_INSTALL" = "1" ]; then
+  local prof_id=""
+  prof_id="$(vscode_storage_find_profile_id "${CODE_USER_DIR}" "${profile}")" || {
+    printf 'Warning: could not read profile registration for %s\n' "${profile}" >&2
+    return 0
+  }
+  if [[ -z "${prof_id}" ]]; then
+    printf 'Warning: profile %s is not registered in storage.json; skipping settings sync\n' "${profile}" >&2
     return 0
   fi
-  if [ -f "$marker" ] && [ -n "$ext_hash" ]; then
-    if [ "$(cat "$marker" 2>/dev/null || true)" = "$ext_hash" ]; then
-      return 0
-    fi
-  fi
-  if [ -x "$INSTALL_SCRIPT" ]; then
-    echo "Ensuring extensions for $name"
-    if bash "$INSTALL_SCRIPT" "$name"; then
-      if [ -n "$ext_hash" ]; then
-        printf '%s\n' "$ext_hash" > "$marker"
-      else
-        touch "$marker"
-      fi
+
+  local dest="${CODE_USER_DIR}/profiles/${prof_id}/settings.json"
+  mkdir -p "$(dirname -- "${dest}")"
+  local tmp_sync
+  tmp_sync="$(mktemp "${TMPDIR:-/tmp}/vsp-sync.XXXXXX")" || return 1
+
+  if [[ -f "${dest}" ]]; then
+    backup_user_file "${dest}" 5 || { rm -f "${tmp_sync}"; return 1; }
+    # Preserve existing local 14-key UX settings while syncing _merged/<name>.json.
+    local strip="${LIB_DIR}/jsonc-strip.awk"
+    local existing_clean
+    if existing_clean="$(LC_ALL=C awk -f "${strip}" "${dest}" 2>/dev/null)" \
+       && printf '%s\n' "${existing_clean}" | jq -e -s 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1; then
+      printf '%s\n' "${existing_clean}" \
+        | jq -s --argjson ux_keys "${UX_KEYS_JSON}" '
+            .[1] as $new
+            | (.[0] | with_entries(select(.key as $k | $ux_keys | index($k) != null))) as $preserved_ux
+            | $new * $preserved_ux
+          ' - "${merged}" > "${tmp_sync}" || { rm -f "${tmp_sync}"; return 1; }
     else
-      echo "Warning: extension install failed for $name" >&2
+      cp "${merged}" "${tmp_sync}"
+    fi
+  else
+    cp "${merged}" "${tmp_sync}"
+  fi
+
+  local rc=0
+  atomic_write_file "${dest}" "${tmp_sync}" 0600 || rc=$?
+  rm -f "${tmp_sync}"
+  return "${rc}"
+}
+
+FAILED=()
+for profile in "${PROFILES[@]+"${PROFILES[@]}"}"; do
+  if [[ "${SKIP_INSTALL}" != "1" ]]; then
+    ext_file="${ROOT}/profiles/${profile}/extensions.json"
+    if [[ -f "${ext_file}" ]]; then
+      key="$(compute_cache_key "${ext_file}")" || exit 1
+      marker="${CACHE_DIR}/${profile}"
+      cached=""
+      [[ -f "${marker}" ]] && cached="$(cat "${marker}" 2>/dev/null || true)"
+      if [[ "${cached}" != "${key}" ]]; then
+        inst_cmd=("${BASH}" "${SCRIPT_ROOT}/scripts/install-extensions.sh" "${profile}")
+        for g in "${EXCLUDE_GROUPS[@]+"${EXCLUDE_GROUPS[@]}"}"; do
+          inst_cmd+=(--without-group "${g}")
+        done
+        if "${inst_cmd[@]}"; then
+          printf '%s\n' "${key}" > "${marker}"
+        else
+          FAILED+=("${profile}")
+          continue
+        fi
+      fi
     fi
   fi
-}
 
-sync_profile_cache() {
-  local name="$1"
-  local settings_src="$PROFILES_DIR/$name/settings.json"
-  if [ ! -f "$settings_src" ]; then
-    return 0
-  fi
-  if [ ! -f "$PROFILE_STORAGE" ]; then
-    return 0
-  fi
-  local profile_id
-  profile_id="$(jq -r --arg name "$name" '(.userDataProfiles // [])[] | select(.name==$name) | .location' "$PROFILE_STORAGE" 2>/dev/null || true)"
-  if [ -z "$profile_id" ] || [ "$profile_id" = "null" ]; then
-    echo "Warning: VS Code has no cached profile entry for $name; open it once manually to register." >&2
-    return 0
-  fi
-  local target_dir="$CODE_USER_DIR/profiles/$profile_id"
-  mkdir -p "$target_dir"
-  if cp "$settings_src" "$target_dir/settings.json"; then
-    echo "Synced $name -> $target_dir/settings.json"
-  else
-    echo "Warning: failed to sync cached settings for $name" >&2
-  fi
-}
+  sync_profile_settings "${profile}" || true
 
-FAILED_PROFILES=()
-for p in "${PROFILES[@]}"; do
-  sync_profile_cache "$p"
-  ensure_extensions "$p"
-  echo "Opening profile: $p"
-  if ! code --profile "$p" --new-window; then
-    echo "Warning: 'code --profile $p --new-window' returned non-zero" >&2
-    FAILED_PROFILES+=("$p")
+  code_args=()
+  if [[ -n "${CODE_STORE_DATA_ROOT}" ]]; then
+    code_args+=(--user-data-dir "${CODE_STORE_DATA_ROOT}")
+  fi
+  code_args+=(--profile "${profile}" --new-window)
+  if ! code "${code_args[@]}"; then
+    FAILED+=("${profile}")
   fi
 done
 
-if [ "${#FAILED_PROFILES[@]}" -gt 0 ]; then
-  printf '\nFailed to launch profiles:\n' >&2
-  for p in "${FAILED_PROFILES[@]}"; do printf '  - %s\n' "$p" >&2; done
+if [[ "${#FAILED[@]}" -gt 0 ]]; then
+  printf 'open-profiles: failed for: %s\n' "${FAILED[*]}" >&2
   exit 1
 fi
-
-echo "All profiles opened. Use Profiles: Switch Profile in VS Code to confirm."
+exit 0

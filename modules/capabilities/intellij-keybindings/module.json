@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "id": "intellij-keybindings",
+  "kind": "capability",
+  "description": "Opt-in IntelliJ IDEA keyboard shortcuts for JetBrains muscle memory (pass --with intellij-keybindings)",
+  "requires": ["core-editor"],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [],
+    "profile": [
+      "k--kato.intellij-idea-keybindings"
+    ],
+    "unwanted": []
+  },
+  "settings": {
+    "workspace": null,
+    "profile": null
+  },
+  "tasks": null,
+  "detect": null
+}

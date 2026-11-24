@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "capabilities": [
+    "core-editor",
+    "ai-agents",
+    "markdown",
+    "shell"
+  ],
+  "ux": "crisp"
+}

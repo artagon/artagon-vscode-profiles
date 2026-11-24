@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "cpp-clangd",
+  "description": "C/C++ development with LLVM clangd, CMake Tools, and CodeLLDB",
+  "useDefaults": true,
+  "modules": ["cpp-clangd"],
+  "excludeModules": [],
+  "ux": "default",
+  "overrides": {
+    "workspace": {},
+    "profile": {}
+  }
+}

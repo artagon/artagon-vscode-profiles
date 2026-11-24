@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "rust",
+  "description": "Rust development with rust-analyzer, CodeLLDB, Dependi, Coverage Gutters, and strict docs policy",
+  "useDefaults": true,
+  "modules": ["rust"],
+  "excludeModules": [],
+  "ux": "default",
+  "overrides": {
+    "workspace": {},
+    "profile": {}
+  }
+}
