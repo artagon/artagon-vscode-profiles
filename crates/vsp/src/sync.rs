@@ -394,14 +394,27 @@ fn run_workspace_sync(
     if settings_file.is_file() && existing_settings_text != merged_settings {
         backup_workspace_file(&ws_canon, &settings_file, DEFAULT_BACKUP_RETENTION)?;
     }
-    write_file_atomic(&settings_file, merged_settings.as_bytes(), 0o644, false)?;
+    let settings_mode = workspace_file_mode(&settings_file);
+    write_file_atomic(
+        &settings_file,
+        merged_settings.as_bytes(),
+        settings_mode,
+        false,
+    )?;
     files_written.push(settings_file.display().to_string());
 
-    write_file_atomic(&extensions_file, merged_ext_text.as_bytes(), 0o644, false)?;
+    let extensions_mode = workspace_file_mode(&extensions_file);
+    write_file_atomic(
+        &extensions_file,
+        merged_ext_text.as_bytes(),
+        extensions_mode,
+        false,
+    )?;
     files_written.push(extensions_file.display().to_string());
 
     if let Some(tasks_text) = merged_tasks_text {
-        write_file_atomic(&tasks_file, tasks_text.as_bytes(), 0o644, false)?;
+        let tasks_mode = workspace_file_mode(&tasks_file);
+        write_file_atomic(&tasks_file, tasks_text.as_bytes(), tasks_mode, false)?;
         files_written.push(tasks_file.display().to_string());
     }
 
@@ -929,19 +942,16 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
     // `--ai off` also removes catalog AI-group extensions that are already installed.
     // `chat.disableAIFeatures` alone does not stop third-party AI agents.
     if opts.ai == Some(AiMode::Off) {
-        for ext_id in installed_ai_extensions(catalog, &observed_installed) {
-            if !installed_lc.contains(&ext_id) {
-                continue;
-            }
-            if run_code_uninstall(&code_bin, &store, &profile_name, &ext_id) {
-                installed_lc.remove(&ext_id);
-                pruned.push(ext_id);
-            } else {
-                ext_errors.push(format!(
-                    "failed to uninstall AI extension {ext_id} (--ai off)"
-                ));
-            }
-        }
+        let (ai_uninstalled, ai_errs) = uninstall_ai_extensions(
+            catalog,
+            &code_bin,
+            &store,
+            &profile_name,
+            &observed_installed,
+            &mut installed_lc,
+        );
+        pruned.extend(ai_uninstalled);
+        ext_errors.extend(ai_errs);
     }
 
     let (pruned_ids, prune_errs) = execute_step3_prune(
@@ -999,6 +1009,10 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
     // run that re-verified every catalog-managed extension clears it.
     let prev_unlocked = prev_prov.as_ref().is_some_and(|p| p.unlocked_bypass);
     let recorded_unlocked_bypass = unlocked_bypass || (prev_unlocked && !repair_reverified_all);
+    // The publisher-trust bypass record is sticky too: a subsequent sync without
+    // `ARTAGON_VSCODE_TRUST_UNKNOWN_PUBLISHER=1` must not erase the audit flag.
+    let prev_publisher_trust_bypass = prev_prov.as_ref().is_some_and(|p| p.publisher_trust_bypass);
+    let recorded_publisher_trust_bypass = publisher_trust_bypass || prev_publisher_trust_bypass;
 
     if let Some(outcome) = &ensure_outcome {
         // STEP 4: Theme failure fallback + lossless CST merge of settings.json + save XDG
@@ -1056,7 +1070,7 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
             ux: effective_ux,
             ai_mode: opts.ai,
             unlocked_bypass: recorded_unlocked_bypass,
-            publisher_trust_bypass,
+            publisher_trust_bypass: recorded_publisher_trust_bypass,
             last_sync_at: now_rfc3339_utc(),
         };
         save_profile_provenance(&prov)?;
@@ -1064,7 +1078,7 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
         // Extensions-only mode wrote no settings, so the managed-settings record of an
         // earlier full sync stays as it is. Only the extension facts are updated, and a
         // bypass in this run is always recorded.
-        let bypass_now = recorded_unlocked_bypass || publisher_trust_bypass;
+        let bypass_now = recorded_unlocked_bypass || recorded_publisher_trust_bypass;
         if prev_prov.is_some() || bypass_now {
             let mut prov = prev_prov.unwrap_or_else(|| ProfileProvenance {
                 version: 1,
@@ -1082,7 +1096,7 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
             });
             prov.managed_extensions = desired_ext_ids;
             prov.unlocked_bypass = recorded_unlocked_bypass;
-            prov.publisher_trust_bypass = publisher_trust_bypass;
+            prov.publisher_trust_bypass = recorded_publisher_trust_bypass;
             prov.last_sync_at = now_rfc3339_utc();
             save_profile_provenance(&prov)?;
         }
@@ -1581,12 +1595,29 @@ fn run_bundle_import_apply(
             !opts.no_batch,
         );
         for ok in ok_ids {
+            installed_lc.insert(ok.to_ascii_lowercase());
             installed_now.push(ok);
         }
         for fail in fail_ids {
             failed_install_ids.push(fail.clone());
             ext_errors.push(format!("failed to install {fail}"));
         }
+    }
+
+    // Step 3: `--ai off` also removes catalog AI-group extensions that are already installed,
+    // matching `run_profile_sync`.
+    let mut pruned = Vec::new();
+    if opts.ai == Some(AiMode::Off) {
+        let (ai_uninstalled, ai_errs) = uninstall_ai_extensions(
+            catalog,
+            &code_bin,
+            &store,
+            &profile_name,
+            &observed_installed,
+            &mut installed_lc,
+        );
+        pruned.extend(ai_uninstalled);
+        ext_errors.extend(ai_errs);
     }
 
     // Step 4: theme fallback + lossless CST merge + XDG provenance!
@@ -1620,9 +1651,10 @@ fn run_bundle_import_apply(
     write_file_atomic(&settings_path, merged.as_bytes(), 0o600, true)?;
     files_written.push(settings_path.display().to_string());
 
-    // Sticky: an import cannot clear an earlier unlocked-bypass record.
-    let prev_unlocked =
-        load_profile_provenance(&store.user_dir, &profile_name).is_some_and(|p| p.unlocked_bypass);
+    // Sticky: an import cannot clear earlier bypass audit records.
+    let prev_prov = load_profile_provenance(&store.user_dir, &profile_name);
+    let prev_unlocked = prev_prov.as_ref().is_some_and(|p| p.unlocked_bypass);
+    let prev_publisher_trust_bypass = prev_prov.as_ref().is_some_and(|p| p.publisher_trust_bypass);
     let prov = ProfileProvenance {
         version: 1,
         profile: profile_name.clone(),
@@ -1634,7 +1666,7 @@ fn run_bundle_import_apply(
         ux: effective_ux,
         ai_mode: opts.ai,
         unlocked_bypass: unlocked_bypass || prev_unlocked,
-        publisher_trust_bypass,
+        publisher_trust_bypass: publisher_trust_bypass || prev_publisher_trust_bypass,
         last_sync_at: now_rfc3339_utc(),
     };
     save_profile_provenance(&prov)?;
@@ -1658,7 +1690,7 @@ fn run_bundle_import_apply(
         files_written,
         step0_uninstalled,
         installed: installed_now,
-        pruned: Vec::new(),
+        pruned,
         repaired_pins: Vec::new(),
         storage_mutated: ensure_outcome.created,
         unlocked_bypass,
@@ -2012,6 +2044,23 @@ fn step0_failure(profile_name: &str, failures: &[String]) -> VspError {
     ))
 }
 
+/// Returns the Unix file mode for an atomic workspace file write, preserving restrictive
+/// permissions on an existing target (such as `0o600` or `0o640`) instead of widening them
+/// to `0o644`.
+fn workspace_file_mode(path: &Path) -> u32 {
+    const DEFAULT_MODE: u32 = 0o644;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(path) {
+            return meta.permissions().mode() & DEFAULT_MODE;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    DEFAULT_MODE
+}
+
 /// Returns the lowercase IDs of installed extensions that the catalog puts in the `AI`
 /// group. `--ai off` uninstalls them.
 fn installed_ai_extensions(
@@ -2027,6 +2076,35 @@ fn installed_ai_extensions(
         })
         .map(|ext| ext.id.to_ascii_lowercase())
         .collect()
+}
+
+/// Uninstalls already-installed catalog `AI`-group extensions when `--ai off` is active.
+///
+/// `chat.disableAIFeatures` alone does not stop third-party AI agents.
+fn uninstall_ai_extensions(
+    catalog: &WorkspaceCatalog,
+    code_bin: &Path,
+    store: &VsCodeStore,
+    profile_name: &str,
+    observed_installed: &[InstalledExtension],
+    installed_lc: &mut BTreeSet<String>,
+) -> (Vec<String>, Vec<String>) {
+    let mut uninstalled = Vec::new();
+    let mut errors = Vec::new();
+    for ext_id in installed_ai_extensions(catalog, observed_installed) {
+        if !installed_lc.contains(&ext_id) {
+            continue;
+        }
+        if run_code_uninstall(code_bin, store, profile_name, &ext_id) {
+            installed_lc.remove(&ext_id);
+            uninstalled.push(ext_id);
+        } else {
+            errors.push(format!(
+                "failed to uninstall AI extension {ext_id} (--ai off)"
+            ));
+        }
+    }
+    (uninstalled, errors)
 }
 
 /// Checks each extension publisher against the catalog allowlist.

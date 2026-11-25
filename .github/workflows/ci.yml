@@ -51,7 +51,7 @@ jobs:
 
       - name: ShellCheck all Bash scripts and syntax-check Bash/Zsh/Fish scripts
         run: |
-          /bin/bash -n \
+          for s in \
             bin/vsp \
             scripts/vspcli \
             scripts/*.sh \
@@ -59,7 +59,10 @@ jobs:
             scripts/git-hooks/pre-commit \
             scripts/tests/check-ux-symmetry.sh \
             scripts/tests/run.sh \
-            packs/rtk-terminal/scripts/rtk-init.bash
+            packs/rtk-terminal/scripts/rtk-init.bash \
+            modules/capabilities/rtk-terminal/scripts/rtk-init.bash; do
+            /bin/bash -n "${s}"
+          done
           shellcheck --exclude=SC1091 \
             bin/vsp \
             scripts/vspcli \
@@ -70,7 +73,7 @@ jobs:
             scripts/tests/run.sh \
             packs/rtk-terminal/scripts/rtk-init.bash \
             modules/capabilities/rtk-terminal/scripts/rtk-init.bash
-          zsh -n \
+          for s in \
             packs/rtk-terminal/scripts/rtk-init.zsh \
             packs/rtk-terminal/scripts/zsh/.zshenv \
             packs/rtk-terminal/scripts/zsh/.zprofile \
@@ -80,10 +83,14 @@ jobs:
             modules/capabilities/rtk-terminal/scripts/zsh/.zshenv \
             modules/capabilities/rtk-terminal/scripts/zsh/.zprofile \
             modules/capabilities/rtk-terminal/scripts/zsh/.zshrc \
-            modules/capabilities/rtk-terminal/scripts/zsh/.zlogin
-          fish -n \
+            modules/capabilities/rtk-terminal/scripts/zsh/.zlogin; do
+            zsh -n "${s}"
+          done
+          for s in \
             packs/rtk-terminal/scripts/rtk-init.fish \
-            modules/capabilities/rtk-terminal/scripts/rtk-init.fish
+            modules/capabilities/rtk-terminal/scripts/rtk-init.fish; do
+            fish -n "${s}"
+          done
 
       - name: Run Rust test, clippy, rustdoc, validate, and deterministic double-run dev dist
         run: |
@@ -186,7 +193,7 @@ jobs:
           test -z "${retired}"
           loc="$(wc -l < bin/vsp | tr -d ' ')"
           test "${loc}" -le 400
-          /bin/bash -n \
+          for s in \
             bin/vsp \
             scripts/vspcli \
             scripts/*.sh \
@@ -194,7 +201,10 @@ jobs:
             scripts/git-hooks/pre-commit \
             scripts/tests/check-ux-symmetry.sh \
             scripts/tests/run.sh \
-            packs/rtk-terminal/scripts/rtk-init.bash
+            packs/rtk-terminal/scripts/rtk-init.bash \
+            modules/capabilities/rtk-terminal/scripts/rtk-init.bash; do
+            /bin/bash -n "${s}"
+          done
           shellcheck --exclude=SC1091 \
             bin/vsp \
             scripts/vspcli \
@@ -205,7 +215,7 @@ jobs:
             scripts/tests/run.sh \
             packs/rtk-terminal/scripts/rtk-init.bash \
             modules/capabilities/rtk-terminal/scripts/rtk-init.bash
-          zsh -n \
+          for s in \
             packs/rtk-terminal/scripts/rtk-init.zsh \
             packs/rtk-terminal/scripts/zsh/.zshenv \
             packs/rtk-terminal/scripts/zsh/.zprofile \
@@ -215,10 +225,14 @@ jobs:
             modules/capabilities/rtk-terminal/scripts/zsh/.zshenv \
             modules/capabilities/rtk-terminal/scripts/zsh/.zprofile \
             modules/capabilities/rtk-terminal/scripts/zsh/.zshrc \
-            modules/capabilities/rtk-terminal/scripts/zsh/.zlogin
-          fish -n \
+            modules/capabilities/rtk-terminal/scripts/zsh/.zlogin; do
+            zsh -n "${s}"
+          done
+          for s in \
             packs/rtk-terminal/scripts/rtk-init.fish \
-            modules/capabilities/rtk-terminal/scripts/rtk-init.fish
+            modules/capabilities/rtk-terminal/scripts/rtk-init.fish; do
+            fish -n "${s}"
+          done
 
       - name: Run Rust test, clippy, rustdoc, validate, and deterministic double-run dev dist
         run: |

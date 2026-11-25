@@ -107,6 +107,8 @@ struct LockPinRecord {
     #[serde(default)]
     tier: Option<u8>,
     #[serde(default)]
+    universal: Option<bool>,
+    #[serde(default)]
     status: Option<String>,
     #[serde(default)]
     targets: BTreeMap<String, LockTargetRecord>,
@@ -281,13 +283,25 @@ pub fn load_combined_pin_index(
             for (k, rec) in map {
                 let tier = rec.tier.or(section_tier);
                 let pending = rec.status.as_deref() == Some("pending_refresh");
-                let platform_target = rec
-                    .targets
-                    .get(host_platform)
-                    .or_else(|| rec.targets.get("universal"));
+                let native_only = rec.universal == Some(false);
                 let (sha, url) = if pending {
                     ("", "")
+                } else if native_only {
+                    // Platform-specific record (`universal: false`): require a matching
+                    // host-platform target; never fall back to `"universal"` or flat
+                    // top-level `sha256`/`vsixUrl`.
+                    let target = (host_platform != "universal")
+                        .then(|| rec.targets.get(host_platform))
+                        .flatten();
+                    (
+                        target.and_then(|t| t.sha256.as_deref()).unwrap_or(""),
+                        target.and_then(|t| t.vsix_url.as_deref()).unwrap_or(""),
+                    )
                 } else {
+                    let platform_target = rec
+                        .targets
+                        .get(host_platform)
+                        .or_else(|| rec.targets.get("universal"));
                     (
                         platform_target
                             .and_then(|t| t.sha256.as_deref())
@@ -1577,5 +1591,86 @@ mod tests {
         // A scheme-relative redirect to another host resolves, and validation then rejects it.
         let off = resolve_redirect_url(base, "//evil.example/p").expect("scheme-relative");
         assert!(validate_vsix_url(&off, false).is_err());
+    }
+
+    /// Astra A16: a lock record with `universal: false` never falls back to a flat
+    /// top-level `sha256`/`vsixUrl` or a `"universal"` target; it requires a matching
+    /// host-platform target.
+    #[test]
+    fn non_universal_lock_never_falls_back_to_flat_digest() {
+        use crate::model::ExtensionPinsManifest;
+
+        let tmp = TempDir::new().expect("tmp");
+        let host = current_lock_platform();
+        fs::write(
+            tmp.path().join("vsp.lock.json"),
+            format!(
+                r#"{{
+                  "version": 2, "pinRequired": false,
+                  "extensions": {{
+                    "a.mixed-flat": {{
+                      "tier": 1, "universal": false, "status": "verified", "version": "1.0.0",
+                      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "vsixUrl": "https://marketplace.visualstudio.com/flat",
+                      "targets": {{
+                        "universal": {{
+                          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                          "vsixUrl": "https://marketplace.visualstudio.com/univ"
+                        }}
+                      }}
+                    }},
+                    "b.host-target": {{
+                      "tier": 1, "universal": false, "status": "verified", "version": "1.0.0",
+                      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                      "vsixUrl": "https://marketplace.visualstudio.com/wrong-flat",
+                      "targets": {{
+                        "{host}": {{
+                          "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                          "vsixUrl": "https://marketplace.visualstudio.com/host-only"
+                        }}
+                      }}
+                    }}
+                  }}
+                }}"#
+            ),
+        )
+        .expect("write lock");
+
+        let mut catalog = crate::schema_loader::load_embedded().expect("embedded catalog");
+        catalog.root = tmp.path().to_path_buf();
+        catalog.pins = PinsLoadState::Loaded(ExtensionPinsManifest {
+            version: 1,
+            note: None,
+            pin_required: false,
+            pins: BTreeMap::new(),
+        });
+
+        let (index, _, _) = load_combined_pin_index(&catalog, false).expect("pin index");
+        assert!(
+            !index["a.mixed-flat"].has_verified_artifact(),
+            "universal=false must not fall back to top-level digest or universal target"
+        );
+        let resolved = resolve_and_verify_batch(
+            &catalog,
+            &["a.mixed-flat".to_string()],
+            &VsixVerifyOptions::default(),
+        )
+        .expect("resolve");
+        assert_eq!(resolved.failures.len(), 1);
+        assert!(resolved.failures[0].is_safety_refusal);
+        assert!(resolved.targets.is_empty());
+
+        if host != "universal" {
+            let host_pin = &index["b.host-target"];
+            assert!(host_pin.has_verified_artifact());
+            assert_eq!(
+                host_pin.sha256,
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            );
+            assert_eq!(
+                host_pin.vsix_url,
+                "https://marketplace.visualstudio.com/host-only"
+            );
+        }
     }
 }

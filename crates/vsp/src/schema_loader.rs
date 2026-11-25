@@ -1363,6 +1363,11 @@ fn validate_and_map_lockfile(
 
         if entry.tier == 1 {
             let has_universal_digest = entry.sha256.is_some() || entry.vsix_url.is_some();
+            if entry.universal == Some(false) && has_universal_digest {
+                return Err(VspError::UsageOrConfig(format!(
+                    "vsp.lock.json: platform-only Tier 1 pin '{ext_id}' (universal: false) must not declare top-level sha256 or vsixUrl; use per-platform targets"
+                )));
+            }
             let has_digest = has_universal_digest || !entry.targets.is_empty();
             if entry.status == Some(LockEntryStatus::Verified) || has_digest {
                 let ver = entry.version.as_deref().unwrap_or("");
@@ -1388,10 +1393,9 @@ fn validate_and_map_lockfile(
                 // Universal records (`universal: true` or unset) and platform-only records
                 // (`universal: false`) are validated separately:
                 // - a universal record needs a top-level sha256 + vsixUrl;
-                // - a platform-only record needs at least one per-platform target, and its
-                //   top-level digest is optional (a native extension has no universal VSIX).
-                let platform_only = entry.universal == Some(false) && !has_universal_digest;
-                if platform_only {
+                // - a platform-only record forbids top-level sha256/vsixUrl (checked above),
+                //   forbids a `'universal'` target, and needs at least one per-platform target.
+                if entry.universal == Some(false) {
                     if entry.targets.is_empty() {
                         return Err(VspError::UsageOrConfig(format!(
                             "vsp.lock.json: verified platform-only Tier 1 pin '{ext_id}' has no per-platform targets"

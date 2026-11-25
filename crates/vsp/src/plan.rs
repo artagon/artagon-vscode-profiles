@@ -490,7 +490,10 @@ fn compute_profile_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspRe
 
     let mut warnings = Vec::new();
     let mut incomplete = false;
-    let store = resolve_vscode_store(opts.vscode_data_dir.as_deref(), false)?;
+    // Named-profile diff invokes `code --list-extensions`, so require a representable
+    // `--user-data-dir` (same preflight as `run_profile_sync`) instead of silently
+    // querying the default VS Code store when `VSCODE_USER_DIR` does not end in `User`.
+    let store = resolve_vscode_store(opts.vscode_data_dir.as_deref(), true)?;
     let profiles_dir = store.user_dir.join("profiles");
     let (settings_path, current_settings) =
         if let Some(loc) = find_storage_profile_location(&store.user_dir, &profile_name)? {

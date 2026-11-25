@@ -13,19 +13,22 @@
 
 #![cfg(unix)]
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use tempfile::TempDir;
 
 use vsp::exit_codes::ExitCode;
+use vsp::model::{ExtensionPinsManifest, PinsLoadState};
 use vsp::plan::{compute_plan, PlanOptions};
 use vsp::schema_loader::load_embedded;
 use vsp::sync::{run_sync, SyncOptions};
 use vsp::user_config::{apply_user_config, parse_user_config};
+use vsp::vsix::{load_combined_pin_index, resolve_and_verify_batch, VsixVerifyOptions};
 
 /// Extension that the catalog marks as compromised. Its publisher is in `blockedPublishers`.
 const COMPROMISED_EXT: &str = "jscearcy.rust-doc-viewer";
@@ -171,6 +174,61 @@ impl Sandbox {
         assert_eq!(found.len(), 1, "expected exactly one profile settings file");
         found.remove(0)
     }
+
+    /// Returns the provenance record of `profile` from the XDG state directory.
+    fn provenance(&self, profile: &str) -> Value {
+        let dir = self.path("state/vsp/profiles");
+        for entry in fs::read_dir(&dir).expect("provenance dir").flatten() {
+            let Ok(text) = fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let Ok(val) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            if val["profile"] == profile {
+                return val;
+            }
+        }
+        panic!(
+            "no provenance record for profile '{profile}' in {}",
+            dir.display()
+        );
+    }
+}
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("repo root")
+        .to_path_buf()
+}
+
+fn copy_dir(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).expect("mkdir copy target");
+    for entry in fs::read_dir(src).expect("read copy source").flatten() {
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir(&from, &to);
+        } else if entry.file_name() != ".DS_Store" {
+            fs::copy(&from, &to).expect("copy file");
+        }
+    }
+}
+
+fn copy_v2_catalog(dst: &Path) {
+    let root = repo_root();
+    fs::create_dir_all(dst.join("catalog")).expect("mkdir catalog");
+    for rel in [
+        "catalog/extensions.jsonc",
+        "catalog/policy.jsonc",
+        "presets.jsonc",
+        "vsp.lock.json",
+    ] {
+        fs::copy(root.join(rel), dst.join(rel)).unwrap_or_else(|e| panic!("copy {rel}: {e}"));
+    }
+    copy_dir(&root.join("packs"), &dst.join("packs"));
 }
 
 fn stdout(out: &Output) -> String {
@@ -1007,4 +1065,436 @@ fn l8_env_forced_compat_mode_still_works_and_explains_usage_errors() {
     let explicit = sb.vspcli(&["frobnicate"]);
     assert_exit(&explicit, 4, "vsp compat-vspcli frobnicate");
     assert!(!stderr(&explicit).contains("VSP_COMPAT_VSPCLI"));
+}
+
+/// Astra FILE-MODE: `vsp sync <workspace>` preserves restrictive Unix permissions (e.g.,
+/// `0600` / `0640`) on existing `.vscode/{settings,extensions,tasks}.json` files instead of
+/// resetting them to `0644`.
+#[test]
+fn astra_file_mode_workspace_sync_preserves_restrictive_permissions() {
+    let sb = Sandbox::new();
+    let ws = sb.path("ws");
+    fs::create_dir_all(ws.join(".vscode")).expect("mkdir .vscode");
+    fs::write(
+        ws.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let settings = ws.join(".vscode/settings.json");
+    let extensions = ws.join(".vscode/extensions.json");
+    let tasks = ws.join(".vscode/tasks.json");
+
+    // Pre-existing restrictive `.vscode/settings.json` and `.vscode/extensions.json` before
+    // the first sync must keep their restrictive modes after `vsp sync <workspace>`.
+    fs::write(&settings, "{\n  \"my.privateKey\": true\n}\n").expect("write settings");
+    fs::write(
+        &extensions,
+        "{\n  \"recommendations\": [\"my.custom-extension\"]\n}\n",
+    )
+    .expect("write extensions");
+    fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).expect("chmod settings");
+    fs::set_permissions(&extensions, fs::Permissions::from_mode(0o600)).expect("chmod extensions");
+
+    let ws_str = ws.to_str().expect("utf8");
+    let out = sb.vsp(&["sync", ws_str]);
+    assert_exit(&out, 0, "workspace sync with restrictive file modes");
+
+    assert_eq!(
+        mode_of(&settings),
+        0o600,
+        "existing 0600 .vscode/settings.json must stay 0600"
+    );
+    assert_eq!(
+        mode_of(&extensions),
+        0o600,
+        "existing 0600 .vscode/extensions.json must stay 0600"
+    );
+    assert_eq!(
+        mode_of(&tasks),
+        0o644,
+        "newly created .vscode/tasks.json defaults to 0644"
+    );
+    let merged_settings = fs::read_to_string(&settings).expect("read merged settings");
+    assert!(
+        merged_settings.contains("my.privateKey"),
+        "user setting preserved"
+    );
+
+    // Restrict `.vscode/tasks.json` to `0640`, edit settings, and re-sync: all three files
+    // must keep their restrictive modes across the atomic replacement.
+    fs::set_permissions(&tasks, fs::Permissions::from_mode(0o640)).expect("chmod tasks");
+    fs::write(&settings, "{\n  \"my.privateKey\": false\n}\n").expect("edit settings");
+    fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).expect("re-chmod settings");
+    let out2 = sb.vsp(&["sync", ws_str]);
+    assert_exit(
+        &out2,
+        0,
+        "second workspace sync with restrictive tasks.json",
+    );
+    assert_eq!(mode_of(&settings), 0o600);
+    assert_eq!(mode_of(&extensions), 0o600);
+    assert_eq!(
+        mode_of(&tasks),
+        0o640,
+        "existing 0640 .vscode/tasks.json must stay 0640"
+    );
+
+    // Control case: newly created workspace files default to 0644.
+    let fresh = sb.path("fresh-ws");
+    fs::create_dir_all(&fresh).expect("mkdir fresh");
+    fs::write(
+        fresh.join("Cargo.toml"),
+        "[package]\nname = \"fresh\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write fresh Cargo.toml");
+    assert_exit(
+        &sb.vsp(&["sync", fresh.to_str().expect("utf8")]),
+        0,
+        "fresh workspace sync",
+    );
+    assert_eq!(mode_of(&fresh.join(".vscode/settings.json")), 0o644);
+    assert_eq!(mode_of(&fresh.join(".vscode/extensions.json")), 0o644);
+    assert_eq!(mode_of(&fresh.join(".vscode/tasks.json")), 0o644);
+}
+
+/// Astra A02: `vsp diff -p <name>` (and `sync --dry-run -p <name>`) validates that
+/// `VSCODE_USER_DIR` ends in `/User` before invoking `code --list-extensions`, instead of
+/// silently querying the default VS Code store.
+#[test]
+fn astra_a02_profile_diff_refuses_unrepresentable_vscode_user_dir() {
+    let sb = Sandbox::new();
+    sb.install_code(&CodeStub::default());
+    let bad_dir = sb.path("not-user");
+
+    for args in [
+        vec!["diff", "-p", "rust"],
+        vec!["--dry-run", "sync", "-p", "rust"],
+    ] {
+        let out = sb
+            .command()
+            .env("VSCODE_USER_DIR", &bad_dir)
+            .args(&args)
+            .output()
+            .expect("run vsp with invalid VSCODE_USER_DIR");
+        assert_exit(
+            &out,
+            4,
+            &format!(
+                "vsp {} with unrepresentable VSCODE_USER_DIR",
+                args.join(" ")
+            ),
+        );
+        assert!(
+            stderr(&out).contains("does not end in '/User'"),
+            "{}",
+            stderr(&out)
+        );
+    }
+    assert_eq!(
+        sb.code_log(),
+        "",
+        "code must never be invoked against the default store"
+    );
+
+    // Control case: a valid `<root>/User` path succeeds and passes `--user-data-dir <root>`.
+    let good_user_dir = sb.path("data/User");
+    let ok = sb
+        .command()
+        .env("VSCODE_USER_DIR", &good_user_dir)
+        .args(["diff", "-p", "rust"])
+        .output()
+        .expect("run diff with valid VSCODE_USER_DIR");
+    assert_exit(&ok, 0, "diff with valid VSCODE_USER_DIR");
+    let expected_flag = format!("--user-data-dir {}", sb.path("data").display());
+    assert!(
+        sb.code_log().contains(&expected_flag),
+        "code must query the explicit data root: {}",
+        sb.code_log()
+    );
+}
+
+/// Astra A16: a Tier-1 lock record with `universal: false` rejects mixed top-level
+/// `sha256`/`vsixUrl` during catalog validation, and `vsix` never falls back to a flat
+/// top-level digest/URL at runtime.
+#[test]
+fn astra_a16_mixed_non_universal_tier1_lock_is_rejected() {
+    let sb = Sandbox::new();
+    let fixture = sb.path("catalog-v2");
+    copy_v2_catalog(&fixture);
+    let fixture_str = fixture.to_str().expect("utf8");
+    let lock_path = fixture.join("vsp.lock.json");
+    let mut lock: Value =
+        serde_json::from_str(&fs::read_to_string(&lock_path).expect("read lock")).expect("json");
+
+    let native_id = lock["extensions"]
+        .as_object()
+        .expect("extensions")
+        .iter()
+        .find(|(_, e)| e["tier"] == 1 && e["universal"] == false)
+        .map(|(id, _)| id.clone())
+        .expect("shipped lock has a Tier 1 universal=false extension");
+    let sha = "ab".repeat(32);
+
+    // Mixed record: `universal: false` + top-level digest/URL with empty targets -> exit 4.
+    lock["extensions"][&native_id] = json!({
+        "tier": 1,
+        "universal": false,
+        "status": "verified",
+        "version": "2.1.0",
+        "sha256": sha,
+        "vsixUrl": "https://marketplace.visualstudio.com/flat-only",
+        "targets": {}
+    });
+    fs::write(&lock_path, lock.to_string()).expect("write mixed lock");
+    let mixed_empty = sb
+        .command()
+        .env_remove("ARTAGON_VSCODE_PINS_FILE")
+        .args(["--catalog", fixture_str, "dev", "validate"])
+        .output()
+        .expect("validate mixed lock");
+    assert_exit(
+        &mixed_empty,
+        4,
+        "universal=false with top-level sha256/vsixUrl and no targets",
+    );
+    assert!(
+        stderr(&mixed_empty).contains("must not declare top-level sha256 or vsixUrl"),
+        "{}",
+        stderr(&mixed_empty)
+    );
+
+    // Mixed record even when a per-platform target is also present -> still exit 4.
+    lock["extensions"][&native_id]["targets"] = json!({
+        "darwin-arm64": {
+            "sha256": sha,
+            "vsixUrl": "https://marketplace.visualstudio.com/darwin-arm64"
+        }
+    });
+    fs::write(&lock_path, lock.to_string()).expect("write mixed lock with target");
+    let mixed_with_target = sb
+        .command()
+        .env_remove("ARTAGON_VSCODE_PINS_FILE")
+        .args(["--catalog", fixture_str, "dev", "validate"])
+        .output()
+        .expect("validate mixed lock with target");
+    assert_exit(
+        &mixed_with_target,
+        4,
+        "universal=false with both top-level digest and targets",
+    );
+
+    // Runtime `vsix` layer: even if a crafted lockfile has `universal: false` plus flat
+    // top-level `sha256`/`vsixUrl` (and no matching host target), `vsix` must never fall
+    // back to the flat digest and must fail closed.
+    let runtime_dir = sb.path("runtime-lock");
+    fs::create_dir_all(&runtime_dir).expect("mkdir runtime lock");
+    fs::write(
+        runtime_dir.join("vsp.lock.json"),
+        json!({
+            "version": 2,
+            "pinRequired": false,
+            "extensions": {
+                &native_id: {
+                    "tier": 1,
+                    "universal": false,
+                    "status": "verified",
+                    "version": "2.1.0",
+                    "sha256": sha,
+                    "vsixUrl": "https://marketplace.visualstudio.com/flat-fallback",
+                    "targets": {
+                        "plan9-mips": {
+                            "sha256": sha,
+                            "vsixUrl": "https://marketplace.visualstudio.com/other-platform"
+                        }
+                    }
+                }
+            }
+        })
+        .to_string(),
+    )
+    .expect("write runtime lock");
+
+    let mut catalog = load_embedded().expect("embedded catalog");
+    catalog.root = runtime_dir;
+    catalog.pins = PinsLoadState::Loaded(ExtensionPinsManifest {
+        version: 1,
+        note: None,
+        pin_required: false,
+        pins: BTreeMap::new(),
+    });
+    let (pin_index, _, _) = load_combined_pin_index(&catalog, false).expect("pin index");
+    assert!(
+        !pin_index[&native_id].has_verified_artifact(),
+        "universal=false must not resolve to flat top-level digest"
+    );
+    let batch = resolve_and_verify_batch(
+        &catalog,
+        std::slice::from_ref(&native_id),
+        &VsixVerifyOptions::default(),
+    )
+    .expect("resolve batch");
+    assert_eq!(batch.failures.len(), 1);
+    assert!(batch.failures[0].is_safety_refusal);
+    assert!(batch.targets.is_empty());
+}
+
+/// Opus R3-M3: `vsp sync --from <bundle> -p <name> --ai off` uninstalls already-installed
+/// catalog `AI`-group extensions (such as `anthropic.claude-code`), matching
+/// `run_profile_sync`.
+#[test]
+fn r3_m3_bundle_import_ai_off_uninstalls_installed_ai_extensions() {
+    const CLAUDE: &str = "anthropic.claude-code";
+    const COPILOT: &str = "github.copilot-chat";
+    const NON_AI: &str = "editorconfig.editorconfig";
+
+    let sb = Sandbox::new();
+    let data = sb.data();
+    sb.install_code(&CodeStub {
+        installed: &[
+            "anthropic.claude-code@1.0.0",
+            "github.copilot-chat@1.0.0",
+            "editorconfig.editorconfig@0.18.2",
+        ],
+        ..Default::default()
+    });
+
+    let bundle = sb.path("team.code-profile");
+    fs::write(
+        &bundle,
+        json!({
+            "name": "team",
+            "settings": { "editor.tabSize": 2 },
+            "extensions": { "enabled": [CLAUDE, COPILOT, NON_AI] }
+        })
+        .to_string(),
+    )
+    .expect("write bundle");
+
+    let import = sb.vsp(&[
+        "--vscode-data-dir",
+        &data,
+        "--json",
+        "sync",
+        "--from",
+        bundle.to_str().expect("utf8"),
+        "-p",
+        "imported",
+        "--ai",
+        "off",
+    ]);
+    assert_exit(&import, 0, "sync --from <bundle> --ai off");
+
+    let report = parse_json(&import);
+    let pruned: Vec<&str> = report["pruned"]
+        .as_array()
+        .expect("pruned array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(pruned.contains(&CLAUDE), "report pruned: {pruned:?}");
+    assert!(pruned.contains(&COPILOT), "report pruned: {pruned:?}");
+    assert!(!pruned.contains(&NON_AI), "report pruned: {pruned:?}");
+
+    let log = sb.code_log();
+    assert!(
+        log.contains(&format!("--uninstall-extension {CLAUDE}")),
+        "claude-code must be uninstalled: {log}"
+    );
+    assert!(
+        log.contains(&format!("--uninstall-extension {COPILOT}")),
+        "copilot-chat must be uninstalled: {log}"
+    );
+    assert!(
+        !log.contains(&format!("--uninstall-extension {NON_AI}")),
+        "non-AI extension must stay installed: {log}"
+    );
+    assert!(
+        !log_installs(&log, CLAUDE) && !log_installs(&log, COPILOT),
+        "AI extensions must not be reinstalled under --ai off: {log}"
+    );
+
+    let settings_text = fs::read_to_string(sb.profile_settings_path()).expect("read settings");
+    let settings =
+        vsp::legacy_loader::parse_jsonc_value(&settings_text, "settings").expect("valid JSONC");
+    assert_eq!(settings["chat.disableAIFeatures"], true);
+}
+
+/// Opus R3-L1: `publisherTrustBypass` in profile provenance is sticky across subsequent
+/// syncs (full profile sync, extensions-only sync, and bundle import) without
+/// `ARTAGON_VSCODE_TRUST_UNKNOWN_PUBLISHER=1`.
+#[test]
+fn r3_l1_publisher_trust_bypass_is_sticky_in_provenance() {
+    let sb = Sandbox::new();
+    let data = sb.data();
+    sb.install_code(&CodeStub::default());
+
+    let untrusted_bundle = sb.path("untrusted.code-profile");
+    fs::write(
+        &untrusted_bundle,
+        r#"{"name":"rust","settings":{"editor.tabSize":2},"extensions":{"enabled":["unlisted-publisher.tool"]}}"#,
+    )
+    .expect("write untrusted bundle");
+    let untrusted_str = untrusted_bundle.to_str().expect("utf8");
+
+    // First import uses the env bypass -> provenance records `publisherTrustBypass: true`.
+    let bypass = sb
+        .command()
+        .env("ARTAGON_VSCODE_TRUST_UNKNOWN_PUBLISHER", "1")
+        .args(["--vscode-data-dir", &data, "sync", "--from", untrusted_str])
+        .output()
+        .expect("bundle sync with publisher bypass");
+    assert_exit(&bypass, 0, "bundle import with publisher bypass");
+    assert_eq!(sb.provenance("rust")["publisherTrustBypass"], true);
+
+    // Subsequent normal profile sync WITHOUT the env bypass must preserve the flag.
+    let later_sync = sb.vsp(&["--vscode-data-dir", &data, "sync", "-p", "rust", "--no-rtk"]);
+    assert_exit(&later_sync, 0, "later profile sync without env bypass");
+    assert_eq!(
+        sb.provenance("rust")["publisherTrustBypass"],
+        true,
+        "normal sync must not clear sticky publisherTrustBypass"
+    );
+
+    // Subsequent extensions-only sync WITHOUT the env bypass must preserve the flag.
+    let later_ext_only = sb.vspcli(&["reconcile", "--profile", "rust"]);
+    assert_exit(
+        &later_ext_only,
+        0,
+        "later extensions-only sync without env bypass",
+    );
+    assert_eq!(
+        sb.provenance("rust")["publisherTrustBypass"],
+        true,
+        "extensions-only sync must not clear sticky publisherTrustBypass"
+    );
+
+    // Subsequent clean bundle import WITHOUT the env bypass must also preserve the flag.
+    let clean_bundle = sb.path("clean.code-profile");
+    fs::write(
+        &clean_bundle,
+        r#"{"name":"rust","settings":{"editor.tabSize":4},"extensions":{"enabled":["editorconfig.editorconfig"]}}"#,
+    )
+    .expect("write clean bundle");
+    let later_import = sb.vsp(&[
+        "--vscode-data-dir",
+        &data,
+        "sync",
+        "--from",
+        clean_bundle.to_str().expect("utf8"),
+    ]);
+    assert_exit(&later_import, 0, "later clean bundle import");
+    assert_eq!(
+        sb.provenance("rust")["publisherTrustBypass"],
+        true,
+        "clean bundle import must not clear sticky publisherTrustBypass"
+    );
+
+    // `vsp doctor` still reports the sticky bypass audit finding.
+    let doctor = sb.vsp(&["--vscode-data-dir", &data, "doctor"]);
+    assert!(
+        stdout(&doctor).contains("publisher allowlist bypassed"),
+        "{}",
+        stdout(&doctor)
+    );
 }
