@@ -46,6 +46,38 @@ fn vsp_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_vsp"))
 }
 
+/// Builds a hermetic `vsp` command.
+///
+/// `HOME` and every XDG directory point into a per-process sandbox under
+/// `CARGO_TARGET_TMPDIR`, so a host `~/.config/vsp/config.jsonc`, host provenance state, or
+/// a host VSIX cache can never change a test result. A no-op `code` stub is first on
+/// `PATH`, so a test never runs a real VS Code CLI. A test that needs another `code`
+/// behavior sets `PATH` itself.
+fn vsp_cmd() -> Command {
+    static SANDBOX: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let sandbox = SANDBOX.get_or_init(|| {
+        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("golden-parity-sandbox-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for sub in ["home", "config", "state", "cache", "bin"] {
+            fs::create_dir_all(dir.join(sub)).expect("create sandbox dir");
+        }
+        #[cfg(unix)]
+        write_executable_stub(&dir.join("bin"), "code", "#!/bin/sh\nexit 0\n");
+        dir
+    });
+    let host_path = std::env::var("PATH").unwrap_or_default();
+    let mut cmd = Command::new(vsp_bin());
+    cmd.env("HOME", sandbox.join("home"))
+        .env("XDG_CONFIG_HOME", sandbox.join("config"))
+        .env("XDG_STATE_HOME", sandbox.join("state"))
+        .env("XDG_CACHE_HOME", sandbox.join("cache"))
+        .env("PATH", format!("{}:{host_path}", sandbox.join("bin").display()))
+        .env_remove("VSP_COMPAT_VSPCLI")
+        .env_remove("XDG_BIN_HOME");
+    cmd
+}
+
 #[cfg(unix)]
 fn write_executable_stub(dir: &Path, name: &str, script: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -299,7 +331,7 @@ fn dev_dist_is_100_percent_byte_deterministic_across_two_runs() {
     let dir2 = TempDir::new().expect("dir2");
 
     for dir in [&dir1, &dir2] {
-        let out = Command::new(vsp_bin())
+        let out = vsp_cmd()
             .args([
                 "--catalog",
                 root.to_str().expect("utf8"),
@@ -434,7 +466,7 @@ fn repo_dev_validate_passes_cleanly() {
     assert!(emb_report.checked_files >= 40);
 
     // Validate via CLI `vsp --catalog <root> dev validate`.
-    let out = Command::new(vsp_bin())
+    let out = vsp_cmd()
         .args(["--catalog", root.to_str().expect("utf8"), "dev", "validate"])
         .output()
         .expect("run vsp --catalog dev validate");
@@ -447,7 +479,7 @@ fn repo_dev_validate_passes_cleanly() {
 
     // Validate via CLI `vsp dev validate` from a completely empty temp cwd (embedded snapshot!).
     let empty_cwd = TempDir::new().expect("empty cwd");
-    let out_emb = Command::new(vsp_bin())
+    let out_emb = vsp_cmd()
         .current_dir(empty_cwd.path())
         .env_remove("VSPCLI_ROOT")
         .args(["dev", "validate"])
@@ -466,7 +498,7 @@ fn cli_embedded_default_works_from_empty_cwd_ignores_untrusted_cwd_and_never_fal
     let oracle = load_golden_oracle();
 
     // 1. Version is bumped to 3.0.0.
-    let ver = Command::new(vsp_bin())
+    let ver = vsp_cmd()
         .arg("--version")
         .output()
         .expect("run --version");
@@ -483,7 +515,7 @@ fn cli_embedded_default_works_from_empty_cwd_ignores_untrusted_cwd_and_never_fal
     let d1 = TempDir::new().expect("d1");
     let d2 = TempDir::new().expect("d2");
     for d in [&d1, &d2] {
-        let out = Command::new(vsp_bin())
+        let out = vsp_cmd()
             .current_dir(empty_cwd.path())
             .env_remove("VSPCLI_ROOT")
             .args(["dev", "dist", "--out", d.path().to_str().expect("utf8")])
@@ -509,7 +541,7 @@ fn cli_embedded_default_works_from_empty_cwd_ignores_untrusted_cwd_and_never_fal
     fs::write(poisoned_cwd.path().join("presets.jsonc"), "{ INVALID JSONC").expect("write");
     fs::create_dir_all(poisoned_cwd.path().join("catalog")).expect("mkdir");
     fs::write(poisoned_cwd.path().join("catalog/extensions.json"), "{ BROKEN").expect("write");
-    let list_emb = Command::new(vsp_bin())
+    let list_emb = vsp_cmd()
         .current_dir(poisoned_cwd.path())
         .env_remove("VSPCLI_ROOT")
         .args(["list", "presets"])
@@ -523,20 +555,20 @@ fn cli_embedded_default_works_from_empty_cwd_ignores_untrusted_cwd_and_never_fal
 
     // 4. Explicit --catalog / VSPCLI_ROOT MUST NEVER fall back to embedded defaults!
     let missing_dir = empty_cwd.path().join("does-not-exist");
-    let miss_out = Command::new(vsp_bin())
+    let miss_out = vsp_cmd()
         .args(["--catalog", missing_dir.to_str().expect("utf8"), "list"])
         .output()
         .expect("missing catalog");
     assert_eq!(miss_out.status.code(), Some(2));
 
     let empty_cat = TempDir::new().expect("empty cat");
-    let empty_flag_out = Command::new(vsp_bin())
+    let empty_flag_out = vsp_cmd()
         .args(["--catalog", empty_cat.path().to_str().expect("utf8"), "list"])
         .output()
         .expect("empty --catalog");
     assert_eq!(empty_flag_out.status.code(), Some(4));
 
-    let empty_env_out = Command::new(vsp_bin())
+    let empty_env_out = vsp_cmd()
         .env("VSPCLI_ROOT", empty_cat.path())
         .args(["list"])
         .output()
@@ -674,35 +706,35 @@ fn cli_exit_codes_help_unknown_flag_missing_path_detect_and_diff_check() {
     let catalog_arg = root.to_str().expect("utf8");
 
     // --help exits 0.
-    let help = Command::new(vsp_bin())
+    let help = vsp_cmd()
         .arg("--help")
         .output()
         .expect("run --help");
     assert_eq!(help.status.code(), Some(0));
 
     // --version exits 0.
-    let ver = Command::new(vsp_bin())
+    let ver = vsp_cmd()
         .arg("--version")
         .output()
         .expect("run --version");
     assert_eq!(ver.status.code(), Some(0));
 
     // Unknown flag exits 4 (NOT clap's default 2!).
-    let bad_flag = Command::new(vsp_bin())
+    let bad_flag = vsp_cmd()
         .arg("--definitely-unknown-flag")
         .output()
         .expect("run unknown flag");
     assert_eq!(bad_flag.status.code(), Some(4));
 
     // diff without explicit selector exits 4.
-    let no_sel = Command::new(vsp_bin())
+    let no_sel = vsp_cmd()
         .args(["--catalog", catalog_arg, "diff"])
         .output()
         .expect("run diff without selector");
     assert_eq!(no_sel.status.code(), Some(4));
 
     // sync without explicit selector exits 4.
-    let sync_no_sel = Command::new(vsp_bin())
+    let sync_no_sel = vsp_cmd()
         .args(["--catalog", catalog_arg, "sync"])
         .output()
         .expect("run sync without selector");
@@ -711,7 +743,7 @@ fn cli_exit_codes_help_unknown_flag_missing_path_detect_and_diff_check() {
     // detect on missing path exits 2.
     let missing = TempDir::new().expect("tmp");
     let missing_path = missing.path().join("does-not-exist");
-    let det_missing = Command::new(vsp_bin())
+    let det_missing = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -723,7 +755,7 @@ fn cli_exit_codes_help_unknown_flag_missing_path_detect_and_diff_check() {
     assert_eq!(det_missing.status.code(), Some(2));
 
     // diff on missing path exits 2.
-    let diff_missing = Command::new(vsp_bin())
+    let diff_missing = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -736,7 +768,7 @@ fn cli_exit_codes_help_unknown_flag_missing_path_detect_and_diff_check() {
 
     // detect on empty temp dir exits 3 and leaves dir untouched (no .vscode/).
     let empty_ws = TempDir::new().expect("empty ws");
-    let det_empty = Command::new(vsp_bin())
+    let det_empty = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -751,7 +783,7 @@ fn cli_exit_codes_help_unknown_flag_missing_path_detect_and_diff_check() {
     // detect on Rust workspace with --explain exits 0.
     let rust_ws = TempDir::new().expect("rust ws");
     fs::write(rust_ws.path().join("Cargo.toml"), "[package]\nname=\"demo\"\n").expect("write");
-    let det_rust = Command::new(vsp_bin())
+    let det_rust = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -767,7 +799,7 @@ fn cli_exit_codes_help_unknown_flag_missing_path_detect_and_diff_check() {
     assert!(!rust_ws.path().join(".vscode").exists());
 
     // diff --check on drifted Rust workspace exits 3 and emits vsp-plan/v1 JSON.
-    let diff_drifted = Command::new(vsp_bin())
+    let diff_drifted = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -785,7 +817,7 @@ fn cli_exit_codes_help_unknown_flag_missing_path_detect_and_diff_check() {
     assert_eq!(plan_val["has_drift"], true);
 
     // sync --dry-run produces the exact same plan as diff and exits 0.
-    let sync_dry = Command::new(vsp_bin())
+    let sync_dry = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -833,7 +865,7 @@ fn cli_exit_codes_help_unknown_flag_missing_path_detect_and_diff_check() {
     )
     .expect("write tasks");
 
-    let diff_clean = Command::new(vsp_bin())
+    let diff_clean = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -889,7 +921,7 @@ fn doctor_exits_7_on_failing_code_stub_and_enforces_strict_autoupdate() {
         "code",
         "#!/bin/sh\necho 'simulated IPC error' >&2\nexit 1\n",
     );
-    let out_fail = Command::new(vsp_bin())
+    let out_fail = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -916,7 +948,7 @@ fn doctor_exits_7_on_failing_code_stub_and_enforces_strict_autoupdate() {
         "code",
         "#!/bin/sh\necho 'editorconfig.editorconfig@0.18.2'\nexit 0\n",
     );
-    let out_clean = Command::new(vsp_bin())
+    let out_clean = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -947,7 +979,7 @@ fn doctor_exits_7_on_failing_code_stub_and_enforces_strict_autoupdate() {
 "#,
     )
     .expect("write string autoUpdate");
-    let out_warn = Command::new(vsp_bin())
+    let out_warn = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -962,7 +994,7 @@ fn doctor_exits_7_on_failing_code_stub_and_enforces_strict_autoupdate() {
     assert_eq!(out_warn.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&out_warn.stdout).contains("WARN:"));
 
-    let out_strict = Command::new(vsp_bin())
+    let out_strict = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -983,7 +1015,7 @@ fn doctor_exits_7_on_failing_code_stub_and_enforces_strict_autoupdate() {
         "code",
         "#!/bin/sh\necho 'jscearcy.rust-doc-viewer@4.2.1'\nexit 0\n",
     );
-    let out_comp = Command::new(vsp_bin())
+    let out_comp = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1005,7 +1037,7 @@ fn cli_list_show_completions_export_and_self_path() {
     let catalog_arg = root.to_str().expect("utf8");
 
     // list presets
-    let list_out = Command::new(vsp_bin())
+    let list_out = vsp_cmd()
         .args(["--catalog", catalog_arg, "list", "presets"])
         .output()
         .expect("list presets");
@@ -1017,7 +1049,7 @@ fn cli_list_show_completions_export_and_self_path() {
     assert_eq!(lines.len(), 15);
 
     // show legacy alias ai-profile-crisp -> resolves to ai-copilot
-    let show_out = Command::new(vsp_bin())
+    let show_out = vsp_cmd()
         .args(["--catalog", catalog_arg, "--json", "show", "ai-profile-crisp"])
         .output()
         .expect("show legacy");
@@ -1026,7 +1058,7 @@ fn cli_list_show_completions_export_and_self_path() {
     assert_eq!(show_val["name"], "ai-copilot");
 
     // show unknown -> exit 2
-    let show_missing = Command::new(vsp_bin())
+    let show_missing = vsp_cmd()
         .args(["--catalog", catalog_arg, "show", "not-a-real-pack"])
         .output()
         .expect("show missing");
@@ -1034,7 +1066,7 @@ fn cli_list_show_completions_export_and_self_path() {
 
     // completions for bash, zsh, fish
     for shell in ["bash", "zsh", "fish"] {
-        let comp = Command::new(vsp_bin())
+        let comp = vsp_cmd()
             .args(["completions", shell])
             .output()
             .expect("completions");
@@ -1043,7 +1075,7 @@ fn cli_list_show_completions_export_and_self_path() {
     }
 
     // self path
-    let self_path = Command::new(vsp_bin())
+    let self_path = vsp_cmd()
         .args(["self", "path"])
         .output()
         .expect("self path");
@@ -1052,7 +1084,7 @@ fn cli_list_show_completions_export_and_self_path() {
 
     // export single profile + SHA256SUMS
     let exp_dir = TempDir::new().expect("export dir");
-    let exp = Command::new(vsp_bin())
+    let exp = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1124,7 +1156,7 @@ fn doctor_pin_drift_and_multi_profile_partial_failure_handling() {
         "code",
         "#!/bin/sh\necho 'editorconfig.editorconfig@0.17.0'\nexit 0\n",
     );
-    let out_drift = Command::new(vsp_bin())
+    let out_drift = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1145,9 +1177,9 @@ fn doctor_pin_drift_and_multi_profile_partial_failure_handling() {
     write_executable_stub(
         stub_bin.path(),
         "code",
-        "#!/bin/sh\ncase \"$*\" in\n  *\"--profile broken-prof\"*) echo 'broken profile' >&2; exit 2 ;;\n  *\"--profile rust\"*) echo 'jscearcy.rust-doc-viewer@4.2.1'; exit 0 ;;\n  *) echo 'editorconfig.editorconfig@0.18.2'; exit 0 ;;\nesac\n",
+        "#!/bin/sh\ncase \"$*\" in\n  *\"--profile=broken-prof\"*) echo 'broken profile' >&2; exit 2 ;;\n  *\"--profile=rust\"*) echo 'jscearcy.rust-doc-viewer@4.2.1'; exit 0 ;;\n  *) echo 'editorconfig.editorconfig@0.18.2'; exit 0 ;;\nesac\n",
     );
-    let out_partial = Command::new(vsp_bin())
+    let out_partial = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1172,7 +1204,7 @@ fn diff_supports_user_profile_ux_and_ai_flags_and_rejects_contradictions() {
     let fake_data = TempDir::new().expect("fake data");
 
     // --user with --ux crisp and --no-ai emits valid vsp-plan/v1 JSON with chat.disableAIFeatures=true.
-    let user_plan = Command::new(vsp_bin())
+    let user_plan = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1202,7 +1234,7 @@ fn diff_supports_user_profile_ux_and_ai_flags_and_rejects_contradictions() {
         .any(|c| c["key"] == "workbench.colorTheme" && c["desired"] == "Tokyo Night"));
 
     // Contradictory --ai full --no-ai MUST exit 4.
-    let contra = Command::new(vsp_bin())
+    let contra = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1217,7 +1249,7 @@ fn diff_supports_user_profile_ux_and_ai_flags_and_rejects_contradictions() {
     assert_eq!(contra.status.code(), Some(4));
 
     // Legacy profile name -p ai-profile-retina resolves to ai-copilot + ux retina.
-    let legacy_plan = Command::new(vsp_bin())
+    let legacy_plan = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,

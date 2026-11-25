@@ -232,9 +232,77 @@ pub struct WorkspaceCatalog {
     pub modules: BTreeMap<String, ModuleDefinition>,
     /// All discovered canonical profile recipes indexed by profile name (`profiles/`).
     pub profiles: BTreeMap<String, ProfileRecipe>,
+    /// Legacy aliases declared in `presets.jsonc` (`alias -> (canonical preset, UX preset)`).
+    /// Empty for the legacy repository layout, which uses the built-in alias table only.
+    pub legacy_aliases: BTreeMap<String, (String, UxPreset)>,
 }
 
 impl WorkspaceCatalog {
+    /// Resolves a legacy alias name to `(canonical preset, UX preset)`.
+    ///
+    /// Aliases declared in the catalog (`presets.jsonc`) have priority, so a custom alias
+    /// in an external catalog works in every command. The built-in
+    /// `<flavor>-{crisp,retina}` table ([`resolve_legacy_profile_name`]) is the fallback.
+    #[must_use]
+    pub fn resolve_alias(&self, name: &str) -> Option<(String, UxPreset)> {
+        if let Some((preset, ux)) = self.legacy_aliases.get(name) {
+            return Some((preset.clone(), *ux));
+        }
+        resolve_legacy_profile_name(name).map(|(canonical, ux)| (canonical.to_string(), ux))
+    }
+
+    /// Builds the implicit preset of a toolchain pack: the `general` preset plus that pack.
+    ///
+    /// Returns `None` when `name` is an explicit preset, is not a pack, or is a pack of
+    /// another kind. For example, `biome` gives `general + biome`.
+    #[must_use]
+    pub fn implicit_toolchain_recipe(&self, name: &str) -> Option<ProfileRecipe> {
+        if self.profiles.contains_key(name) {
+            return None;
+        }
+        let pack = self.modules.get(name)?;
+        if pack.manifest.kind != ModuleKind::Toolchain {
+            return None;
+        }
+        let base = self.profiles.get("general");
+        let mut modules = base.map(|b| b.modules.clone()).unwrap_or_default();
+        if !modules.iter().any(|m| m == name) {
+            modules.push(name.to_string());
+        }
+        Some(ProfileRecipe {
+            version: 1,
+            name: name.to_string(),
+            description: format!(
+                "Implicit toolchain preset (general + {name}): {}",
+                pack.manifest.description
+            ),
+            use_defaults: base.is_none_or(|b| b.use_defaults),
+            modules,
+            exclude_modules: base.map(|b| b.exclude_modules.clone()).unwrap_or_default(),
+            ux: base.map_or_else(|| "default".to_string(), |b| b.ux.clone()),
+            overrides: base.map_or_else(
+                || serde_json::json!({ "workspace": {}, "profile": {} }),
+                |b| b.overrides.clone(),
+            ),
+        })
+    }
+
+    /// Adds the implicit toolchain preset `name` to [`WorkspaceCatalog::profiles`] when
+    /// `name` is not an explicit preset and names a toolchain pack. Returns `true` when a
+    /// recipe was added.
+    ///
+    /// Commands call this only for a preset name that the user gave, so `vsp list` and
+    /// `vsp dev dist` keep the explicit preset set.
+    pub fn materialize_implicit_preset(&mut self, name: &str) -> bool {
+        match self.implicit_toolchain_recipe(name) {
+            Some(recipe) => {
+                self.profiles.insert(name.to_string(), recipe);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Looks up an extension catalog record case-insensitively.
     #[must_use]
     pub fn extension_record(&self, id: &str) -> Option<&ExtensionRecord> {

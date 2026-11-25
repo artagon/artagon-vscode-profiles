@@ -17,11 +17,13 @@ use crate::dev_ops::{
 use crate::doctor::{audit_user_config, run_doctor, CheckSeverity};
 use crate::exit_codes::{ExitCode, VspError, VspResult};
 use crate::model::{
-    resolve_legacy_profile_name, AiMode, ModuleKind, UxPreset, WorkspaceCatalog,
+    AiMode, ModuleKind, UxPreset, WorkspaceCatalog,
     LEGACY_BUNDLE_ALIASES,
 };
 use crate::open::{run_open, OpenOptions};
-use crate::plan::{compute_plan, Plan, PlanOptions};
+use crate::plan::{
+    compute_plan, validate_selector_combination, Plan, PlanOptions, SelectorKinds,
+};
 use crate::policy::validate_repository;
 use crate::resolver::{
     build_dist, compile_canonical_profile_settings, compile_profile_extensions,
@@ -29,7 +31,7 @@ use crate::resolver::{
 };
 use crate::schema_loader::{load_catalog_auto, resolve_repo_dir};
 use crate::self_ops::{self, LinkAction, SelfLinkReport};
-use crate::sync::{run_sync, PruneMode, SyncOptions, SyncReport};
+use crate::sync::{prepare_bundle_import, run_sync, PruneMode, SyncOptions, SyncReport};
 use crate::user_config::{
     apply_user_config, check_user_config_target, load_user_config, parse_user_config,
     render_starter_config, resolve_user_config_path, write_user_config, StarterSeed, UserConfig,
@@ -664,8 +666,13 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
             run_list(&catalog, &user.overlay, kind, json)
         }
         Command::Show { name } => {
-            let (catalog, user) =
+            let (mut catalog, user) =
                 load_catalog_with_user(catalog_override.as_deref(), config_override.as_deref())?;
+            // A toolchain pack ID shows the pack. `--preset <toolchain>` uses its implicit
+            // preset, which `show` reports for a name that is not a pack or preset alias.
+            if !catalog.modules.contains_key(&name) {
+                catalog.materialize_implicit_preset(&name);
+            }
             run_show(&catalog, &user.overlay, &name, json)
         }
         Command::Detect { path, explain } => {
@@ -674,17 +681,14 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
             run_detect(&catalog, &target, explain, json, quiet)
         }
         Command::Diff(args) => {
-            let (catalog, user) =
+            let (mut catalog, user) =
                 load_catalog_with_user(catalog_override.as_deref(), config_override.as_deref())?;
+            materialize_selector_presets(&mut catalog, &args.selector);
             let mut opts = args.selector.to_plan_options(vscode_data_dir)?;
-            apply_user_context_to_plan(&mut opts, &args.selector, &user, false);
+            apply_user_context_to_plan(&catalog, &mut opts, &args.selector, &user, false);
             let plan = compute_plan(&catalog, &opts)?;
             print_plan(&plan, json, quiet)?;
-            if args.check && plan.has_drift {
-                Ok(ExitCode::NegativeCheck)
-            } else {
-                Ok(ExitCode::Ok)
-            }
+            Ok(plan_exit_code(&plan, args.check))
         }
         Command::Doctor { strict } => {
             // Repository validation must see the unchanged catalog, so the user profiles
@@ -721,8 +725,11 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
             Ok(report.exit_code())
         }
         Command::Export { names, out } => {
-            let (catalog, user) =
+            let (mut catalog, user) =
                 load_catalog_with_user(catalog_override.as_deref(), config_override.as_deref())?;
+            for name in &names {
+                catalog.materialize_implicit_preset(name);
+            }
             let out_dir = out.unwrap_or_else(|| PathBuf::from("exports"));
             let report = export_profiles_with_additions(
                 &catalog,
@@ -749,6 +756,15 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
             }
             let effective_ai = args.selector.effective_ai()?;
             let effective_ws = args.selector.effective_workspace()?;
+            // The same contradictory-selector rules as the mutating engine, applied before
+            // any preview is printed (`sync --dry-run --all -p x` is exit 4, not a preview).
+            validate_selector_combination(SelectorKinds {
+                workspace: effective_ws.is_some(),
+                profile: args.selector.profile.is_some(),
+                user: args.selector.user,
+                from_bundle: args.from.is_some(),
+                all: args.all,
+            })?;
             if let Some(ref bundle) = args.from {
                 if !bundle.is_file() {
                     return Err(VspError::TargetMissing(format!(
@@ -758,41 +774,18 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
                 }
             }
 
-            let (catalog, user) =
+            let (mut catalog, user) =
                 load_catalog_with_user(catalog_override.as_deref(), config_override.as_deref())?;
+            materialize_selector_presets(&mut catalog, &args.selector);
 
             // Unified read-only planner path: `vsp sync --dry-run` emits the EXACT same
             // `vsp-plan/v1` JSON and text output as `vsp diff`!
             if dry_run && has_std_selector && args.from.is_none() && !args.all && !args.compromised_only {
                 let mut opts = args.selector.to_plan_options(vscode_data_dir)?;
-                apply_user_context_to_plan(&mut opts, &args.selector, &user, args.no_rtk);
+                apply_user_context_to_plan(&catalog, &mut opts, &args.selector, &user, args.no_rtk);
                 let plan = compute_plan(&catalog, &opts)?;
                 print_plan(&plan, json, quiet)?;
-                return Ok(ExitCode::Ok);
-            }
-
-            if dry_run {
-                if json {
-                    let payload = serde_json::json!({
-                        "dry_run": true,
-                        "all": args.all,
-                        "compromised_only": args.compromised_only,
-                        "from": args.from.as_ref().map(|p| p.display().to_string()),
-                        "profile": args.selector.profile,
-                    });
-                    print!("{}", to_canonical_json_string(&payload)?);
-                } else if !quiet {
-                    println!(
-                        "DRY-RUN sync: all={} compromised_only={} from={} profile={}",
-                        args.all,
-                        args.compromised_only,
-                        args.from
-                            .as_deref()
-                            .map_or_else(|| "none".to_string(), |p| p.display().to_string()),
-                        args.selector.profile.as_deref().unwrap_or("none")
-                    );
-                }
-                return Ok(ExitCode::Ok);
+                return Ok(plan_exit_code(&plan, false));
             }
 
             // Personal defaults apply to a single personal target only: not to workspaces,
@@ -803,6 +796,7 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
                 && !args.compromised_only;
             let personal = if defaults_apply {
                 resolve_personal_defaults(
+                    &catalog,
                     &args.selector,
                     args.selector.ux.map(Into::into),
                     effective_ai,
@@ -842,6 +836,49 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
                 user_overlay: user.overlay,
             };
 
+            if dry_run {
+                // `--from`, `--all`, and `--compromised-only` previews. A bundle goes
+                // through the full pre-mutation validation of the real import (checksum,
+                // schema, deny-list, profile name, extension IDs, publisher allowlist).
+                let bundle_plan = match &sync_opts.from_bundle {
+                    Some(bundle) => Some(prepare_bundle_import(&catalog, bundle, &sync_opts)?),
+                    None => None,
+                };
+                if json {
+                    let payload = serde_json::json!({
+                        "dry_run": true,
+                        "all": args.all,
+                        "compromised_only": args.compromised_only,
+                        "from": args.from.as_ref().map(|p| p.display().to_string()),
+                        "profile": args.selector.profile,
+                        "bundle": bundle_plan,
+                    });
+                    print!("{}", to_canonical_json_string(&payload)?);
+                } else if !quiet {
+                    println!(
+                        "DRY-RUN sync: all={} compromised_only={} from={} profile={}",
+                        args.all,
+                        args.compromised_only,
+                        args.from
+                            .as_deref()
+                            .map_or_else(|| "none".to_string(), |p| p.display().to_string()),
+                        args.selector.profile.as_deref().unwrap_or("none")
+                    );
+                    if let Some(plan) = &bundle_plan {
+                        println!(
+                            "  bundle ok: profile={} settings={} extensions={}",
+                            plan.profile_name,
+                            plan.settings_count,
+                            plan.install_ids.len()
+                        );
+                        for w in &plan.warnings {
+                            eprintln!("warning: {w}");
+                        }
+                    }
+                }
+                return Ok(ExitCode::Ok);
+            }
+
             let report = run_sync(&catalog, &sync_opts)?;
             print_sync_report(&report, json, quiet)?;
             Ok(ExitCode::Ok)
@@ -852,8 +889,33 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
                     "vsp open requires -p/--profile <NAME> or <PATH>".to_string(),
                 ));
             }
-            let (catalog, _user) =
+            let (mut catalog, user) =
                 load_catalog_with_user(catalog_override.as_deref(), config_override.as_deref())?;
+            if let Some(name) = &args.profile {
+                catalog.materialize_implicit_preset(name);
+            }
+            // `open --sync` syncs the named profile with the same personal defaults and
+            // user-profile data as `vsp sync -p <NAME>`.
+            let profile_selector = SelectorArgs {
+                path: None,
+                workspace: None,
+                profile: args.profile.clone(),
+                preset: None,
+                user: false,
+                with: Vec::new(),
+                without: Vec::new(),
+                ux: None,
+                ai: None,
+                no_ai: false,
+            };
+            let personal = resolve_personal_defaults(
+                &catalog,
+                &profile_selector,
+                None,
+                None,
+                false,
+                user.defaults(),
+            );
             run_open(
                 &catalog,
                 &OpenOptions {
@@ -866,6 +928,11 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
                     vscode_data_dir,
                     yes,
                     force: args.force,
+                    user_overlay: user.overlay,
+                    ux: personal.ux,
+                    ai: personal.ai,
+                    with_modules: personal.with_modules,
+                    no_rtk: personal.no_rtk,
                 },
             )
         }
@@ -927,6 +994,7 @@ fn personal_defaults_apply(selector: &SelectorArgs) -> bool {
 /// - `defaults.rtkTerminal = true` adds the `rtk-terminal` pack unless `--no-rtk` or
 ///   `--without rtk-terminal` is given. `false` has the same effect as `--no-rtk`.
 fn resolve_personal_defaults(
+    catalog: &WorkspaceCatalog,
     selector: &SelectorArgs,
     cli_ux: Option<UxPreset>,
     cli_ai: Option<AiMode>,
@@ -946,7 +1014,7 @@ fn resolve_personal_defaults(
     let names_legacy_alias = [selector.profile.as_deref(), selector.preset.as_deref()]
         .into_iter()
         .flatten()
-        .any(|name| resolve_legacy_profile_name(name).is_some());
+        .any(|name| catalog.resolve_alias(name).is_some());
     if out.ux.is_none() && !names_legacy_alias {
         out.ux = defaults.ux;
     }
@@ -972,6 +1040,7 @@ fn resolve_personal_defaults(
 
 /// Applies the user overlay and (for personal targets) the personal defaults to a plan.
 fn apply_user_context_to_plan(
+    catalog: &WorkspaceCatalog,
     opts: &mut PlanOptions,
     selector: &SelectorArgs,
     user: &UserContext,
@@ -979,11 +1048,41 @@ fn apply_user_context_to_plan(
 ) {
     opts.user_overlay = user.overlay.clone();
     if personal_defaults_apply(selector) {
-        let personal =
-            resolve_personal_defaults(selector, opts.ux, opts.ai, cli_no_rtk, user.defaults());
+        let personal = resolve_personal_defaults(
+            catalog,
+            selector,
+            opts.ux,
+            opts.ai,
+            cli_no_rtk,
+            user.defaults(),
+        );
         opts.ux = personal.ux;
         opts.ai = personal.ai;
         opts.with_modules = personal.with_modules;
+    }
+}
+
+/// Adds the implicit toolchain preset (`general + <toolchain>`) for a `--preset` or
+/// `-p/--profile` name that is a toolchain pack ID and not an explicit preset. For example,
+/// `--preset biome` then resolves in `diff`, `sync`, and `open` like any preset.
+fn materialize_selector_presets(catalog: &mut WorkspaceCatalog, selector: &SelectorArgs) {
+    for name in [selector.preset.as_deref(), selector.profile.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        catalog.materialize_implicit_preset(name);
+    }
+}
+
+/// Exit code for a printed plan: `7` when the observation is incomplete (this has priority
+/// over a drift result), `3` for `--check` with drift, otherwise `0`.
+fn plan_exit_code(plan: &Plan, check: bool) -> ExitCode {
+    if !plan.observation_complete {
+        ExitCode::IncompleteObservation
+    } else if check && plan.has_drift {
+        ExitCode::NegativeCheck
+    } else {
+        ExitCode::Ok
     }
 }
 
@@ -1119,7 +1218,7 @@ fn run_init(
     let custom_profile = match &args.profile {
         Some(name)
             if !catalog.profiles.contains_key(name)
-                && resolve_legacy_profile_name(name).is_none() =>
+                && catalog.resolve_alias(name).is_none() =>
         {
             Some(UserProfile {
                 name: name.clone(),
@@ -1391,9 +1490,9 @@ fn run_show(
     json: bool,
 ) -> VspResult<ExitCode> {
     // Check legacy alias first.
-    let (lookup_name, legacy_note) = match resolve_legacy_profile_name(name) {
+    let (lookup_name, legacy_note) = match catalog.resolve_alias(name) {
         Some((canon, ux)) => (
-            canon.to_string(),
+            canon.clone(),
             Some(format!("legacy alias '{name}' -> '{canon}' (--ux={ux})")),
         ),
         None => (name.to_string(), None),

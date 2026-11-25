@@ -13,8 +13,9 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::exit_codes::{VspError, VspResult};
+use crate::provenance::write_file_atomic;
 use crate::model::{
-    is_valid_module_id, resolve_legacy_profile_name, AiMode, BundleExtensions, CodeProfileBundle,
+    is_valid_module_id, AiMode, BundleExtensions, CodeProfileBundle,
     ModuleKind, UxPreset, VsCodeExtensionEntry, VsCodeExtensionIdentifier, WorkspaceCatalog,
     WorkspaceExtensionsFile, COMPILER_UNION_KEYS, GROUP_ORDER, LEGACY_BUNDLE_ALIASES,
 };
@@ -716,8 +717,9 @@ pub fn export_profiles_with_additions(
     } else {
         let mut selected = Vec::new();
         for raw in names {
-            let canonical = resolve_legacy_profile_name(raw)
-                .map(|(c, _)| c.to_string())
+            let canonical = catalog
+                .resolve_alias(raw)
+                .map(|(c, _)| c)
                 .unwrap_or_else(|| raw.clone());
             if !catalog.profiles.contains_key(&canonical) {
                 return Err(VspError::TargetMissing(format!(
@@ -751,10 +753,6 @@ pub fn export_profiles_with_additions(
         let json = to_canonical_json_string(&bundle)?;
         let bytes = json.into_bytes();
         let fname = format!("{profile}.code-profile");
-        let dest = out_dir.join(&fname);
-        fs::write(&dest, &bytes).map_err(|err| {
-            VspError::Operational(format!("failed to write {}: {err}", dest.display()))
-        })?;
         canonical_bundles.push(fname.clone());
         emitted_files.push((fname, bytes));
     }
@@ -765,25 +763,59 @@ pub fn export_profiles_with_additions(
                 emitted_files.iter().find(|(name, _)| name == canonical_file)
             {
                 let alias_bytes = canonical_bytes.clone();
-                let dest = out_dir.join(alias_file);
-                fs::write(&dest, &alias_bytes).map_err(|err| {
-                    VspError::Operational(format!(
-                        "failed to write legacy alias {}: {err}",
-                        dest.display()
-                    ))
-                })?;
                 alias_bundles.push(alias_file.to_string());
                 emitted_files.push((alias_file.to_string(), alias_bytes));
             }
         }
     }
 
-    // Sort strictly by filename in UTF-8/ASCII byte order (LC_ALL=C).
-    emitted_files.sort_by(|a, b| a.0.cmp(&b.0));
+    // Every bundle is compiled in memory before the first write, so a compile error leaves
+    // the destination unchanged. The destination inventory is then examined.
+    let existing_bundles = list_code_profile_files(out_dir)?;
+    if include_legacy_aliases {
+        // A full distribution must not depend on the history of a reused directory. A
+        // `.code-profile` file that this run does not produce (for example a removed
+        // preset) would be shipped without a checksum, so the run is refused. vsp does not
+        // delete files that it did not write.
+        let stale: Vec<&String> = existing_bundles
+            .iter()
+            .filter(|name| !emitted_files.iter().any(|(emitted, _)| emitted == *name))
+            .collect();
+        if !stale.is_empty() {
+            return Err(VspError::SafetyRefusal(format!(
+                "distribution directory {} contains {} stale or unmanaged .code-profile file(s) that this run does not produce: {}; remove them or use an empty directory",
+                out_dir.display(),
+                stale.len(),
+                stale.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            )));
+        }
+    }
 
-    let mut checksums = Vec::with_capacity(emitted_files.len());
-    let mut sums_buf = String::new();
     for (fname, bytes) in &emitted_files {
+        write_file_atomic(&out_dir.join(fname), bytes, 0o644, false)?;
+    }
+
+    // `SHA256SUMS` covers the whole destination inventory. A partial export (`vsp export
+    // rust`, then `vsp export general`) keeps the entries of bundles from earlier runs, so
+    // each bundle in the directory stays verifiable. The map key order is the `LC_ALL=C`
+    // byte order of the file names.
+    let mut inventory: BTreeMap<String, Vec<u8>> = emitted_files.into_iter().collect();
+    if !include_legacy_aliases {
+        for name in existing_bundles {
+            if inventory.contains_key(&name) {
+                continue;
+            }
+            let path = out_dir.join(&name);
+            let bytes = fs::read(&path).map_err(|err| {
+                VspError::Operational(format!("failed to read {}: {err}", path.display()))
+            })?;
+            inventory.insert(name, bytes);
+        }
+    }
+
+    let mut checksums = Vec::with_capacity(inventory.len());
+    let mut sums_buf = String::new();
+    for (fname, bytes) in &inventory {
         let digest = sha256_hex(bytes);
         sums_buf.push_str(&digest);
         sums_buf.push_str("  ");
@@ -793,12 +825,7 @@ pub fn export_profiles_with_additions(
     }
 
     let sha256sums_path = out_dir.join("SHA256SUMS");
-    fs::write(&sha256sums_path, sums_buf.as_bytes()).map_err(|err| {
-        VspError::Operational(format!(
-            "failed to write {}: {err}",
-            sha256sums_path.display()
-        ))
-    })?;
+    write_file_atomic(&sha256sums_path, sums_buf.as_bytes(), 0o644, false)?;
 
     Ok(DistReport {
         out_dir: out_dir.to_path_buf(),
@@ -818,6 +845,27 @@ pub fn export_profiles_with_additions(
 /// Returns [`VspError`] if compilation or filesystem output fails.
 pub fn build_dist(catalog: &WorkspaceCatalog, out_dir: &Path) -> VspResult<DistReport> {
     export_profiles(catalog, &[], out_dir, true)
+}
+
+/// Lists the names of the regular `*.code-profile` files in `dir`, sorted in byte order.
+fn list_code_profile_files(dir: &Path) -> VspResult<Vec<String>> {
+    let entries = fs::read_dir(dir).map_err(|err| {
+        VspError::Operational(format!("failed to list {}: {err}", dir.display()))
+    })?;
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|err| {
+            VspError::Operational(format!("failed to list {}: {err}", dir.display()))
+        })?;
+        let Some(name) = entry.file_name().to_str().map(ToString::to_string) else {
+            continue;
+        };
+        if name.ends_with(".code-profile") && entry.path().is_file() {
+            names.push(name);
+        }
+    }
+    names.sort();
+    Ok(names)
 }
 
 fn split_csv_items(raw: &[String]) -> Vec<String> {

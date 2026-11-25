@@ -7,10 +7,11 @@ use std::process::Command;
 use serde::Serialize;
 
 use crate::exit_codes::{ExitCode, VspError, VspResult};
-use crate::model::{resolve_legacy_profile_name, WorkspaceCatalog};
+use crate::model::{AiMode, UxPreset, WorkspaceCatalog};
 use crate::resolver::to_canonical_json_string;
 use crate::sync::{run_sync, SyncOptions};
-use crate::vscode::{find_code_binary, resolve_vscode_store};
+use crate::user_config::UserOverlay;
+use crate::vscode::{find_code_binary, resolve_vscode_store, validate_profile_name};
 
 /// Input options for [`run_open`].
 #[derive(Debug, Clone)]
@@ -33,6 +34,17 @@ pub struct OpenOptions {
     pub yes: bool,
     /// Allow storage mutation when VS Code is running during `--sync`.
     pub force: bool,
+    /// Resolved user-profile data, so `--sync` applies `extraExtensions` and last-layer
+    /// `overrides` of a custom user profile exactly as `vsp sync -p <name>` does.
+    pub user_overlay: UserOverlay,
+    /// Effective UX preset for the profile sync (personal `defaults.ux`, if it applies).
+    pub ux: Option<UxPreset>,
+    /// Effective AI mode for the profile sync (personal `defaults.ai`).
+    pub ai: Option<AiMode>,
+    /// Extra pack IDs for the profile sync (personal `defaults.rtkTerminal = true`).
+    pub with_modules: Vec<String>,
+    /// Skip RTK wrapper installation (personal `defaults.rtkTerminal = false`).
+    pub no_rtk: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,6 +67,9 @@ struct OpenPreview {
 ///
 /// - [`VspError::UsageOrConfig`] (exit `4`): neither `path` nor `profile` was provided.
 /// - [`VspError::TargetMissing`] (exit `2`): `path` does not exist.
+/// - [`VspError::UsageOrConfig`] (exit `4`): `VSCODE_USER_DIR` cannot be represented as a
+///   `code --user-data-dir` root. This is checked before any sync or launch.
+/// - [`VspError::SafetyRefusal`] (exit `5`): unsafe profile name.
 /// - Any [`VspError`] from [`run_sync`] when `--sync` fails (launch is aborted).
 /// - [`VspError::Operational`] (exit `1`): `code` CLI missing or returned non-zero.
 pub fn run_open(catalog: &WorkspaceCatalog, opts: &OpenOptions) -> VspResult<ExitCode> {
@@ -74,14 +89,22 @@ pub fn run_open(catalog: &WorkspaceCatalog, opts: &OpenOptions) -> VspResult<Exi
     }
 
     let (resolved_profile, legacy_ux) = match opts.profile.as_deref() {
-        Some(raw) => match resolve_legacy_profile_name(raw) {
-            Some((canon, ux)) => (Some(canon.to_string()), Some(ux)),
+        Some(raw) => match catalog.resolve_alias(raw) {
+            Some((canon, ux)) => (Some(canon), Some(ux)),
             None => (Some(raw.to_string()), None),
         },
         None => (None, None),
     };
 
-    let store = resolve_vscode_store(opts.vscode_data_dir.as_deref(), false)?;
+    // Pre-flight, before any sync or launch:
+    // - the profile name must be safe for the `code` command line;
+    // - the VS Code store must be representable as `--user-data-dir`. A `VSCODE_USER_DIR`
+    //   that does not end in `/User` cannot be passed to `code`, and a silent launch against
+    //   the default data root would open (and sync) a different store.
+    if let Some(name) = &resolved_profile {
+        validate_profile_name(name)?;
+    }
+    let store = resolve_vscode_store(opts.vscode_data_dir.as_deref(), true)?;
     let launch_args = build_code_open_args(
         store.data_root.as_deref(),
         resolved_profile.as_deref(),
@@ -121,10 +144,15 @@ pub fn run_open(catalog: &WorkspaceCatalog, opts: &OpenOptions) -> VspResult<Exi
         if let Some(ref prof_name) = resolved_profile {
             let prof_opts = SyncOptions {
                 profile: Some(prof_name.clone()),
-                ux: legacy_ux,
+                // A legacy alias name selects its own UX preset; otherwise use the caller's.
+                ux: legacy_ux.or(opts.ux),
+                ai: opts.ai,
+                with_modules: opts.with_modules.clone(),
+                no_rtk: opts.no_rtk,
                 yes: opts.yes,
                 force: opts.force,
                 vscode_data_dir: opts.vscode_data_dir.clone(),
+                user_overlay: opts.user_overlay.clone(),
                 ..Default::default()
             };
             let _ = run_sync(catalog, &prof_opts)?;
@@ -184,8 +212,8 @@ pub fn build_code_open_args(
     }
     if let Some(prof) = profile {
         if prof != "default" {
-            args.push("--profile".to_string());
-            args.push(prof.to_string());
+            // One argument: the name can never be parsed as a separate `code` option.
+            args.push(format!("--profile={prof}"));
         }
     }
     if let Some(path) = workspace_path {

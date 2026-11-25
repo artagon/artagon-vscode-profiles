@@ -870,6 +870,11 @@ pub fn load_from_snapshot(
         setting_scopes: Some(setting_scopes),
         modules,
         profiles,
+        legacy_aliases: raw_presets
+            .legacy_aliases
+            .iter()
+            .map(|(alias, entry)| (alias.clone(), (entry.preset.clone(), entry.ux)))
+            .collect(),
     };
 
     Ok(LoadedSchema {
@@ -910,32 +915,8 @@ pub fn resolve_preset_or_toolchain(schema: &LoadedSchema, name: &str) -> Option<
         });
     }
 
-    let pack = schema.catalog.modules.get(name)?;
-    if pack.manifest.kind != ModuleKind::Toolchain {
-        return None;
-    }
-
-    let base = schema.catalog.profiles.get("general");
-    let mut modules = base.map(|b| b.modules.clone()).unwrap_or_default();
-    if !modules.iter().any(|m| m == name) {
-        modules.push(name.to_string());
-    }
-    let recipe = ProfileRecipe {
-        version: 1,
-        name: name.to_string(),
-        description: format!(
-            "Implicit toolchain preset (general + {name}): {}",
-            pack.manifest.description
-        ),
-        use_defaults: base.is_none_or(|b| b.use_defaults),
-        modules,
-        exclude_modules: base.map(|b| b.exclude_modules.clone()).unwrap_or_default(),
-        ux: base.map_or_else(|| "default".to_string(), |b| b.ux.clone()),
-        overrides: base.map_or_else(
-            || serde_json::json!({ "workspace": {}, "profile": {} }),
-            |b| b.overrides.clone(),
-        ),
-    };
+    // The same builder backs the CLI (`--preset <toolchain>`), so both give one recipe.
+    let recipe = schema.catalog.implicit_toolchain_recipe(name)?;
 
     Some(ResolvedPreset {
         recipe,
@@ -1370,29 +1351,16 @@ fn validate_and_map_lockfile(
         }
 
         if entry.tier == 1 {
-            let has_digest = entry.sha256.is_some()
-                || entry.vsix_url.is_some()
-                || !entry.targets.is_empty();
+            let has_universal_digest = entry.sha256.is_some() || entry.vsix_url.is_some();
+            let has_digest = has_universal_digest || !entry.targets.is_empty();
             if entry.status == Some(LockEntryStatus::Verified) || has_digest {
-                let sha = entry.sha256.as_deref().unwrap_or("");
-                let url = entry.vsix_url.as_deref().unwrap_or("");
                 let ver = entry.version.as_deref().unwrap_or("");
-
-                if !is_valid_sha256_hex(sha) {
-                    return Err(VspError::UsageOrConfig(format!(
-                        "vsp.lock.json: verified Tier 1 pin '{ext_id}' has invalid sha256 '{sha}'"
-                    )));
-                }
-                if !is_valid_marketplace_vsix_url(url) {
-                    return Err(VspError::SafetyRefusal(format!(
-                        "vsp.lock.json: verified Tier 1 pin '{ext_id}' has invalid Marketplace vsixUrl '{url}'"
-                    )));
-                }
                 if ver.is_empty() || semver::Version::parse(ver).is_err() {
                     return Err(VspError::UsageOrConfig(format!(
                         "vsp.lock.json: verified Tier 1 pin '{ext_id}' has invalid semver version '{ver}'"
                     )));
                 }
+                // Each per-platform target is validated for both record kinds.
                 for (platform, target) in &entry.targets {
                     if !is_valid_sha256_hex(&target.sha256) {
                         return Err(VspError::UsageOrConfig(format!(
@@ -1405,15 +1373,49 @@ fn validate_and_map_lockfile(
                         )));
                     }
                 }
-                pins.insert(
-                    ext_id.clone(),
-                    ExtensionPin {
-                        sha256: sha.to_string(),
-                        version: ver.to_string(),
-                        vsix_url: url.to_string(),
-                        verified_at: entry.verified_at.clone(),
-                    },
-                );
+
+                // Universal records (`universal: true` or unset) and platform-only records
+                // (`universal: false`) are validated separately:
+                // - a universal record needs a top-level sha256 + vsixUrl;
+                // - a platform-only record needs at least one per-platform target, and its
+                //   top-level digest is optional (a native extension has no universal VSIX).
+                let platform_only = entry.universal == Some(false) && !has_universal_digest;
+                if platform_only {
+                    if entry.targets.is_empty() {
+                        return Err(VspError::UsageOrConfig(format!(
+                            "vsp.lock.json: verified platform-only Tier 1 pin '{ext_id}' has no per-platform targets"
+                        )));
+                    }
+                    if entry.targets.contains_key("universal") {
+                        return Err(VspError::UsageOrConfig(format!(
+                            "vsp.lock.json: platform-only Tier 1 pin '{ext_id}' (universal: false) must not declare a 'universal' target"
+                        )));
+                    }
+                } else {
+                    let sha = entry.sha256.as_deref().unwrap_or("");
+                    let url = entry.vsix_url.as_deref().unwrap_or("");
+                    if !is_valid_sha256_hex(sha) {
+                        return Err(VspError::UsageOrConfig(format!(
+                            "vsp.lock.json: verified Tier 1 pin '{ext_id}' has invalid sha256 '{sha}'"
+                        )));
+                    }
+                    if !is_valid_marketplace_vsix_url(url) {
+                        return Err(VspError::SafetyRefusal(format!(
+                            "vsp.lock.json: verified Tier 1 pin '{ext_id}' has invalid Marketplace vsixUrl '{url}'"
+                        )));
+                    }
+                    // The flat pin manifest holds universal digests only. A platform-only
+                    // record is resolved per platform from the lockfile at install time.
+                    pins.insert(
+                        ext_id.clone(),
+                        ExtensionPin {
+                            sha256: sha.to_string(),
+                            version: ver.to_string(),
+                            vsix_url: url.to_string(),
+                            verified_at: entry.verified_at.clone(),
+                        },
+                    );
+                }
             }
         }
     }

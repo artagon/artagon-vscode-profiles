@@ -49,7 +49,7 @@ use serde_json::{Map, Value};
 use crate::exit_codes::{VspError, VspResult};
 use crate::legacy_loader::parse_jsonc_value;
 use crate::model::{
-    is_valid_module_id, resolve_legacy_profile_name, AiMode, ExtensionStatus, ProfileRecipe,
+    is_valid_module_id, AiMode, ExtensionStatus, ProfileRecipe,
     UxPreset, WorkspaceCatalog,
 };
 use crate::policy::check_autonomy_denylist;
@@ -395,7 +395,7 @@ pub fn apply_user_config(
         if name == "default"
             || catalog.profiles.contains_key(name)
             || catalog.modules.contains_key(name)
-            || resolve_legacy_profile_name(name).is_some()
+            || catalog.resolve_alias(name).is_some()
         {
             return Err(config_error(
                 &label,
@@ -957,7 +957,7 @@ fn build_recipe(
                         Map::new(),
                     )
                 } else {
-                    let hint = if resolve_legacy_profile_name(base).is_some() {
+                    let hint = if catalog.resolve_alias(base).is_some() {
                         " (legacy alias names are not accepted; extend the canonical preset and \
                          set defaults.ux)"
                     } else {

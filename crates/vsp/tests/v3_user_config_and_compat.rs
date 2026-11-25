@@ -317,7 +317,9 @@ fn custom_user_profile_lists_shows_diffs_syncs_and_exports_without_repo_fork() {
         log.contains(&format!("--install-extension {EXTERNAL_EXT}")),
         "external extension must install by exact ID: {log}"
     );
-    assert!(log.contains("--profile my-rust"), "{log}");
+    // The profile name is one argument (`--profile=<name>`), never a separate token.
+    assert!(log.contains("--profile=my-rust"), "{log}");
+    assert!(!log.contains("--profile my-rust"), "{log}");
 
     // export: the bundle carries the overrides and the extra extension.
     let out_dir = sb.path("exports");
@@ -467,6 +469,8 @@ fn exact_id_external_extension_is_flagged_user_unlocked_in_doctor() {
     let sb = Sandbox::new();
     let cfg = sb.write_config_file("config.jsonc", &custom_profile_config());
     let data = sb.data_dir();
+    // Doctor needs the `code` CLI for a complete audit (exit 7 without it).
+    sb.install_code_stub();
 
     let doc = sb.vsp(&[
         "--config",
@@ -532,6 +536,8 @@ fn exact_id_external_extension_is_flagged_user_unlocked_in_doctor() {
 fn hostile_cwd_config_files_are_ignored_byte_for_byte() {
     let sb = Sandbox::new();
     let data = sb.data_dir();
+    // A profile diff observes the installed extensions with the `code` CLI.
+    sb.install_code_stub();
     let ws = sb.path("cwd");
     fs::write(
         ws.join("Cargo.toml"),
@@ -616,6 +622,8 @@ fn personal_defaults_apply_to_personal_targets_and_cli_flags_win() {
     let sb = Sandbox::new();
     sb.write_default_config(r#"{"version":1,"defaults":{"ux":"retina","ai":"off"}}"#);
     let data = sb.data_dir();
+    // A profile diff observes the installed extensions with the `code` CLI.
+    sb.install_code_stub();
     fs::write(
         sb.path("cwd/Cargo.toml"),
         "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
@@ -949,8 +957,9 @@ fn vspcli_compat_mode_translates_legacy_commands_and_keeps_legacy_exit_codes() {
         "vspcli detect with a missing path",
     );
 
-    // validate and doctor.
+    // validate and doctor. Doctor needs the `code` CLI for a complete audit.
     assert_exit(&sb.vspcli(&["validate"]), 0, "vspcli validate");
+    sb.install_code_stub();
     let doctor = sb.vspcli(&["doctor"]);
     assert_exit(&doctor, 0, "vspcli doctor");
     assert!(stdout(&doctor).contains("Summary:"));

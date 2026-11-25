@@ -22,7 +22,7 @@ use crate::provenance::{
     backup_file_bounded, check_path_contained, write_file_atomic, DEFAULT_BACKUP_RETENTION,
 };
 use crate::resolver::{sha256_hex, to_canonical_json_string};
-use crate::vscode::find_storage_profile_location;
+use crate::vscode::{find_storage_profile_location, validate_profile_name};
 
 /// Default lock acquisition timeout (`10s`; overridable via `VSP_LOCK_TIMEOUT_MS` for tests).
 pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -151,7 +151,12 @@ pub fn is_vscode_running() -> bool {
     let is_macos = cfg!(target_os = "macos");
     let is_linux = cfg!(target_os = "linux");
     if !is_macos && !is_linux {
-        return false;
+        // No process scan exists for this OS. Fail closed: treat VS Code as running, so
+        // the caller needs an explicit `--force` (or the test hook) to change storage.json.
+        eprintln!(
+            "warning: no VS Code process scan on this OS; treating VS Code as running (fail-closed)"
+        );
+        return true;
     }
 
     let output = match Command::new("ps").args(["-eo", "args="]).output() {
@@ -168,11 +173,15 @@ pub fn is_vscode_running() -> bool {
 
 /// Evaluates raw `ps -eo args=` output for running VS Code desktop processes.
 ///
-/// - On macOS: matches `/Contents/MacOS/Code` or `/Contents/MacOS/Electron` (including parent
-///   directories containing spaces such as `/Users/Jane Doe/Applications/Visual Studio Code.app/Contents/MacOS/Code`),
-///   excludes transient `out/cli.js` CLI invocations, and rejects unrelated commands mentioning
-///   the path in `argv[1+]`.
-/// - On Linux: anchors `argv[0]` to `.../code` while excluding `out/cli.js` and `/remote-cli/`.
+/// - On macOS: matches the main executable of a recognized VS Code product bundle
+///   ([`MACOS_VSCODE_BUNDLES`]), for example
+///   `/Users/Jane Doe/Applications/Visual Studio Code.app/Contents/MacOS/Code` (parent
+///   directories can contain spaces). Other Electron applications (Slack, Discord, and
+///   similar) do not match. Transient `out/cli.js` CLI invocations are excluded, and so are
+///   unrelated commands that mention the path in `argv[1+]`.
+/// - On Linux: matches a line whose executable path ends in `/code` or `/code-insiders`,
+///   also when the install path contains spaces, while excluding `out/cli.js` and
+///   `/remote-cli/`.
 #[must_use]
 pub fn ps_output_indicates_vscode_running(ps_output: &str, is_macos: bool) -> bool {
     for raw_line in ps_output.lines() {
@@ -191,15 +200,26 @@ pub fn ps_output_indicates_vscode_running(ps_output: &str, is_macos: bool) -> bo
     false
 }
 
+/// macOS application bundles that are VS Code products. A bundle with another name is a
+/// different application, also when its executable is named `Electron`.
+pub const MACOS_VSCODE_BUNDLES: &[&str] = &[
+    "Visual Studio Code.app",
+    "Visual Studio Code - Insiders.app",
+    "VSCodium.app",
+];
+
+/// Main executable names inside a VS Code product bundle (`Contents/MacOS/<name>`).
+const MACOS_VSCODE_EXECUTABLES: &[&str] = &["Code", "Code - Insiders", "Electron", "VSCodium"];
+
 fn macos_line_is_vscode(line: &str) -> bool {
-    for needle in ["/Contents/MacOS/Code", "/Contents/MacOS/Electron"] {
-        if let Some(pos) = line.find(needle) {
+    for bundle in MACOS_VSCODE_BUNDLES {
+        for exe in MACOS_VSCODE_EXECUTABLES {
+            let needle = format!("/{bundle}/Contents/MacOS/{exe}");
+            let Some(pos) = line.find(&needle) else {
+                continue;
+            };
             let after = &line[pos + needle.len()..];
-            let end_ok = after.is_empty()
-                || after
-                    .chars()
-                    .next()
-                    .is_some_and(char::is_whitespace);
+            let end_ok = after.is_empty() || after.chars().next().is_some_and(char::is_whitespace);
             if !end_ok {
                 continue;
             }
@@ -207,11 +227,12 @@ fn macos_line_is_vscode(line: &str) -> bool {
             // Must be an absolute executable path in argv[0] (not an argument to another tool
             // like `grep /Applications/Visual Studio Code.app/Contents/MacOS/Code` or
             // `/usr/bin/cat /Applications/Visual Studio Code.app/Contents/MacOS/Code`).
-            if prefix.starts_with('/')
-                && !prefix.contains(" /")
-                && !prefix.contains("\t/")
-                && (prefix.contains("Visual Studio Code") || prefix.ends_with(".app"))
-            {
+            let is_argv0 = if prefix.is_empty() {
+                true
+            } else {
+                prefix.starts_with('/') && !prefix.contains(" /") && !prefix.contains("\t/")
+            };
+            if is_argv0 {
                 return true;
             }
         }
@@ -223,8 +244,26 @@ fn linux_line_is_vscode(line: &str) -> bool {
     if line.contains("/remote-cli/") {
         return false;
     }
-    let argv0 = line.split_whitespace().next().unwrap_or("");
-    argv0.ends_with("/code")
+    if !line.starts_with('/') {
+        return false;
+    }
+    // `ps -eo args=` joins argv with spaces, so an install path with spaces cannot be split
+    // on whitespace. Accept the line when a prefix that ends at an argument boundary is an
+    // absolute path to the `code` executable and no earlier boundary starts a second
+    // absolute path (which would make `code` an argument of another program).
+    for exe in ["/code", "/code-insiders"] {
+        let mut search_from = 0;
+        while let Some(rel) = line[search_from..].find(exe) {
+            let end = search_from + rel + exe.len();
+            let at_boundary = line[end..].chars().next().is_none_or(char::is_whitespace);
+            let prefix = &line[..end];
+            if at_boundary && !prefix.contains(" /") && !prefix.contains("\t/") {
+                return true;
+            }
+            search_from = end;
+        }
+    }
+    false
 }
 
 /// Outcome of [`ensure_storage_profile`].
@@ -274,6 +313,9 @@ pub fn ensure_storage_profile_with_cas_hook(
     timeout: Duration,
     pre_cas_hook: Option<&dyn Fn(&Path)>,
 ) -> VspResult<EnsureProfileOutcome> {
+    // The name is written to storage.json and later passed to `code`: validate it first.
+    validate_profile_name(profile_name)?;
+
     let storage_dir = user_dir.join("globalStorage");
     let storage_path = storage_dir.join("storage.json");
     let profiles_dir = user_dir.join("profiles");
@@ -489,6 +531,72 @@ mod tests {
         assert!(ps_output_indicates_vscode_running(linux_ok, false));
         let linux_remote = "/home/u/.vscode-server/bin/abc/bin/remote-cli/code file.rs";
         assert!(!ps_output_indicates_vscode_running(linux_remote, false));
+    }
+
+    /// Astra A18: only recognized VS Code product bundles count on macOS.
+    #[test]
+    fn macos_scan_ignores_unrelated_electron_apps() {
+        for other in [
+            "/Applications/Slack.app/Contents/MacOS/Electron --type=renderer",
+            "/Applications/Discord.app/Contents/MacOS/Discord",
+            "/Applications/Obsidian.app/Contents/MacOS/Electron",
+            "/Applications/Code Helper.app/Contents/MacOS/Code",
+            "/Applications/Not Visual Studio Code.app.bak/Contents/MacOS/Electron",
+        ] {
+            assert!(!ps_output_indicates_vscode_running(other, true), "{other}");
+        }
+        for product in [
+            "/Applications/Visual Studio Code.app/Contents/MacOS/Electron",
+            "/Applications/Visual Studio Code.app/Contents/MacOS/Code",
+            "/Applications/Visual Studio Code - Insiders.app/Contents/MacOS/Electron --x",
+            "/Users/Jane Doe/Applications/VSCodium.app/Contents/MacOS/VSCodium",
+        ] {
+            assert!(ps_output_indicates_vscode_running(product, true), "{product}");
+        }
+        // A mixed process list is "running" when one line is a VS Code product.
+        let mixed = "/Applications/Slack.app/Contents/MacOS/Electron\n/Applications/Visual Studio Code.app/Contents/MacOS/Code\n";
+        assert!(ps_output_indicates_vscode_running(mixed, true));
+    }
+
+    /// Opus L7: a Linux install path with spaces is still detected.
+    #[test]
+    fn linux_scan_handles_spaced_install_paths() {
+        for running in [
+            "/opt/Visual Studio Code/code --unity-launch",
+            "/home/jane doe/apps/VSCode-linux-x64/code",
+            "/usr/share/code-insiders/code-insiders --new-window",
+            "/usr/share/code/code",
+        ] {
+            assert!(ps_output_indicates_vscode_running(running, false), "{running}");
+        }
+        for not_running in [
+            "/usr/bin/cat /usr/share/code/code",
+            "grep /usr/share/code/code",
+            "/usr/bin/codex --flag",
+            "/usr/share/code/codeium-helper",
+            "/home/u/.vscode-server/bin/abc/bin/remote-cli/code file.rs",
+            "/usr/bin/node /usr/share/code/resources/app/out/cli.js --list-extensions",
+        ] {
+            assert!(!ps_output_indicates_vscode_running(not_running, false), "{not_running}");
+        }
+    }
+
+    /// Opus H2: storage.json is never changed for an unsafe profile name.
+    #[test]
+    fn ensure_storage_profile_rejects_unsafe_name_before_any_write() {
+        let tmp = TempDir::new().expect("tmp");
+        let user_dir = tmp.path().join("User");
+        fs::create_dir_all(&user_dir).expect("mkdir");
+        let err = ensure_storage_profile(
+            &user_dir,
+            "--install-extension=evil.ext",
+            true,
+            Duration::from_millis(50),
+        )
+        .expect_err("unsafe name");
+        assert_eq!(err.exit_code().as_i32(), 5);
+        assert!(!user_dir.join("globalStorage").exists());
+        assert!(!user_dir.join("profiles").exists());
     }
 
     #[test]

@@ -37,6 +37,38 @@ fn vsp_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_vsp"))
 }
 
+/// Builds a hermetic `vsp` command.
+///
+/// `HOME` and every XDG directory point into a per-process sandbox under
+/// `CARGO_TARGET_TMPDIR`, so a host `~/.config/vsp/config.jsonc`, host provenance state, or
+/// a host VSIX cache can never change a test result. A no-op `code` stub is first on
+/// `PATH`, so a test never runs a real VS Code CLI. A test that needs another `code`
+/// behavior sets `PATH` itself.
+fn vsp_cmd() -> Command {
+    static SANDBOX: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let sandbox = SANDBOX.get_or_init(|| {
+        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("sync-cst-sandbox-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for sub in ["home", "config", "state", "cache", "bin"] {
+            fs::create_dir_all(dir.join(sub)).expect("create sandbox dir");
+        }
+        #[cfg(unix)]
+        write_executable_stub(&dir.join("bin"), "code", "#!/bin/sh\nexit 0\n");
+        dir
+    });
+    let host_path = std::env::var("PATH").unwrap_or_default();
+    let mut cmd = Command::new(vsp_bin());
+    cmd.env("HOME", sandbox.join("home"))
+        .env("XDG_CONFIG_HOME", sandbox.join("config"))
+        .env("XDG_STATE_HOME", sandbox.join("state"))
+        .env("XDG_CACHE_HOME", sandbox.join("cache"))
+        .env("PATH", format!("{}:{host_path}", sandbox.join("bin").display()))
+        .env_remove("VSP_COMPAT_VSPCLI")
+        .env_remove("XDG_BIN_HOME");
+    cmd
+}
+
 #[cfg(unix)]
 fn write_executable_stub(dir: &Path, name: &str, script: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -84,7 +116,7 @@ fn cst_workspace_preserves_all_comments_across_repeated_sync_and_biome_eslint_sw
     fs::write(vscode_dir.join("settings.json"), initial_settings).expect("write settings");
 
     let run_ws_sync = |extra_args: &[&str]| {
-        let mut cmd = Command::new(vsp_bin());
+        let mut cmd = vsp_cmd();
         cmd.args(["--catalog", catalog_arg, "sync", ws.path().to_str().expect("utf8")]);
         cmd.args(extra_args);
         cmd.env("XDG_STATE_HOME", xdg_state.path());
@@ -128,7 +160,7 @@ fn cst_workspace_preserves_all_comments_across_repeated_sync_and_biome_eslint_sw
     assert!(v_eslint.get("eslint.validate").is_some());
 
     // diff --check after sync MUST exit 0 (converged even with user sub-key in [typescript]!).
-    let check_clean = Command::new(vsp_bin())
+    let check_clean = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -262,7 +294,7 @@ fn cst_profile_preserves_comments_across_ux_and_ai_switches_and_skips_storage_fo
     );
 
     let run_prof_sync = |extra: &[&str]| {
-        let mut cmd = Command::new(vsp_bin());
+        let mut cmd = vsp_cmd();
         cmd.args([
             "--catalog",
             catalog_arg,
@@ -355,7 +387,7 @@ fn cst_profile_preserves_comments_across_ux_and_ai_switches_and_skips_storage_fo
     assert!(v_default.get("claudeCode.preferredLocation").is_none());
 
     // 4. Creating a BRAND-NEW profile while ARTAGON_VSCODE_TEST_RUNNING=1 MUST refuse with exit 5!
-    let new_running = Command::new(vsp_bin())
+    let new_running = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -386,7 +418,7 @@ fn cst_profile_preserves_comments_across_ux_and_ai_switches_and_skips_storage_fo
     );
 
     // 5. Creating the new profile with ARTAGON_VSCODE_TEST_RUNNING=0 succeeds and updates storage.json!
-    let new_idle = Command::new(vsp_bin())
+    let new_idle = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -436,7 +468,7 @@ fn diff_and_sync_dry_run_are_byte_identical_for_json_and_text() {
 
     for selector in cases {
         for flag_mode in [&["--json"][..], &[][..]] {
-            let mut diff_cmd = Command::new(vsp_bin());
+            let mut diff_cmd = vsp_cmd();
             diff_cmd
                 .args([
                     "--catalog",
@@ -450,7 +482,7 @@ fn diff_and_sync_dry_run_are_byte_identical_for_json_and_text() {
             let diff_out = diff_cmd.output().expect("run diff");
             assert_eq!(diff_out.status.code(), Some(0));
 
-            let mut sync_cmd = Command::new(vsp_bin());
+            let mut sync_cmd = vsp_cmd();
             sync_cmd
                 .args([
                     "--catalog",
@@ -502,7 +534,7 @@ fn step0_uninstalls_compromised_extension_before_any_install_even_when_installs_
     write_executable_stub(stub_bin.path(), "code", &stub_script);
 
     // 1. Profile sync: installs fail, YET Step 0 uninstall MUST run FIRST!
-    let out = Command::new(vsp_bin())
+    let out = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -553,7 +585,7 @@ fn step0_uninstalls_compromised_extension_before_any_install_even_when_installs_
 
     // 2. Global emergency sweep `--all --compromised-only` sweeps Default + every registered profile!
     fs::write(&log_file, "").expect("clear log");
-    let sweep = Command::new(vsp_bin())
+    let sweep = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -575,8 +607,8 @@ fn step0_uninstalls_compromised_extension_before_any_install_even_when_installs_
     );
     let sweep_log = fs::read_to_string(&log_file).expect("read sweep log");
     assert!(sweep_log.contains("--uninstall-extension jscearcy.rust-doc-viewer"));
-    assert!(sweep_log.contains("--profile rust --uninstall-extension jscearcy.rust-doc-viewer"));
-    assert!(sweep_log.contains("--profile extra --uninstall-extension jscearcy.rust-doc-viewer"));
+    assert!(sweep_log.contains("--profile=rust --uninstall-extension jscearcy.rust-doc-viewer"));
+    assert!(sweep_log.contains("--profile=extra --uninstall-extension jscearcy.rust-doc-viewer"));
     assert!(!sweep_log.contains("--install-extension"));
 }
 
@@ -600,7 +632,7 @@ fn offline_from_bundle_verifies_sha256sums_blocks_n1_payloads_and_preserves_ai_c
     write_executable_stub(stub_bin.path(), "code", &stub_script);
 
     // Build deterministic dist bundles + SHA256SUMS.
-    let dist = Command::new(vsp_bin())
+    let dist = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -615,7 +647,7 @@ fn offline_from_bundle_verifies_sha256sums_blocks_n1_payloads_and_preserves_ai_c
 
     // 1. Offline import of `rust.code-profile` with `--ux retina --ai off` succeeds!
     let rust_bundle = dist_dir.path().join("rust.code-profile");
-    let imp = Command::new(vsp_bin())
+    let imp = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -678,7 +710,7 @@ fn offline_from_bundle_verifies_sha256sums_blocks_n1_payloads_and_preserves_ai_c
     // 2. Legacy `ai-profile-retina.code-profile` preserves `ai-profile-* -> ai-copilot` invariant!
     fs::write(&log_file, "").expect("clear log");
     let ai_alias_bundle = dist_dir.path().join("ai-profile-retina.code-profile");
-    let imp_ai = Command::new(vsp_bin())
+    let imp_ai = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -723,7 +755,7 @@ fn offline_from_bundle_verifies_sha256sums_blocks_n1_payloads_and_preserves_ai_c
         format!("{}  tampered.code-profile\n", "0".repeat(64)),
     )
     .expect("write sums");
-    let bad_sum_res = Command::new(vsp_bin())
+    let bad_sum_res = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -759,7 +791,7 @@ fn offline_from_bundle_verifies_sha256sums_blocks_n1_payloads_and_preserves_ai_c
         });
         fs::write(&p_file, serde_json::to_string_pretty(&doc).expect("ser")).expect("write");
 
-        let res = Command::new(vsp_bin())
+        let res = vsp_cmd()
             .args([
                 "--catalog",
                 catalog_arg,
@@ -806,7 +838,7 @@ fn exit_codes_lock_contention_6_missing_2_drift_3_invalid_4_list_fail_7_and_guar
         .join("vsp/locks")
         .join(format!("ws-{}.lock", sha256_hex(ws_canon.to_string_lossy().as_bytes())));
     let _ws_guard = acquire_advisory_lock(&ws_lock_path, Duration::from_secs(1)).expect("lock");
-    let lock_busy = Command::new(vsp_bin())
+    let lock_busy = vsp_cmd()
         .args(["--catalog", catalog_arg, "sync", ws.path().to_str().expect("utf8")])
         .env("XDG_STATE_HOME", xdg_state.path())
         .env("VSP_LOCK_TIMEOUT_MS", "60")
@@ -829,14 +861,14 @@ fn exit_codes_lock_contention_6_missing_2_drift_3_invalid_4_list_fail_7_and_guar
         .is_some());
 
     // Exit 2: missing workspace target.
-    let missing_out = Command::new(vsp_bin())
+    let missing_out = vsp_cmd()
         .args(["--catalog", catalog_arg, "sync", "/nonexistent/vsp/workspace"])
         .output()
         .expect("missing ws");
     assert_eq!(missing_out.status.code(), Some(2));
 
     // Exit 3: diff --check drift.
-    let drift_out = Command::new(vsp_bin())
+    let drift_out = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -849,7 +881,7 @@ fn exit_codes_lock_contention_6_missing_2_drift_3_invalid_4_list_fail_7_and_guar
     assert_eq!(drift_out.status.code(), Some(3));
 
     // Exit 4: invalid / permanently retired `--allow-comment-loss` flag and missing selector.
-    let retired_flag = Command::new(vsp_bin())
+    let retired_flag = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -861,7 +893,7 @@ fn exit_codes_lock_contention_6_missing_2_drift_3_invalid_4_list_fail_7_and_guar
         .expect("retired flag");
     assert_eq!(retired_flag.status.code(), Some(4));
 
-    let missing_sel = Command::new(vsp_bin())
+    let missing_sel = vsp_cmd()
         .args(["--catalog", catalog_arg, "sync"])
         .output()
         .expect("missing sel");
@@ -873,7 +905,7 @@ fn exit_codes_lock_contention_6_missing_2_drift_3_invalid_4_list_fail_7_and_guar
         "code",
         "#!/bin/sh\necho 'ipc failed' >&2\nexit 1\n",
     );
-    let list_fail = Command::new(vsp_bin())
+    let list_fail = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -898,7 +930,7 @@ fn exit_codes_lock_contention_6_missing_2_drift_3_invalid_4_list_fail_7_and_guar
 
     // Exit 5: non-TTY `--prune=unmanaged` without `-y/--yes`.
     write_executable_stub(stub_bin.path(), "code", "#!/bin/sh\nexit 0\n");
-    let prune_refuse = Command::new(vsp_bin())
+    let prune_refuse = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -922,7 +954,7 @@ fn exit_codes_lock_contention_6_missing_2_drift_3_invalid_4_list_fail_7_and_guar
     let escape_ws = TempDir::new().expect("escape ws");
     fs::write(escape_ws.path().join("Cargo.toml"), "[package]\nname=\"x\"\n").expect("cargo");
     std::os::unix::fs::symlink(outside.path(), escape_ws.path().join(".vscode")).expect("symlink");
-    let escape_res = Command::new(vsp_bin())
+    let escape_res = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -976,7 +1008,7 @@ fn repair_pins_downgrade_requires_yes_and_open_sync_aborts_on_failure() {
     write_executable_stub(stub_bin.path(), "code", &stub_script);
 
     // 1. Non-TTY `--repair-pins` downgrade without `--yes` MUST exit 5!
-    let refuse = Command::new(vsp_bin())
+    let refuse = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1004,7 +1036,7 @@ fn repair_pins_downgrade_requires_yes_and_open_sync_aborts_on_failure() {
     assert!(String::from_utf8_lossy(&refuse.stderr).contains("downgrade"));
 
     // 2. With `--yes`, stages & verifies VSIX into XDG cache and installs with `--force`!
-    let ok = Command::new(vsp_bin())
+    let ok = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1040,7 +1072,7 @@ fn repair_pins_downgrade_requires_yes_and_open_sync_aborts_on_failure() {
     // 3. `vsp open` (and alias `use`) with `--sync` aborts launch when sync fails!
     fs::write(&code_log, "").expect("clear log");
     let empty_ws = TempDir::new().expect("empty ws");
-    let open_fail = Command::new(vsp_bin())
+    let open_fail = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1063,7 +1095,7 @@ fn repair_pins_downgrade_requires_yes_and_open_sync_aborts_on_failure() {
     // 4. `vsp open` on a valid Rust workspace with `-p general-minimal --sync` converges and launches!
     let rust_ws = TempDir::new().expect("rust ws");
     fs::write(rust_ws.path().join("Cargo.toml"), "[package]\nname=\"demo\"\n").expect("cargo");
-    let open_ok = Command::new(vsp_bin())
+    let open_ok = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1092,7 +1124,7 @@ fn repair_pins_downgrade_requires_yes_and_open_sync_aborts_on_failure() {
     assert!(rust_ws.path().join(".vscode/settings.json").is_file());
     let launch_log = fs::read_to_string(&code_log).expect("log");
     assert!(launch_log.contains(&format!(
-        "--user-data-dir {} --profile general-minimal -- {}",
+        "--user-data-dir {} --profile=general-minimal -- {}",
         fake_data.path().display(),
         rust_ws.path().display()
     )));
@@ -1104,14 +1136,14 @@ fn dev_ops_pins_docs_hooks_and_compat_mock_marketplace() {
     let catalog_arg = root.to_str().expect("utf8");
 
     // 1. `vsp dev pins --check` passes cleanly on tracked repo.
-    let pins_ok = Command::new(vsp_bin())
+    let pins_ok = vsp_cmd()
         .args(["--catalog", catalog_arg, "dev", "pins", "--check"])
         .output()
         .expect("dev pins --check");
     assert_eq!(pins_ok.status.code(), Some(0));
 
     // 2. `vsp dev docs --check` passes cleanly on tracked repo.
-    let docs_ok = Command::new(vsp_bin())
+    let docs_ok = vsp_cmd()
         .args(["--catalog", catalog_arg, "dev", "docs", "--check"])
         .output()
         .expect("dev docs --check");
@@ -1158,7 +1190,7 @@ fn dev_ops_pins_docs_hooks_and_compat_mock_marketplace() {
     let ext_file = ext_tmp.path().join("exts.txt");
     fs::write(&ext_file, "editorconfig.editorconfig\n").expect("write exts");
 
-    let compat = Command::new(vsp_bin())
+    let compat = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1228,7 +1260,7 @@ fn vsix_off_host_redirect_rejected_exit_5_and_allow_unlocked_recorded_in_xdg_sta
     )
     .expect("write redir pins");
 
-    let redir_out = Command::new(vsp_bin())
+    let redir_out = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1256,7 +1288,7 @@ fn vsix_off_host_redirect_rejected_exit_5_and_allow_unlocked_recorded_in_xdg_sta
 
     // 2. Missing pins manifest fails closed with exit 5 unless `--allow-unlocked` is passed!
     let missing_pins = fixture_dir.path().join("does-not-exist-pins.json");
-    let fail_closed = Command::new(vsp_bin())
+    let fail_closed = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1276,7 +1308,7 @@ fn vsix_off_host_redirect_rejected_exit_5_and_allow_unlocked_recorded_in_xdg_sta
 
     // 3. Explicit `--allow-unlocked` prints warning to stderr, succeeds, records `unlockedBypass: true`
     //    in XDG provenance, and triggers a provenance warning in `vsp doctor`!
-    let unlocked_ok = Command::new(vsp_bin())
+    let unlocked_ok = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1320,7 +1352,7 @@ fn vsix_off_host_redirect_rejected_exit_5_and_allow_unlocked_recorded_in_xdg_sta
         "expected XDG profile provenance with unlockedBypass=true"
     );
 
-    let doc_out = Command::new(vsp_bin())
+    let doc_out = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1371,7 +1403,7 @@ fn user_default_sync_preserves_comments_and_satisfies_doctor_strict() {
         "#!/bin/sh\necho 'editorconfig.editorconfig@0.18.2'\nexit 0\n",
     );
 
-    let sync_user = Command::new(vsp_bin())
+    let sync_user = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1405,7 +1437,7 @@ fn user_default_sync_preserves_comments_and_satisfies_doctor_strict() {
     assert_eq!(parsed["extensions.autoUpdate"], false);
 
     // Doctor --strict MUST pass cleanly with both Default security keys and XDG vsp/rtk wrappers!
-    let doc_strict = Command::new(vsp_bin())
+    let doc_strict = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1443,6 +1475,15 @@ fn dev_hooks_compat_unreachable_exit_7_ps_fail_closed_and_data_dir_symlink_escap
         .expect("git init");
     assert!(init.status.success());
 
+    // Astra A04: a repository without a usable `scripts/git-hooks/pre-commit` is refused
+    // BEFORE `core.hooksPath` is written.
+    let refused = vsp::dev_ops::run_dev_hooks(tmp_repo.path(), false, true)
+        .expect_err("hooks without pre-commit");
+    assert_eq!(refused.exit_code().as_i32(), 1);
+    let hooks_dir = tmp_repo.path().join("scripts/git-hooks");
+    fs::create_dir_all(&hooks_dir).expect("mkdir hooks");
+    write_executable_stub(&hooks_dir, "pre-commit", "#!/bin/sh\nexit 0\n");
+
     let h1 = vsp::dev_ops::run_dev_hooks(tmp_repo.path(), false, true).expect("hooks 1");
     assert_eq!(h1.as_i32(), 0);
     let h2 = vsp::dev_ops::run_dev_hooks(tmp_repo.path(), false, true).expect("hooks 2");
@@ -1466,7 +1507,7 @@ fn dev_hooks_compat_unreachable_exit_7_ps_fail_closed_and_data_dir_symlink_escap
     let ext_tmp = TempDir::new().expect("ext");
     let ext_file = ext_tmp.path().join("exts.txt");
     fs::write(&ext_file, "editorconfig.editorconfig\n").expect("write");
-    let compat_down = Command::new(vsp_bin())
+    let compat_down = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1491,7 +1532,7 @@ fn dev_hooks_compat_unreachable_exit_7_ps_fail_closed_and_data_dir_symlink_escap
     write_executable_stub(stub_bin.path(), "code", "#!/bin/sh\nexit 0\n");
     write_executable_stub(stub_bin.path(), "ps", "#!/bin/sh\nexit 1\n");
 
-    let ps_fail = Command::new(vsp_bin())
+    let ps_fail = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
@@ -1520,7 +1561,7 @@ fn dev_hooks_compat_unreachable_exit_7_ps_fail_closed_and_data_dir_symlink_escap
     let escaped_root = TempDir::new().expect("escaped root");
     let outside = TempDir::new().expect("outside");
     std::os::unix::fs::symlink(outside.path(), escaped_root.path().join("User")).expect("symlink");
-    let data_escape = Command::new(vsp_bin())
+    let data_escape = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,

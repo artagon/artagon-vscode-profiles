@@ -108,13 +108,76 @@ pub fn merge_jsonc_object_str(
 
     // Self-verify syntactic validity so we never emit broken JSONC.
     let verified = parse_jsonc_value(&out, "cst_merge_result")?;
-    if !verified.is_object() {
+    let Value::Object(verified_obj) = &verified else {
         return Err(VspError::Operational(
             "internal CST merge error: resulting document is not a JSON object".to_string(),
         ));
+    };
+
+    // Self-verify the values too: each desired leaf must be the effective value in the
+    // emitted document. A duplicate key that survived the merge would fail here.
+    if let Err(path) = verify_desired_applied(desired, verified_obj, &opts.union_array_keys, true)
+    {
+        return Err(VspError::Operational(format!(
+            "internal CST merge error: desired setting '{path}' is not effective in the merged document"
+        )));
     }
 
     Ok(out)
+}
+
+/// Checks that `output` contains each desired value with the merge semantics of
+/// [`merge_jsonc_object_str`]: objects are merged (subset check), top-level union arrays
+/// contain each desired item, and every other value is equal. Returns the dotted path of
+/// the first mismatch.
+fn verify_desired_applied(
+    desired: &Map<String, Value>,
+    output: &Map<String, Value>,
+    union_keys: &BTreeSet<String>,
+    is_top_level: bool,
+) -> Result<(), String> {
+    for (key, desired_val) in desired {
+        let Some(actual) = output.get(key) else {
+            return Err(key.clone());
+        };
+        match (desired_val, actual) {
+            (Value::Object(desired_sub), Value::Object(actual_sub)) => {
+                verify_desired_applied(desired_sub, actual_sub, union_keys, false)
+                    .map_err(|inner| format!("{key}.{inner}"))?;
+            }
+            (Value::Array(desired_arr), Value::Array(actual_arr))
+                if is_top_level && union_keys.contains(key) =>
+            {
+                if !desired_arr.iter().all(|item| actual_arr.contains(item)) {
+                    return Err(key.clone());
+                }
+            }
+            _ if desired_val == actual => {}
+            _ => return Err(key.clone()),
+        }
+    }
+    Ok(())
+}
+
+/// Removes every occurrence of property `key` in `cst_obj` except the last one.
+///
+/// JSON readers (VS Code included) use the last occurrence of a duplicate key, while
+/// [`CstObject::get`] returns the first. Without this step a managed value would be written
+/// to the first occurrence and a later duplicate would silently stay effective.
+fn remove_duplicate_props(cst_obj: &CstObject, key: &str) {
+    let matching: Vec<CstObjectProp> = cst_obj
+        .properties()
+        .into_iter()
+        .filter(|prop| {
+            prop.name()
+                .and_then(|name| name.decoded_value().ok())
+                .is_some_and(|name| name == key)
+        })
+        .collect();
+    let keep = matching.len().saturating_sub(1);
+    for prop in matching.into_iter().take(keep) {
+        prop.remove();
+    }
 }
 
 /// Losslessly merges workspace `.vscode/extensions.json` preserving comments and user-owned
@@ -315,6 +378,8 @@ fn merge_into_cst_object(
     is_top_level: bool,
 ) -> VspResult<()> {
     for (key, desired_val) in desired {
+        // Leave one occurrence (the effective, last one) of each desired key.
+        remove_duplicate_props(cst_obj, key);
         if let Some(prop) = cst_obj.get(key) {
             if let (Value::Object(desired_sub), Some(existing_sub)) =
                 (desired_val, prop.object_value())
@@ -643,6 +708,93 @@ mod tests {
         assert_eq!(
             parsed["new.escaped"],
             "path\\with\\backslashes \"and\" quotes\nline2"
+        );
+    }
+
+    /// Opus M3: a duplicate key cannot keep an unmanaged value effective.
+    #[test]
+    fn duplicate_keys_are_collapsed_so_the_managed_value_is_effective() {
+        let existing = r#"{
+  // first occurrence
+  "security.workspace.trust.untrustedFiles": "open",
+  "my.key": 1, // user comment
+  "editor.quickSuggestions": { "other": "off" },
+  /* second occurrence: the one VS Code reads */
+  "security.workspace.trust.untrustedFiles": "open",
+  "editor.quickSuggestions": { "comments": "on", "other": "off", "other": "inline" },
+  "stale.key": true,
+  "stale.key": false
+}
+"#;
+        let mut desired = Map::new();
+        desired.insert(
+            "security.workspace.trust.untrustedFiles".to_string(),
+            Value::String("prompt".to_string()),
+        );
+        desired.insert(
+            "editor.quickSuggestions".to_string(),
+            serde_json::json!({ "other": "on" }),
+        );
+        let merged = merge_jsonc_object_str(
+            existing,
+            &desired,
+            &CstMergeOptions {
+                delete_keys: vec!["stale.key".to_string()],
+                ..Default::default()
+            },
+        )
+        .expect("merge");
+
+        assert_eq!(
+            merged.matches("security.workspace.trust.untrustedFiles").count(),
+            1,
+            "{merged}"
+        );
+        assert_eq!(merged.matches("\"editor.quickSuggestions\"").count(), 1, "{merged}");
+        assert_eq!(merged.matches("\"other\"").count(), 1, "{merged}");
+        assert!(!merged.contains("stale.key"), "{merged}");
+        assert!(!merged.contains("\"open\""), "{merged}");
+        assert!(merged.contains("// user comment"), "{merged}");
+
+        let parsed = parse_jsonc_value(&merged, "merged").expect("valid JSONC");
+        assert_eq!(parsed["security.workspace.trust.untrustedFiles"], "prompt");
+        assert_eq!(parsed["editor.quickSuggestions"]["other"], "on");
+        // The user's member of the effective (last) object is kept.
+        assert_eq!(parsed["editor.quickSuggestions"]["comments"], "on");
+        assert_eq!(parsed["my.key"], 1);
+    }
+
+    #[test]
+    fn post_merge_verification_reports_a_value_that_is_not_effective() {
+        let desired: Map<String, Value> =
+            serde_json::from_str(r#"{"a.b": 1, "obj": {"x": {"y": 2}}, "arr": [1, 2]}"#)
+                .expect("desired");
+        let union: BTreeSet<String> = ["arr".to_string()].into_iter().collect();
+        let ok: Map<String, Value> = serde_json::from_str(
+            r#"{"a.b": 1, "obj": {"x": {"y": 2, "z": 3}}, "arr": [0, 1, 2], "user": true}"#,
+        )
+        .expect("ok");
+        assert!(verify_desired_applied(&desired, &ok, &union, true).is_ok());
+
+        let wrong_leaf: Map<String, Value> =
+            serde_json::from_str(r#"{"a.b": 1, "obj": {"x": {"y": 9}}, "arr": [1, 2]}"#)
+                .expect("wrong");
+        assert_eq!(
+            verify_desired_applied(&desired, &wrong_leaf, &union, true),
+            Err("obj.x.y".to_string())
+        );
+        let missing: Map<String, Value> =
+            serde_json::from_str(r#"{"obj": {"x": {"y": 2}}, "arr": [1, 2]}"#).expect("missing");
+        assert_eq!(
+            verify_desired_applied(&desired, &missing, &union, true),
+            Err("a.b".to_string())
+        );
+        let short_union: Map<String, Value> =
+            serde_json::from_str(r#"{"a.b": 1, "obj": {"x": {"y": 2}}, "arr": [1]}"#)
+                .expect("short");
+        assert_eq!(
+            verify_desired_applied(&desired, &short_union, &union, true),
+            Err("arr".to_string())
         );
     }
 

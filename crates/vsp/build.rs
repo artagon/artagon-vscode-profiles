@@ -33,6 +33,10 @@ fn main() {
     let mut watched_dirs: Vec<PathBuf> = Vec::new();
 
     for rel in REQUIRED_FILES {
+        // Cargo watches the resolved path. A symbolic link could be retargeted without any
+        // change to the old target, and an incremental build would then embed stale bytes.
+        // Required inputs must therefore be real files in real directories.
+        reject_symlink_components(&canon_root, rel).unwrap_or_else(|e| panic!("{e}"));
         let abs = canon_root.join(rel);
         let canon = fs::canonicalize(&abs).unwrap_or_else(|e| {
             panic!(
@@ -53,6 +57,8 @@ fn main() {
         entries.push(((*rel).to_string(), canon));
     }
 
+    // The packs root follows the same rule as its children: no symbolic link.
+    reject_symlink_components(&canon_root, "packs").unwrap_or_else(|e| panic!("{e}"));
     let packs_dir = canon_root.join("packs");
     let canon_packs = fs::canonicalize(&packs_dir).unwrap_or_else(|e| {
         panic!(
@@ -99,6 +105,34 @@ fn main() {
         .unwrap_or_else(|e| panic!("failed to create {}: {e}", dest_path.display()));
     file.write_all(out.as_bytes())
         .unwrap_or_else(|e| panic!("failed to write {}: {e}", dest_path.display()));
+}
+
+/// Rejects a symbolic link at the relative path `rel` or at any of its directory
+/// components beneath `root`.
+///
+/// `root` itself is not examined (it is already canonical). A component that does not
+/// exist is not an error here; the caller reports the missing input.
+pub(crate) fn reject_symlink_components(root: &Path, rel: &str) -> Result<(), String> {
+    let mut current = root.to_path_buf();
+    for part in rel.split('/').filter(|part| !part.is_empty()) {
+        if part == "." || part == ".." {
+            return Err(format!(
+                "embedded snapshot input '{rel}' must not contain '{part}' components"
+            ));
+        }
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(format!(
+                    "symlinks are forbidden for embedded snapshot inputs: {} (in '{rel}')",
+                    current.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    Ok(())
 }
 
 fn collect_packs_tree(

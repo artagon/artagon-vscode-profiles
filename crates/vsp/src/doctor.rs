@@ -109,7 +109,10 @@ impl DoctorReport {
 /// 4. Live VS Code extension scan across `default` and all profiles in `storage.json`:
 ///    flags compromised extensions as `FAIL`, pin version drift as `WARN`, and failed
 ///    `code --list-extensions` probes as `incomplete_observation = true` (exit `7`) while
-///    continuing to scan remaining profiles.
+///    continuing to scan remaining profiles. A missing `code` CLI or an unresolved VS Code
+///    store also sets `incomplete_observation = true` (exit `7`): the audit never ends with
+///    a warning or exit `0` when it could not observe the installed extensions. Recorded
+///    `--allow-unlocked` and publisher-allowlist bypasses are reported as `WARN`.
 #[must_use]
 pub fn run_doctor(
     catalog: &WorkspaceCatalog,
@@ -181,10 +184,13 @@ pub fn run_doctor(
     let store = match resolve_vscode_store(vscode_data_dir, true) {
         Ok(s) => Some(s),
         Err(err) => {
+            // The live profile scan cannot run against an unresolved store, so the audit
+            // is incomplete (exit 7), not only failed.
+            report.incomplete_observation = true;
             report.record(
                 CheckSeverity::Fail,
                 "store",
-                format!("VS Code store configuration mismatch: {err}"),
+                format!("audit incomplete — VS Code store configuration mismatch: {err}"),
             );
             resolve_vscode_store(vscode_data_dir, false).ok()
         }
@@ -198,10 +204,14 @@ pub fn run_doctor(
     // 4. Live VS Code extension scan across Default + all registered profiles.
     match find_code_binary() {
         None => {
+            // Without `code`, installed extensions cannot be observed. A compromised
+            // extension could be present, so this is an incomplete audit (exit 7) and never
+            // a warning or a clean exit.
+            report.incomplete_observation = true;
             report.record(
-                CheckSeverity::Warn,
+                CheckSeverity::Fail,
                 "code",
-                "VS Code 'code' CLI not on PATH (skipping live profile inspection)",
+                "audit incomplete — VS Code 'code' CLI not on PATH (live profile inspection was not done)",
             );
         }
         Some(code_bin) => {
@@ -230,6 +240,16 @@ pub fn run_doctor(
                 let locked_versions = load_verified_lock_versions(catalog);
                 for prof in scan_profiles {
                     if let Some(prov) = load_profile_provenance(&st.user_dir, &prof) {
+                        if prov.publisher_trust_bypass {
+                            report.record(
+                                CheckSeverity::Warn,
+                                "provenance",
+                                format!(
+                                    "profile '{}' was last synced with ARTAGON_VSCODE_TRUST_UNKNOWN_PUBLISHER=1 (publisher allowlist bypassed at {})",
+                                    prof, prov.last_sync_at
+                                ),
+                            );
+                        }
                         if prov.unlocked_bypass {
                             report.record(
                                 CheckSeverity::Warn,

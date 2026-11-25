@@ -33,6 +33,24 @@ pub const EXEC_OVERRIDE_KEYS: &[&str] = &[
     "chatgpt.cliExecutable",
 ];
 
+/// Execution-override key prefixes denied anywhere in configuration. A key is denied when
+/// it equals a prefix or continues it with `.` (for example
+/// `terminal.integrated.profiles.osx`). Matching is case-insensitive and also covers nested
+/// objects and `[language]` blocks.
+///
+/// These settings select the program, arguments, and environment of the integrated
+/// terminal, so an untrusted bundle or override could use them to run an attacker binary.
+/// `vsp` adds its own RTK terminal profile after the deny-list check.
+pub const EXEC_OVERRIDE_KEY_PREFIXES: &[&str] = &[
+    "terminal.integrated.profiles",
+    "terminal.integrated.env",
+    "terminal.integrated.automationProfile",
+    "terminal.integrated.defaultProfile",
+];
+
+/// `claudeCode.initialPermissionMode` values that remove the per-action confirmation.
+const DENIED_PERMISSION_MODES: &[&str] = &["bypassPermissions", "acceptEdits"];
+
 /// Individual policy or validation violation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PolicyViolation {
@@ -84,6 +102,110 @@ pub fn matches_key_or_path(leaf_key: &str, joined_path: &str, target: &str) -> b
     let kl = leaf_key.to_ascii_lowercase();
     let pl = joined_path.to_ascii_lowercase();
     kl == t || pl == t || pl.ends_with(&format!(".{t}"))
+}
+
+/// Checks whether a leaf key or its joined dotted path equals `prefix` or continues it with
+/// `.`, at the start or after a `.` (case-insensitive). This also matches a nested object
+/// path (`terminal` -> `integrated` -> `profiles`) and a key inside a `[language]` block.
+#[must_use]
+pub fn matches_key_prefix(leaf_key: &str, joined_path: &str, prefix: &str) -> bool {
+    let p = prefix.to_ascii_lowercase();
+    [leaf_key, joined_path].iter().any(|candidate| {
+        let c = candidate.to_ascii_lowercase();
+        c == p
+            || c.starts_with(&format!("{p}."))
+            || c.ends_with(&format!(".{p}"))
+            || c.contains(&format!(".{p}."))
+    })
+}
+
+/// Inspects a VS Code `tasks.json` document for tasks that run without a user action.
+///
+/// A task with `runOptions.runOn == "folderOpen"` starts when the folder opens, so a
+/// managed workspace file must never contain one. The check is recursive and
+/// case-insensitive.
+#[must_use]
+pub fn check_tasks_denylist(tasks_doc: &Value, label: &str) -> Vec<PolicyViolation> {
+    fn walk(value: &Value, label: &str, out: &mut Vec<PolicyViolation>) {
+        match value {
+            Value::Object(map) => {
+                for (key, val) in map {
+                    if key.eq_ignore_ascii_case("runOn")
+                        && val
+                            .as_str()
+                            .is_some_and(|s| s.eq_ignore_ascii_case("folderOpen"))
+                    {
+                        out.push(PolicyViolation {
+                            source: label.to_string(),
+                            message: "forbidden auto-run task: runOptions.runOn=folderOpen"
+                                .to_string(),
+                        });
+                    }
+                    walk(val, label, out);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, label, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut violations = Vec::new();
+    walk(tasks_doc, label, &mut violations);
+    violations
+}
+
+/// One entry of [`flatten_setting_paths`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlatSetting<'a> {
+    /// Dotted setting key (for example `telemetry.telemetryLevel`).
+    pub key: String,
+    /// Value at that key.
+    pub value: &'a Value,
+    /// `true` when the entry is inside a `[language]` block.
+    pub in_language_block: bool,
+}
+
+/// Flattens a settings map into dotted keys for key-based lints.
+///
+/// Each top-level entry is emitted. A nested object is also emitted with its joined dotted
+/// path (`{"telemetry": {"telemetryLevel": ..}}` gives `telemetry.telemetryLevel`), and the
+/// entries of a `[language]` block are emitted with their own keys. A lint that looks up
+/// only top-level keys would miss both forms.
+#[must_use]
+pub fn flatten_setting_paths(map: &Map<String, Value>) -> Vec<FlatSetting<'_>> {
+    fn walk<'a>(
+        prefix: &str,
+        in_lang: bool,
+        map: &'a Map<String, Value>,
+        out: &mut Vec<FlatSetting<'a>>,
+    ) {
+        for (key, value) in map {
+            let is_lang_block = key.starts_with('[') && key.ends_with(']');
+            let path = if prefix.is_empty() || is_lang_block {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            out.push(FlatSetting {
+                key: path.clone(),
+                value,
+                in_language_block: in_lang,
+            });
+            if let Value::Object(inner) = value {
+                if is_lang_block {
+                    walk("", true, inner, out);
+                } else {
+                    walk(&path, in_lang, inner, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk("", false, map, &mut out);
+    out
 }
 
 /// Checks whether a key or dotted path matches `(^|\.)chat\.tools\..*autoapprov` case-insensitively.
@@ -151,14 +273,28 @@ fn inspect_autonomy_node(
                         source: label.to_string(),
                         message: format!("forbidden autonomy setting: {joined}=true"),
                     });
-                } else if matches_key_or_path(key, &joined, "claudeCode.initialPermissionMode")
-                    && val
-                        .as_str()
-                        .is_some_and(|s| s.eq_ignore_ascii_case("bypasspermissions"))
+                } else if let Some(mode) = val
+                    .as_str()
+                    .filter(|_| {
+                        matches_key_or_path(key, &joined, "claudeCode.initialPermissionMode")
+                    })
+                    .and_then(|s| {
+                        DENIED_PERMISSION_MODES
+                            .iter()
+                            .find(|denied| s.eq_ignore_ascii_case(denied))
+                    })
                 {
                     violations.push(PolicyViolation {
                         source: label.to_string(),
-                        message: format!("forbidden autonomy setting: {joined}=bypassPermissions"),
+                        message: format!("forbidden autonomy setting: {joined}={mode}"),
+                    });
+                } else if EXEC_OVERRIDE_KEY_PREFIXES
+                    .iter()
+                    .any(|prefix| matches_key_prefix(key, &joined, prefix))
+                {
+                    violations.push(PolicyViolation {
+                        source: label.to_string(),
+                        message: format!("forbidden exec-override key: {joined}"),
                     });
                 } else if matches_key_or_path(key, &joined, "geminicodeassist.agentYoloMode")
                     && norm_b == Some(true)
@@ -205,60 +341,100 @@ pub fn is_valid_sha256_hex(digest: &str) -> bool {
     digest.len() == 64 && digest.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// Validates that a VSIX URL uses `https://` and an official Visual Studio Marketplace host
-/// with no userinfo (`@`) or authority spoofing (`?`, `#`).
-#[must_use]
-pub fn is_valid_marketplace_vsix_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://") else {
-        return false;
-    };
-    let authority = match rest.find('/') {
-        Some(idx) => &rest[..idx],
-        None => rest,
-    };
-    if authority.is_empty()
-        || authority.contains('@')
-        || authority.contains('?')
-        || authority.contains('#')
-        || authority.chars().any(char::is_whitespace)
+/// Host suffixes of the Visual Studio Marketplace asset CDNs (each needs a non-empty prefix).
+const MARKETPLACE_CDN_SUFFIXES: &[&str] = &[".gallery.vsassets.io", ".gallerycdn.vsassets.io"];
+
+/// The single VSIX URL validator, shared by catalog validation and the runtime downloader.
+///
+/// The URL is parsed with [`url::Url`] (RFC 3986 / WHATWG). A URL is accepted when:
+///
+/// - the scheme is `https`, there is no userinfo, and the host is
+///   `marketplace.visualstudio.com`, `<name>.gallery.vsassets.io`, or
+///   `<name>.gallerycdn.vsassets.io`; or
+/// - `allow_test_urls` is `true` and the URL is `http://` with a host that is exactly
+///   `localhost`, `127.0.0.1`, or `[::1]`, or is a `file://` URL with no host.
+///
+/// Raw input that contains whitespace, a control character, or a backslash is rejected
+/// before parsing, so the HTTP client cannot read the URL differently from this validator.
+///
+/// # Errors
+///
+/// Returns a human-readable reason when the URL is rejected.
+pub fn check_vsix_url(url: &str, allow_test_urls: bool) -> Result<(), String> {
+    if url
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
     {
-        return false;
+        return Err(format!(
+            "rejected URL with whitespace, control character, or backslash: {url:?}"
+        ));
     }
-
-    let (host, port_opt) = match authority.split_once(':') {
-        Some((h, p)) => (h, Some(p)),
-        None => (authority, None),
-    };
-    if let Some(port) = port_opt {
-        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
-            return false;
-        }
+    let parsed = url::Url::parse(url).map_err(|err| format!("rejected unparsable URL {url}: {err}"))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(format!("rejected URL with userinfo: {url}"));
     }
-
-    let labels: Vec<&str> = host.split('.').collect();
-    if labels.len() < 2
-        || labels.iter().any(|lbl| {
-            lbl.is_empty()
-                || !lbl
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        })
-    {
-        return false;
-    }
-
-    let host_lc = host.to_ascii_lowercase();
-    if host_lc == "marketplace.visualstudio.com" {
-        return true;
-    }
-    for suffix in [".gallery.vsassets.io", ".gallerycdn.vsassets.io"] {
-        if let Some(prefix) = host_lc.strip_suffix(suffix) {
-            if !prefix.is_empty() && !prefix.starts_with('.') && !prefix.ends_with('.') {
-                return true;
+    // The authority must end at a path (`/`) or at the end of the URL. A query or fragment
+    // directly after the host (`https://host?x`) is rejected: no VSIX URL has that form.
+    if let Some((_, after_scheme)) = url.split_once("://") {
+        if let Some(pos) = after_scheme.find(['/', '?', '#']) {
+            if !after_scheme[pos..].starts_with('/') {
+                return Err(format!("rejected malformed URL authority: {url}"));
             }
         }
     }
-    false
+
+    if allow_test_urls {
+        match parsed.scheme() {
+            "file" => {
+                return match parsed.host() {
+                    None => Ok(()),
+                    Some(_) => Err(format!("rejected file:// test URL with a host: {url}")),
+                };
+            }
+            "http" => {
+                let is_loopback = match parsed.host() {
+                    Some(url::Host::Domain(domain)) => domain == "localhost",
+                    Some(url::Host::Ipv4(addr)) => addr == std::net::Ipv4Addr::LOCALHOST,
+                    Some(url::Host::Ipv6(addr)) => addr == std::net::Ipv6Addr::LOCALHOST,
+                    None => false,
+                };
+                return if is_loopback {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "rejected non-loopback http:// test URL (host must be localhost, 127.0.0.1, or [::1]): {url}"
+                    ))
+                };
+            }
+            _ => {}
+        }
+    }
+
+    if parsed.scheme() != "https" {
+        return Err(format!("rejected non-HTTPS URL: {url}"));
+    }
+    let Some(url::Host::Domain(host)) = parsed.host() else {
+        return Err(format!("rejected URL without a DNS host name: {url}"));
+    };
+    let host_lc = host.to_ascii_lowercase();
+    if host_lc == "marketplace.visualstudio.com" {
+        return Ok(());
+    }
+    for suffix in MARKETPLACE_CDN_SUFFIXES {
+        if let Some(prefix) = host_lc.strip_suffix(suffix) {
+            if !prefix.is_empty() && !prefix.starts_with('.') && !prefix.ends_with('.') {
+                return Ok(());
+            }
+        }
+    }
+    Err(format!("rejected off-host URL '{host_lc}' in {url}"))
+}
+
+/// Validates that a VSIX URL uses `https://` and an official Visual Studio Marketplace host
+/// with no userinfo. This is [`check_vsix_url`] with test URLs disabled.
+#[must_use]
+pub fn is_valid_marketplace_vsix_url(url: &str) -> bool {
+    check_vsix_url(url, false).is_ok()
 }
 
 /// Runs the complete repository & security validation suite backing `vsp dev validate`.
@@ -355,6 +531,13 @@ pub fn validate_repository(catalog: &WorkspaceCatalog) -> ValidationReport {
                     }
                 }
             }
+        }
+
+        if let Some(tasks_doc) = &def.tasks_doc {
+            violations.extend(check_tasks_denylist(
+                tasks_doc,
+                &format!("{manifest_label} (tasks)"),
+            ));
         }
 
         for r in def
@@ -716,7 +899,8 @@ fn validate_settings_fragment(
                 message: "top-level editor.defaultFormatter forbidden in workspace settings (scope inside [lang])".to_string(),
             });
         }
-        for k in map.keys() {
+        for flat in flatten_setting_paths(map) {
+            let k = &flat.key;
             if ux_keys.iter().any(|u| u == k) {
                 violations.push(PolicyViolation {
                     source: source.to_string(),
@@ -754,7 +938,11 @@ fn validate_settings_fragment(
         return;
     };
 
-    for (key, value) in map {
+    // Nested objects and `[language]` blocks are flattened to dotted keys first, so a nested
+    // form cannot avoid the forbidden-key and scope lints.
+    for flat in flatten_setting_paths(map) {
+        let key = &flat.key;
+        let value = flat.value;
         if scopes.forbidden_keys.iter().any(|fk| fk == key) {
             violations.push(PolicyViolation {
                 source: source.to_string(),
@@ -765,9 +953,16 @@ fn validate_settings_fragment(
             continue;
         };
 
-        if is_workspace
-            && matches!(spec.scope.as_str(), "machine" | "profile" | "application")
-        {
+        // A `[language]` block in a workspace file is the intended place for a
+        // language-specific override of a profile-layer editor setting (for example
+        // `"[markdown]": {"editor.quickSuggestions": ..}`), so the `profile` scope is not
+        // reported there. `machine` and `application` settings are reported in every form.
+        let scope_forbidden_here = if flat.in_language_block {
+            matches!(spec.scope.as_str(), "machine" | "application")
+        } else {
+            matches!(spec.scope.as_str(), "machine" | "profile" | "application")
+        };
+        if is_workspace && scope_forbidden_here {
             violations.push(PolicyViolation {
                 source: source.to_string(),
                 message: format!(
@@ -1181,7 +1376,8 @@ fn check_baseline_invariants(
         });
     }
     if check_no_ux_leak {
-        for k in obj.keys() {
+        for flat in flatten_setting_paths(obj) {
+            let k = &flat.key;
             if ux_keys.iter().any(|u| u == k) {
                 violations.push(PolicyViolation {
                     source: source.to_string(),
@@ -1277,6 +1473,139 @@ mod tests {
             .and_then(Path::parent)
             .expect("repo root")
             .to_path_buf()
+    }
+
+    /// Opus M4: terminal exec-override keys and `acceptEdits` are denied in every form.
+    #[test]
+    fn denylist_blocks_terminal_exec_overrides_and_permission_modes() {
+        for payload in [
+            json!({"terminal.integrated.profiles.osx": {"x": {"path": "/tmp/evil"}}}),
+            json!({"terminal.integrated.env.linux": {"LD_PRELOAD": "/tmp/x.so"}}),
+            json!({"terminal.integrated.automationProfile.osx": {"path": "/tmp/evil"}}),
+            json!({"terminal.integrated.defaultProfile.windows": "evil"}),
+            json!({"terminal": {"integrated": {"profiles": {"osx": {}}}}}),
+            json!({"Terminal.Integrated.Env.OSX": {}}),
+            json!({"[rust]": {"terminal.integrated.env.osx": {}}}),
+            json!({"claudeCode.initialPermissionMode": "acceptEdits"}),
+            json!({"claudeCode": {"initialPermissionMode": "ACCEPTEDITS"}}),
+            json!({"claudeCode.initialPermissionMode": "bypassPermissions"}),
+        ] {
+            assert!(
+                !check_autonomy_denylist(&payload, "t").is_empty(),
+                "must be denied: {payload}"
+            );
+        }
+        for allowed in [
+            json!({"terminal.integrated.fontSize": 12}),
+            json!({"terminal.integrated.profilesExtra": 1}),
+            json!({"claudeCode.initialPermissionMode": "default"}),
+        ] {
+            assert!(
+                check_autonomy_denylist(&allowed, "t").is_empty(),
+                "must be allowed: {allowed}"
+            );
+        }
+    }
+
+    /// Opus M4: a managed tasks document must not contain an auto-run task.
+    #[test]
+    fn tasks_denylist_blocks_folder_open_auto_run() {
+        let bad = json!({"version": "2.0.0", "tasks": [
+            {"label": "ok", "command": "cargo build"},
+            {"label": "auto", "command": "curl x | sh", "runOptions": {"runOn": "folderOpen"}}
+        ]});
+        assert_eq!(check_tasks_denylist(&bad, "t").len(), 1);
+        let bad_case = json!({"tasks": [{"runOptions": {"RunOn": "FOLDEROPEN"}}]});
+        assert_eq!(check_tasks_denylist(&bad_case, "t").len(), 1);
+        let good = json!({"tasks": [{"label": "ok", "runOptions": {"runOn": "default"}}]});
+        assert!(check_tasks_denylist(&good, "t").is_empty());
+
+        let mut catalog = load_legacy_catalog(&repo_root()).expect("catalog");
+        catalog.modules.get_mut("rust").expect("rust").tasks_doc = Some(bad);
+        let report = validate_repository(&catalog);
+        assert!(report
+            .violations
+            .iter()
+            .any(|v| v.message.contains("runOn=folderOpen")));
+    }
+
+    /// Opus L5: nested objects and `[language]` blocks reach the scope, forbidden-key, and
+    /// UX lints.
+    #[test]
+    fn scope_and_ux_lints_see_nested_and_language_block_keys() {
+        let map = json!({
+            "a.b": 1,
+            "telemetry": {"telemetryLevel": "all"},
+            "[rust]": {"editor.fontSize": 9, "x": {"y": true}}
+        });
+        let flat_entries = flatten_setting_paths(map.as_object().expect("object"));
+        assert!(flat_entries
+            .iter()
+            .any(|f| f.key == "editor.fontSize" && f.in_language_block));
+        assert!(flat_entries
+            .iter()
+            .any(|f| f.key == "telemetry.telemetryLevel" && !f.in_language_block));
+        let flat: Vec<String> = flat_entries.into_iter().map(|f| f.key).collect();
+        for expected in [
+            "a.b",
+            "telemetry",
+            "telemetry.telemetryLevel",
+            "[rust]",
+            "editor.fontSize",
+            "x",
+            "x.y",
+        ] {
+            assert!(flat.iter().any(|k| k == expected), "missing {expected}: {flat:?}");
+        }
+
+        let catalog = load_legacy_catalog(&repo_root()).expect("catalog");
+        let ux_keys = catalog.ux_managed_keys();
+        let ux_key = ux_keys.first().expect("a UX key").clone();
+        let (head, tail) = ux_key.split_once('.').expect("dotted UX key");
+
+        // Workspace fragment: nested and `[language]` forms of a UX key and of the
+        // application-scoped telemetry key are reported.
+        let mut violations = Vec::new();
+        let fragment = json!({
+            head: {tail: 1},
+            "[rust]": {ux_key.clone(): 1, "telemetry.telemetryLevel": "all"},
+            "telemetry": {"telemetryLevel": "all"}
+        });
+        validate_settings_fragment(
+            &catalog,
+            "fragment",
+            fragment.as_object().expect("object"),
+            true,
+            &ux_keys,
+            &mut violations,
+        );
+        let ux_hits = violations
+            .iter()
+            .filter(|v| v.message.contains("personal UX key forbidden"))
+            .count();
+        assert_eq!(ux_hits, 2, "{violations:?}");
+        // The application-scoped key is reported for the nested form and for the
+        // `[language]` form.
+        let telemetry_hits = violations
+            .iter()
+            .filter(|v| {
+                v.message.contains("key telemetry.telemetryLevel has scope=application")
+            })
+            .count();
+        assert_eq!(telemetry_hits, 2, "{violations:?}");
+    }
+
+    /// The shared validator rejects a query or fragment directly after the host.
+    #[test]
+    fn vsix_url_validator_requires_a_path_after_the_host() {
+        assert!(check_vsix_url("https://marketplace.visualstudio.com/x?y=1#z", false).is_ok());
+        for bad in [
+            "https://marketplace.visualstudio.com?evil=1",
+            "https://marketplace.visualstudio.com#frag",
+            "https://marketplace.visualstudio.com:443?x",
+        ] {
+            assert!(check_vsix_url(bad, false).is_err(), "{bad}");
+        }
     }
 
     #[test]

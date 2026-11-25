@@ -50,17 +50,32 @@ pub struct DetectionResult {
 ///
 /// # Errors
 ///
-/// Returns [`VspError::TargetMissing`] (exit `2`) if `target_path` does not exist or is
-/// not a directory, or [`VspError::Operational`] on unreadable workspace traversal errors.
+/// - [`VspError::TargetMissing`] (exit `2`): `target_path` does not exist or is not a
+///   directory.
+/// - [`VspError::IncompleteObservation`] (exit `7`): the target, a directory in it, or a
+///   source file that a rule must read exists but cannot be read (for example permission
+///   denied). The scan is incomplete, so no "no match" result is returned.
 pub fn detect_workspace(
     catalog: &WorkspaceCatalog,
     target_path: &Path,
 ) -> VspResult<DetectionResult> {
-    if !target_path.is_dir() {
-        return Err(VspError::TargetMissing(format!(
-            "path does not exist or is not a directory: {}",
-            target_path.display()
-        )));
+    // A missing target is exit 2. A target that exists but cannot be examined (for example
+    // permission denied on a parent directory) is an incomplete scan (exit 7), not "missing".
+    match fs::metadata(target_path) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            return Err(VspError::TargetMissing(format!(
+                "path does not exist or is not a directory: {}",
+                target_path.display()
+            )));
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(VspError::TargetMissing(format!(
+                "path does not exist or is not a directory: {}",
+                target_path.display()
+            )));
+        }
+        Err(err) => return Err(scan_incomplete(target_path, &err)),
     }
     let ws_root = fs::canonicalize(target_path).map_err(|err| {
         VspError::TargetMissing(format!(
@@ -267,20 +282,40 @@ fn eval_rule(ws_root: &Path, rule: &DetectRule) -> VspResult<Option<String>> {
             let mut candidates = Vec::new();
             collect_matching_files(&search_base, glob, 8, GREP_PRUNE_DIRS, 1, &mut candidates)?;
             for cand in candidates {
-                if let Ok(content) = fs::read_to_string(&cand) {
-                    if content.contains(pattern.as_str()) {
-                        let rel = cand
-                            .strip_prefix(ws_root)
-                            .unwrap_or(&cand)
-                            .to_string_lossy()
-                            .replace('\\', "/");
-                        return Ok(Some(format!("{found_manifest}:{rel}")));
-                    }
+                // Read bytes, not UTF-8 text: a source file in another encoding can still
+                // contain the pattern. A file that vanished is skipped. Every other read
+                // failure means the scan is incomplete, so "no match" cannot be reported.
+                let content = match fs::read(&cand) {
+                    Ok(bytes) => bytes,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(err) => return Err(scan_incomplete(&cand, &err)),
+                };
+                if contains_bytes(&content, pattern.as_bytes()) {
+                    let rel = cand
+                        .strip_prefix(ws_root)
+                        .unwrap_or(&cand)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    return Ok(Some(format!("{found_manifest}:{rel}")));
                 }
             }
             Ok(None)
         }
     }
+}
+
+/// Builds the error for a scan that could not examine `path`. The detector then reports an
+/// incomplete observation (exit `7`) and never a complete "no match" (exit `3`).
+fn scan_incomplete(path: &Path, err: &std::io::Error) -> VspError {
+    VspError::IncompleteObservation(format!(
+        "detect: scan incomplete, cannot read {}: {err}",
+        path.display()
+    ))
+}
+
+/// Returns `true` when `haystack` contains the byte sequence `needle` (not empty).
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && haystack.windows(needle.len()).any(|window| window == needle)
 }
 
 fn find_first_matching_file(
@@ -305,16 +340,25 @@ fn collect_matching_files(
     if depth > max_depth {
         return Ok(());
     }
-    let read_dir = fs::read_dir(dir).map_err(|err| {
-        VspError::TargetMissing(format!("cannot read directory {}: {err}", dir.display()))
-    })?;
-    let mut entries: Vec<_> = read_dir.filter_map(Result::ok).collect();
-    entries.sort_by_key(|e| e.file_name());
+    // A directory that vanished during the scan is absent. Every other failure (permission
+    // denied, I/O error) is an incomplete scan and is propagated: it is never dropped.
+    let read_dir = match fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(scan_incomplete(dir, &err)),
+    };
+    let mut entries = Vec::new();
+    for entry in read_dir {
+        entries.push(entry.map_err(|err| scan_incomplete(dir, &err))?);
+    }
+    entries.sort_by_key(std::fs::DirEntry::file_name);
 
     for entry in entries {
         let path = entry.path();
-        let Ok(ft) = entry.file_type() else {
-            continue;
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(scan_incomplete(&path, &err)),
         };
         let name = entry.file_name();
         let Some(name_str) = name.to_str() else {
@@ -377,6 +421,72 @@ mod tests {
             .and_then(Path::parent)
             .expect("repo root")
             .to_path_buf()
+    }
+
+    /// Astra A12: an unreadable directory or source file is an incomplete scan (exit 7),
+    /// and a source file that is not UTF-8 is still searched.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_paths_are_incomplete_scans_and_non_utf8_sources_match() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().expect("tmp");
+        let ws = tmp.path();
+        fs::write(ws.join("pom.xml"), "<project/>").expect("write pom");
+        fs::create_dir_all(ws.join("src")).expect("mkdir src");
+
+        // A Latin-1 byte makes the file invalid UTF-8. The pattern is still found.
+        let mut latin1 = b"// caf\xe9\n@SpringBootApplication\n".to_vec();
+        fs::write(ws.join("src/App.java"), &latin1).expect("write source");
+        let grep = DetectRule::FileAndGrep {
+            paths: vec!["pom.xml".to_string()],
+            search_dir: ".".to_string(),
+            glob: "*.java".to_string(),
+            pattern: "@SpringBootApplication".to_string(),
+        };
+        assert_eq!(
+            eval_rule(ws, &grep).expect("non-UTF-8 source"),
+            Some("pom.xml:src/App.java".to_string())
+        );
+        latin1.truncate(8);
+        fs::write(ws.join("src/App.java"), &latin1).expect("rewrite source");
+        assert_eq!(eval_rule(ws, &grep).expect("no pattern"), None);
+
+        // Unreadable source file.
+        let secret = ws.join("src/Secret.java");
+        fs::write(&secret, "@SpringBootApplication").expect("write secret");
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).expect("chmod file");
+        if fs::read(&secret).is_ok() {
+            // Running as root: permission bits do not restrict reads, so skip the rest.
+            return;
+        }
+        let err = eval_rule(ws, &grep).expect_err("unreadable source file");
+        assert_eq!(err.exit_code().as_i32(), 7, "{err}");
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).expect("restore file");
+        fs::remove_file(&secret).expect("rm secret");
+
+        // Unreadable directory during a glob scan.
+        let locked = ws.join("locked");
+        fs::create_dir_all(&locked).expect("mkdir locked");
+        fs::write(locked.join("x.bats"), "").expect("write bats");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("chmod dir");
+        let glob = DetectRule::Glob {
+            pattern: "*.bats".to_string(),
+            dir: ".".to_string(),
+            max_depth: 3,
+        };
+        let err = eval_rule(ws, &glob).expect_err("unreadable directory");
+        assert_eq!(err.exit_code().as_i32(), 7, "{err}");
+
+        // The whole-workspace detector propagates it: exit 7, not a "no match" result.
+        let catalog = load_legacy_catalog(&repo_root()).expect("catalog");
+        let err = detect_workspace(&catalog, ws).expect_err("incomplete detect");
+        assert_eq!(err.exit_code().as_i32(), 7, "{err}");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("restore dir");
+
+        // A target that does not exist is still "missing" (exit 2).
+        let err = detect_workspace(&catalog, &ws.join("nope")).expect_err("missing target");
+        assert_eq!(err.exit_code().as_i32(), 2);
     }
 
     #[test]

@@ -53,9 +53,15 @@ pub struct ProfileProvenance {
     /// Effective AI mode applied during the last sync, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_mode: Option<AiMode>,
-    /// Whether `--allow-unlocked` bypassed VSIX pin verification during the last sync.
+    /// Whether VSIX pin verification was bypassed (`--allow-unlocked`) in this sync or in an
+    /// earlier sync. The flag is sticky: only a `--repair-pins` run that re-verifies every
+    /// managed extension clears it.
     #[serde(default)]
     pub unlocked_bypass: bool,
+    /// Whether the publisher allowlist was bypassed with
+    /// `ARTAGON_VSCODE_TRUST_UNKNOWN_PUBLISHER=1` in this sync or in an earlier sync.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub publisher_trust_bypass: bool,
     /// RFC 3339 UTC timestamp of the last sync.
     pub last_sync_at: String,
 }
@@ -522,10 +528,84 @@ pub fn check_path_contained(root_canon: &Path, target: &Path) -> VspResult<PathB
     }
 }
 
+/// Rejects a symbolic link at any existing path component of `target` beneath
+/// `trusted_root`.
+///
+/// [`write_file_atomic`] checks only the final component. A symlinked ancestor directory
+/// would let `create_dir_all`, `chmod`, or a file write land outside the intended tree, so
+/// callers run this check first. `trusted_root` itself is not examined. Components that do
+/// not exist yet are accepted, because they will be created as real directories.
+///
+/// # Errors
+///
+/// Returns [`VspError::SafetyRefusal`] (exit `5`) when `target` is not beneath
+/// `trusted_root`, contains a `..` component, or has a symlinked component.
+pub fn ensure_no_symlink_components(trusted_root: &Path, target: &Path) -> VspResult<()> {
+    let rel = target.strip_prefix(trusted_root).map_err(|_| {
+        VspError::SafetyRefusal(format!(
+            "path {} is not beneath trusted root {}",
+            target.display(),
+            trusted_root.display()
+        ))
+    })?;
+    let mut current = trusted_root.to_path_buf();
+    for component in rel.components() {
+        let std::path::Component::Normal(part) = component else {
+            return Err(VspError::SafetyRefusal(format!(
+                "path {} has a non-normal component beneath {}",
+                target.display(),
+                trusted_root.display()
+            )));
+        };
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(VspError::SafetyRefusal(format!(
+                    "refusing to write through symlinked path component: {}",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => break,
+            Err(err) => {
+                return Err(VspError::SafetyRefusal(format!(
+                    "cannot examine path component {}: {err}",
+                    current.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Astra A21: a symlinked ancestor beneath the trusted root is refused.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_no_symlink_components_rejects_linked_ancestors() {
+        let outer = TempDir::new().expect("outer");
+        let root = outer.path().join("config");
+        let outside = outer.path().join("outside");
+        fs::create_dir_all(root.join("real/sub")).expect("mkdir real");
+        fs::create_dir_all(&outside).expect("mkdir outside");
+        std::os::unix::fs::symlink(&outside, root.join("linked")).expect("symlink");
+
+        assert!(ensure_no_symlink_components(&root, &root.join("real/sub/file")).is_ok());
+        assert!(ensure_no_symlink_components(&root, &root.join("new/dir/file")).is_ok());
+        for bad in [
+            root.join("linked"),
+            root.join("linked/rtk/zsh/.zshrc"),
+            root.join("real/../linked/x"),
+            outer.path().join("elsewhere"),
+        ] {
+            let err = ensure_no_symlink_components(&root, &bad).expect_err("must refuse");
+            assert_eq!(err.exit_code().as_i32(), 5, "{}", bad.display());
+        }
+    }
 
     #[test]
     fn backup_retention_keeps_only_newest_five_with_0600_mode() {

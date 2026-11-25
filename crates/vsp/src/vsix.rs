@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::exit_codes::{VspError, VspResult};
 use crate::model::{ExtensionPin, PinsLoadState, WorkspaceCatalog};
-use crate::policy::is_valid_sha256_hex;
+use crate::policy::{check_vsix_url, is_valid_sha256_hex};
 use crate::provenance::resolve_xdg_cache_home;
 use crate::schema_loader::{embedded_snapshot_files, EMBEDDED_ROOT_LABEL};
 use crate::vscode::InstalledExtension;
@@ -46,6 +46,18 @@ pub struct LockPinEntry {
     pub vsix_url: String,
     /// Whether this entry is strictly required (Tier 1 / `pinRequired`).
     pub required: bool,
+    /// Lock tier from `vsp.lock.json` (`1` = hash-locked, `2` = version-locked). `None` for
+    /// entries from a flat pin manifest.
+    pub tier: Option<u8>,
+}
+
+impl LockPinEntry {
+    /// Returns `true` when the entry has both a SHA-256 digest and a download URL, so the
+    /// VSIX can be fetched and verified. A `pending_refresh` entry never has them.
+    #[must_use]
+    pub fn has_verified_artifact(&self) -> bool {
+        !self.sha256.is_empty() && !self.vsix_url.is_empty()
+    }
 }
 
 /// Optional 4-tier `vsp.lock.json` document shape supporting v2.2 lockfiles and legacy layouts.
@@ -190,85 +202,18 @@ pub fn unlocked_bypass_active(cli_allow_unlocked: bool) -> bool {
 /// - `https://marketplace.visualstudio.com/...`
 /// - `https://*.gallerycdn.vsassets.io/...`
 /// - `https://*.gallery.vsassets.io/...`
-/// - `https://*.vsassets.io/...`
 ///
-/// Rejects HTTP downgrades, userinfo (`@`), authority spoofing (`?`, `#`), and off-host URLs
-/// with [`VspError::SafetyRefusal`] (exit `5`). When `allow_test_urls` is `true`, permits
-/// `http://127.0.0.1`, `http://localhost`, and `file://` for hermetic offline test fixtures.
+/// This is the same [`check_vsix_url`] validator that catalog validation uses. It rejects
+/// HTTP downgrades, userinfo (`@`), and off-host URLs with [`VspError::SafetyRefusal`]
+/// (exit `5`). When `allow_test_urls` is `true`, it also permits `http://` with a host that
+/// is exactly `localhost`, `127.0.0.1`, or `[::1]`, and `file://`, for offline fixtures.
 ///
 /// # Errors
 ///
 /// Returns [`VspError::SafetyRefusal`] (exit `5`) if the URL fails scheme or host validation.
 pub fn validate_vsix_url(url: &str, allow_test_urls: bool) -> VspResult<()> {
-    if allow_test_urls
-        && (url.starts_with("http://127.0.0.1")
-            || url.starts_with("http://localhost")
-            || url.starts_with("file://"))
-    {
-        return Ok(());
-    }
-
-    let Some(rest) = url.strip_prefix("https://") else {
-        return Err(VspError::SafetyRefusal(format!(
-            "vsix: rejected non-HTTPS URL: {url}"
-        )));
-    };
-    let authority = match rest.find('/') {
-        Some(idx) => &rest[..idx],
-        None => rest,
-    };
-    if authority.is_empty()
-        || authority.contains('@')
-        || authority.contains('?')
-        || authority.contains('#')
-        || authority.chars().any(char::is_whitespace)
-    {
-        return Err(VspError::SafetyRefusal(format!(
-            "vsix: rejected malformed URL authority: {url}"
-        )));
-    }
-
-    let (host, port_opt) = match authority.split_once(':') {
-        Some((h, p)) => (h, Some(p)),
-        None => (authority, None),
-    };
-    if let Some(port) = port_opt {
-        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(VspError::SafetyRefusal(format!(
-                "vsix: rejected invalid port in URL: {url}"
-            )));
-        }
-    }
-
-    let labels: Vec<&str> = host.split('.').collect();
-    if labels.len() < 2
-        || labels.iter().any(|lbl| {
-            lbl.is_empty()
-                || !lbl
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        })
-    {
-        return Err(VspError::SafetyRefusal(format!(
-            "vsix: rejected invalid host labels in URL: {url}"
-        )));
-    }
-
-    let host_lc = host.to_ascii_lowercase();
-    if host_lc == "marketplace.visualstudio.com" {
-        return Ok(());
-    }
-    for suffix in [".gallerycdn.vsassets.io", ".gallery.vsassets.io", ".vsassets.io"] {
-        if let Some(prefix) = host_lc.strip_suffix(suffix) {
-            if !prefix.is_empty() && !prefix.starts_with('.') && !prefix.ends_with('.') {
-                return Ok(());
-            }
-        }
-    }
-
-    Err(VspError::SafetyRefusal(format!(
-        "vsix: rejected off-host URL '{host_lc}' in {url}"
-    )))
+    check_vsix_url(url, allow_test_urls)
+        .map_err(|reason| VspError::SafetyRefusal(format!("vsix: {reason}")))
 }
 
 /// Resolves a VSIX lock index combining `catalog/extension-pins.json` and optional `vsp.lock.json`.
@@ -327,24 +272,38 @@ pub fn load_combined_pin_index(
             pin_required = true;
         }
         let host_platform = current_lock_platform();
-        let mut insert_lock_map = |map: &BTreeMap<String, LockPinRecord>| {
+        // Tier 1 and Tier 2 records always stay in the index, also when they are
+        // `pending_refresh` or have no digest for this platform. Such a record has an empty
+        // digest, and `resolve_and_verify_batch` fails closed on it for Tier 1.
+        let mut insert_lock_map = |map: &BTreeMap<String, LockPinRecord>,
+                                   section_tier: Option<u8>| {
             for (k, rec) in map {
-                if rec.status.as_deref() == Some("pending_refresh") {
-                    continue;
-                }
+                let tier = rec.tier.or(section_tier);
+                let pending = rec.status.as_deref() == Some("pending_refresh");
                 let platform_target = rec
                     .targets
                     .get(host_platform)
                     .or_else(|| rec.targets.get("universal"));
-                let sha = platform_target
-                    .and_then(|t| t.sha256.as_deref())
-                    .or(rec.sha256.as_deref())
-                    .unwrap_or("");
-                let url = platform_target
-                    .and_then(|t| t.vsix_url.as_deref())
-                    .or(rec.vsix_url.as_deref())
-                    .unwrap_or("");
-                if sha.is_empty() && url.is_empty() {
+                let (sha, url) = if pending {
+                    ("", "")
+                } else {
+                    (
+                        platform_target
+                            .and_then(|t| t.sha256.as_deref())
+                            .or(rec.sha256.as_deref())
+                            .unwrap_or(""),
+                        platform_target
+                            .and_then(|t| t.vsix_url.as_deref())
+                            .or(rec.vsix_url.as_deref())
+                            .unwrap_or(""),
+                    )
+                };
+                let keep = match tier {
+                    Some(1 | 2) => true,
+                    Some(_) => false,
+                    None => !sha.is_empty() || !url.is_empty(),
+                };
+                if !keep {
                     continue;
                 }
                 let lc = k.to_ascii_lowercase();
@@ -355,15 +314,16 @@ pub fn load_combined_pin_index(
                         version: rec.version.clone().unwrap_or_default(),
                         sha256: sha.to_ascii_lowercase(),
                         vsix_url: url.to_string(),
-                        required: rec.tier == Some(1) || pin_required,
+                        required: tier == Some(1) || pin_required,
+                        tier,
                     },
                 );
             }
         };
-        insert_lock_map(&lock_doc.pins);
-        insert_lock_map(&lock_doc.extensions);
+        insert_lock_map(&lock_doc.pins, None);
+        insert_lock_map(&lock_doc.extensions, None);
         if let Some(t2) = &lock_doc.tier2 {
-            insert_lock_map(&t2.pins);
+            insert_lock_map(&t2.pins, Some(2));
         }
     }
 
@@ -381,6 +341,7 @@ pub fn load_combined_pin_index(
                     sha256: pin.sha256.to_ascii_lowercase(),
                     vsix_url: pin.vsix_url.clone(),
                     required: manifest.pin_required,
+                    tier: None,
                 });
             }
             Ok((entries, pin_required, false))
@@ -648,34 +609,20 @@ fn stream_verified_download(
     )))
 }
 
+/// Resolves an HTTP `Location` header against the current URL with [`url::Url::join`]
+/// (RFC 3986 reference resolution). The caller validates the result with
+/// [`validate_vsix_url`] before it follows the redirect.
 fn resolve_redirect_url(base: &str, location: &str) -> VspResult<String> {
-    if location.starts_with("https://") || location.starts_with("http://") {
-        return Ok(location.to_string());
-    }
-    if location.starts_with("//") {
-        let scheme = base.split("://").next().unwrap_or("https");
-        return Ok(format!("{scheme}:{location}"));
-    }
-    let Some(scheme_end) = base.find("://") else {
-        return Err(VspError::SafetyRefusal(format!(
-            "vsix: cannot resolve relative redirect '{location}' against '{base}'"
-        )));
+    let reject = |detail: String| {
+        VspError::SafetyRefusal(format!(
+            "vsix: cannot resolve redirect '{location}' against '{base}': {detail}"
+        ))
     };
-    let after_scheme = &base[scheme_end + 3..];
-    let origin_end = after_scheme
-        .find('/')
-        .map(|i| scheme_end + 3 + i)
-        .unwrap_or(base.len());
-    let origin = &base[..origin_end];
-    if location.starts_with('/') {
-        Ok(format!("{origin}{location}"))
-    } else {
-        let dir = match base.rfind('/') {
-            Some(i) if i >= origin_end => &base[..=i],
-            _ => origin,
-        };
-        Ok(format!("{dir}{location}"))
-    }
+    let base_url = url::Url::parse(base).map_err(|err| reject(err.to_string()))?;
+    let next = base_url
+        .join(location)
+        .map_err(|err| reject(err.to_string()))?;
+    Ok(next.into())
 }
 
 /// Resolves and verifies a batch of extension IDs concurrently across at most
@@ -717,17 +664,43 @@ pub fn resolve_and_verify_batch(
     let mut slots: Vec<Option<WorkerOutcome>> = vec![None; ext_ids.len()];
     let mut jobs: VecDeque<(usize, LockPinEntry)> = VecDeque::new();
 
+    let host_platform = current_lock_platform();
     for (idx, id) in ext_ids.iter().enumerate() {
         let lc = id.to_ascii_lowercase();
-        if let Some(pin) = pin_index.get(&lc) {
-            jobs.push_back((idx, pin.clone()));
-        } else if pin_required {
-            slots[idx] = Some(Err((
-                format!("pinRequired=true but no VSIX pin exists for '{id}'"),
-                true,
-            )));
-        } else {
-            slots[idx] = Some(Ok(id.clone()));
+        match pin_index.get(&lc) {
+            // Hash-locked: download and verify the VSIX.
+            Some(pin) if pin.has_verified_artifact() => jobs.push_back((idx, pin.clone())),
+            // Tier 1 without a verified digest (`pending_refresh`, or no target for this
+            // platform and no universal target): fail closed. Never install unverified.
+            Some(pin) if pin.tier == Some(1) => {
+                slots[idx] = Some(Err((
+                    format!(
+                        "Tier 1 hash lock for '{id}' has no verified VSIX digest for platform '{host_platform}' (pending_refresh or missing target); run 'vsp dev pins --refresh' or pass --allow-unlocked"
+                    ),
+                    true,
+                )));
+            }
+            // Tier 2 with a recorded version: install exactly that version.
+            Some(pin) if !pin.version.is_empty() => {
+                slots[idx] = Some(if semver::Version::parse(&pin.version).is_ok() {
+                    Ok(format!("{id}@{}", pin.version))
+                } else {
+                    Err((
+                        format!(
+                            "version lock for '{id}' is not a valid semver version: '{}'",
+                            pin.version
+                        ),
+                        true,
+                    ))
+                });
+            }
+            _ if pin_required => {
+                slots[idx] = Some(Err((
+                    format!("pinRequired=true but no VSIX pin exists for '{id}'"),
+                    true,
+                )));
+            }
+            _ => slots[idx] = Some(Ok(id.clone())),
         }
     }
 
@@ -814,7 +787,8 @@ pub fn compute_pin_repairs(
         let Some(pin) = pin_index.get(&lc) else {
             continue;
         };
-        if pin.version.is_empty() || pin.version == *inst_ver {
+        // A repair needs a verified artifact. Pending and version-only entries have none.
+        if !pin.has_verified_artifact() || pin.version.is_empty() || pin.version == *inst_ver {
             continue;
         }
         let is_downgrade = is_semver_downgrade(inst_ver, &pin.version);
@@ -900,6 +874,9 @@ pub fn stage_pin_repairs(
 }
 
 /// Returns `true` if `target_ver` is strictly older than `installed_ver` by semver comparison.
+///
+/// When either version is not valid semver, the order is unknown. The function then returns
+/// `true`, so [`confirm_pin_downgrades`] asks for confirmation instead of skipping it.
 #[must_use]
 pub fn is_semver_downgrade(installed_ver: &str, target_ver: &str) -> bool {
     match (
@@ -907,8 +884,44 @@ pub fn is_semver_downgrade(installed_ver: &str, target_ver: &str) -> bool {
         semver::Version::parse(target_ver.trim_start_matches('v')),
     ) {
         (Ok(inst), Ok(target)) => target < inst,
-        _ => false,
+        _ => true,
     }
+}
+
+/// Returns `true` when each ID in `managed_ids` has a hash-locked entry with a verified
+/// artifact and its installed version equals the locked version.
+///
+/// `vsp sync --repair-pins` uses this to decide whether a recorded unlocked bypass is
+/// cleared: only a full re-verification of the managed set clears it.
+///
+/// # Errors
+///
+/// Returns [`VspError::SafetyRefusal`] if the lock metadata is missing or invalid.
+pub fn managed_extensions_fully_pinned(
+    catalog: &WorkspaceCatalog,
+    installed: &[InstalledExtension],
+    managed_ids: &[String],
+) -> VspResult<bool> {
+    let (pin_index, _, bypassed) = load_combined_pin_index(catalog, false)?;
+    if bypassed {
+        return Ok(false);
+    }
+    for id in managed_ids {
+        let lc = id.to_ascii_lowercase();
+        let Some(pin) = pin_index.get(&lc) else {
+            return Ok(false);
+        };
+        if !pin.has_verified_artifact() || pin.version.is_empty() {
+            return Ok(false);
+        }
+        let matches_lock = installed
+            .iter()
+            .any(|ext| ext.id.eq_ignore_ascii_case(&lc) && ext.version.as_deref() == Some(&pin.version));
+        if !matches_lock {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Validates basic Marketplace extension ID syntax (`^[a-z0-9][a-z0-9._-]*\.[a-z0-9][a-z0-9._-]*$`
@@ -1170,7 +1183,9 @@ mod tests {
             false
         )
         .is_ok());
-        assert!(validate_vsix_url("https://cdn.vsassets.io/pkg", false).is_ok());
+        // One shared validator: the runtime accepts the same hosts as catalog validation.
+        assert!(validate_vsix_url("https://cdn.vsassets.io/pkg", false).is_err());
+        assert!(validate_vsix_url("https://x.gallery.vsassets.io/pkg", false).is_ok());
 
         assert_eq!(
             validate_vsix_url("http://marketplace.visualstudio.com/pkg", false)
@@ -1210,6 +1225,7 @@ mod tests {
             sha256: good_sha.clone(),
             vsix_url: format!("file://{}", fixture.display()),
             required: true,
+            tier: None,
         };
 
         let cached = fetch_and_verify_vsix(&pin, &cache_dir, true).expect("verify ok");
@@ -1241,5 +1257,222 @@ mod tests {
         assert!(is_semver_downgrade("2.0.0", "1.9.0"));
         assert!(!is_semver_downgrade("1.9.0", "2.0.0"));
         assert!(!is_semver_downgrade("1.9.0", "1.9.0"));
+    }
+
+    /// Opus L2: an unparsable version has an unknown order, so it needs confirmation.
+    #[test]
+    fn unparsable_versions_count_as_downgrade_and_require_confirmation() {
+        assert!(is_semver_downgrade("2024.11", "1.9.0"));
+        assert!(is_semver_downgrade("1.9.0", "nightly"));
+        let item = PinRepairItem {
+            id: "a.b".to_string(),
+            installed_version: "2024.11".to_string(),
+            pinned_version: "1.0.0".to_string(),
+            is_downgrade: is_semver_downgrade("2024.11", "1.0.0"),
+            pin: LockPinEntry {
+                id: "a.b".to_string(),
+                version: "1.0.0".to_string(),
+                sha256: "0".repeat(64),
+                vsix_url: "https://marketplace.visualstudio.com/x".to_string(),
+                required: true,
+                tier: Some(1),
+            },
+        };
+        // The test harness stdin is not a terminal, so an unconfirmed downgrade is refused.
+        let err = confirm_pin_downgrades(std::slice::from_ref(&item), false)
+            .expect_err("unconfirmed downgrade must be refused");
+        assert_eq!(err.exit_code().as_i32(), 5);
+        assert!(confirm_pin_downgrades(&[item], true).is_ok());
+    }
+
+    /// Opus L3: test URLs need an exact loopback host. A prefix match is not enough.
+    #[test]
+    fn test_urls_require_exact_loopback_host() {
+        for ok in [
+            "http://localhost:8080/pkg",
+            "http://127.0.0.1:9/pkg",
+            "http://[::1]:9/pkg",
+            "file:///tmp/sample.vsix",
+        ] {
+            assert!(validate_vsix_url(ok, true).is_ok(), "{ok}");
+            assert!(validate_vsix_url(ok, false).is_err(), "{ok} needs the test flag");
+        }
+        for bad in [
+            "http://localhost.evil.com/pkg",
+            "http://127.0.0.1.evil.com/pkg",
+            "http://localhost@evil.com/pkg",
+            "http://evil.com/localhost",
+            "http://127.0.0.2/pkg",
+            "file://evil.com/tmp/x.vsix",
+            "https://marketplace.visualstudio.com\\@evil.com/pkg",
+            "https://marketplace.visualstudio.com /pkg",
+        ] {
+            let err = validate_vsix_url(bad, true).expect_err(bad);
+            assert_eq!(err.exit_code().as_i32(), 5, "{bad}");
+        }
+    }
+
+    /// Opus H1 / Astra A08: Tier 1 entries without a verified digest fail closed, Tier 2
+    /// entries with a version install as `id@version`, and `--allow-unlocked` is recorded.
+    #[test]
+    fn lock_tiers_fail_closed_and_version_lock_is_enforced() {
+        use crate::model::ExtensionPinsManifest;
+
+        let tmp = TempDir::new().expect("tmp");
+        fs::write(
+            tmp.path().join("vsp.lock.json"),
+            r#"{
+              "version": 2, "pinRequired": false,
+              "extensions": {
+                "a.pending": {"tier": 1, "status": "pending_refresh", "targets": {}},
+                "a.stale": {"tier": 1, "status": "pending_refresh", "version": "1.0.0",
+                  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "vsixUrl": "https://marketplace.visualstudio.com/x"},
+                "b.native": {"tier": 1, "status": "verified", "version": "1.0.0", "universal": false,
+                  "targets": {"plan9-mips": {
+                    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                    "vsixUrl": "https://marketplace.visualstudio.com/y"}}},
+                "c.versioned": {"tier": 2, "status": "verified", "version": "1.2.3"},
+                "c.badversion": {"tier": 2, "version": "1.2.3 --install-extension=x.y"},
+                "d.tier2pending": {"tier": 2, "status": "pending_refresh", "version": null},
+                "e.tier3": {"tier": 3},
+                "h.universal": {"tier": 1, "status": "verified", "version": "3.0.0", "universal": true,
+                  "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+                  "vsixUrl": "https://marketplace.visualstudio.com/h"}
+              }
+            }"#,
+        )
+        .expect("write lock");
+
+        // Astra A16 (install side): a platform-only record for THIS platform resolves to a
+        // verified artifact. The same record for another platform does not.
+        let host_lock = format!(
+            r#"{{"version": 2, "extensions": {{"g.hostnative": {{"tier": 1, "status": "verified",
+                "version": "1.0.0", "universal": false, "targets": {{"{}": {{
+                "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+                "vsixUrl": "https://marketplace.visualstudio.com/g"}}}}}}}}}}"#,
+            current_lock_platform()
+        );
+        let host_dir = TempDir::new().expect("host tmp");
+        fs::write(host_dir.path().join("vsp.lock.json"), host_lock).expect("write host lock");
+
+        let mut catalog = crate::schema_loader::load_embedded().expect("embedded catalog");
+        catalog.root = tmp.path().to_path_buf();
+        catalog.pins = PinsLoadState::Loaded(ExtensionPinsManifest {
+            version: 1,
+            note: None,
+            pin_required: false,
+            pins: BTreeMap::new(),
+        });
+
+        let ids: Vec<String> = [
+            "a.pending",
+            "a.stale",
+            "b.native",
+            "c.versioned",
+            "c.badversion",
+            "d.tier2pending",
+            "e.tier3",
+            "f.unlisted",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+
+        let strict = resolve_and_verify_batch(&catalog, &ids, &VsixVerifyOptions::default())
+            .expect("resolve");
+        assert!(!strict.unlocked_bypass);
+        let failed: Vec<&str> = strict.failures.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(failed, vec!["a.pending", "a.stale", "b.native", "c.badversion"]);
+        assert!(strict.failures.iter().all(|f| f.is_safety_refusal));
+        assert!(strict.failures[0].message.contains("Tier 1 hash lock"));
+        assert_eq!(
+            strict.targets,
+            vec![
+                ("c.versioned".to_string(), "c.versioned@1.2.3".to_string()),
+                ("d.tier2pending".to_string(), "d.tier2pending".to_string()),
+                ("e.tier3".to_string(), "e.tier3".to_string()),
+                ("f.unlisted".to_string(), "f.unlisted".to_string()),
+            ]
+        );
+
+        // The explicit bypass installs by ID and is reported so provenance can record it.
+        let bypass = resolve_and_verify_batch(
+            &catalog,
+            &ids,
+            &VsixVerifyOptions {
+                allow_unlocked: true,
+                cache_dir: None,
+            },
+        )
+        .expect("resolve with bypass");
+        assert!(bypass.unlocked_bypass);
+        assert!(bypass.failures.is_empty());
+        assert_eq!(bypass.targets.len(), ids.len());
+
+        // A pending entry is never "fully pinned", and it is never a repair candidate.
+        let installed = vec![InstalledExtension {
+            id: "a.stale".to_string(),
+            version: Some("2.0.0".to_string()),
+        }];
+        assert!(compute_pin_repairs(&catalog, &installed, false)
+            .expect("repairs")
+            .is_empty());
+        assert!(
+            !managed_extensions_fully_pinned(&catalog, &installed, &["a.stale".to_string()])
+                .expect("fully pinned")
+        );
+
+        // Opus M1 (clear rule): the managed set is "fully pinned" only when each ID has a
+        // verified hash lock AND is installed at the locked version.
+        let managed = vec!["h.universal".to_string()];
+        let at_lock = vec![InstalledExtension {
+            id: "h.universal".to_string(),
+            version: Some("3.0.0".to_string()),
+        }];
+        let drifted = vec![InstalledExtension {
+            id: "h.universal".to_string(),
+            version: Some("3.1.0".to_string()),
+        }];
+        assert!(managed_extensions_fully_pinned(&catalog, &at_lock, &managed).expect("at lock"));
+        assert!(!managed_extensions_fully_pinned(&catalog, &drifted, &managed).expect("drifted"));
+        assert!(!managed_extensions_fully_pinned(&catalog, &[], &managed).expect("missing"));
+        assert!(!managed_extensions_fully_pinned(
+            &catalog,
+            &at_lock,
+            &["h.universal".to_string(), "f.unlisted".to_string()]
+        )
+        .expect("one unpinned ID"));
+
+        let mut host_catalog = catalog.clone();
+        host_catalog.root = host_dir.path().to_path_buf();
+        let (host_index, _, _) = load_combined_pin_index(&host_catalog, false).expect("host index");
+        let native = &host_index["g.hostnative"];
+        assert_eq!(native.tier, Some(1));
+        assert!(native.has_verified_artifact(), "this platform has a verified target");
+        let (index, _, _) = load_combined_pin_index(&catalog, false).expect("index");
+        assert!(!index["b.native"].has_verified_artifact(), "another platform only");
+        assert!(!index["a.stale"].has_verified_artifact(), "pending digests are ignored");
+        assert!(!index.contains_key("e.tier3"), "Tier 3 is not a lock entry");
+    }
+
+    #[test]
+    fn redirect_resolution_uses_rfc3986_join() {
+        let base = "https://marketplace.visualstudio.com/a/b/pkg?x=1";
+        assert_eq!(
+            resolve_redirect_url(base, "https://x.gallerycdn.vsassets.io/p").expect("absolute"),
+            "https://x.gallerycdn.vsassets.io/p"
+        );
+        assert_eq!(
+            resolve_redirect_url(base, "/root").expect("root-relative"),
+            "https://marketplace.visualstudio.com/root"
+        );
+        assert_eq!(
+            resolve_redirect_url(base, "next").expect("relative"),
+            "https://marketplace.visualstudio.com/a/b/next"
+        );
+        // A scheme-relative redirect to another host resolves, and validation then rejects it.
+        let off = resolve_redirect_url(base, "//evil.example/p").expect("scheme-relative");
+        assert!(validate_vsix_url(&off, false).is_err());
     }
 }

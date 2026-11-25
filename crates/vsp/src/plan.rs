@@ -14,7 +14,7 @@ use crate::detect::detect_workspace;
 use crate::exit_codes::{VspError, VspResult};
 use crate::legacy_loader::parse_jsonc_value;
 use crate::model::{
-    resolve_legacy_profile_name, AiMode, UxPreset, WorkspaceCatalog, COMPILER_UNION_KEYS,
+    AiMode, ExtensionStatus, UxPreset, WorkspaceCatalog, COMPILER_UNION_KEYS,
 };
 use crate::provenance::{load_profile_provenance, load_workspace_provenance};
 use crate::resolver::{
@@ -23,7 +23,10 @@ use crate::resolver::{
     resolve_profile_recipe, ResolveRequest, RtkTaskMode, SettingsScope,
 };
 use crate::user_config::{ExtensionTrustTier, UserOverlay};
-use crate::vscode::{find_storage_profile_location, resolve_vscode_store};
+use crate::vscode::{
+    find_code_binary, find_storage_profile_location, list_installed_extensions,
+    resolve_vscode_store, validate_profile_name,
+};
 
 /// Canonical schema identifier emitted by `vsp diff --json` and `vsp sync --dry-run --json`.
 pub const PLAN_SCHEMA_V1: &str = "vsp-plan/v1";
@@ -126,8 +129,63 @@ pub enum ExtensionChangeKind {
     RemoveRecommendation,
     /// Add an extension ID to workspace `.vscode/extensions.json` `unwantedRecommendations`.
     Unwant,
-    /// Ensure an extension ID is installed in the target VS Code profile.
+    /// Install an extension that is missing from the target VS Code profile.
     EnsureInstalled,
+    /// Uninstall an installed extension that the catalog marks compromised or removed
+    /// (sync Step 0).
+    UninstallCompromised,
+    /// Uninstall an installed extension: a superseded extension whose replacement is
+    /// present or planned, or an `AI`-group extension when `--ai off` is selected.
+    Uninstall,
+}
+
+/// Selector kinds given on the command line, for [`validate_selector_combination`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SelectorKinds {
+    /// A workspace path (positional `PATH` or `--workspace`).
+    pub workspace: bool,
+    /// `-p/--profile <NAME>`.
+    pub profile: bool,
+    /// `--user`.
+    pub user: bool,
+    /// `--from <BUNDLE>`.
+    pub from_bundle: bool,
+    /// `--all`.
+    pub all: bool,
+}
+
+/// Rejects contradictory target selectors.
+///
+/// `vsp diff`, `vsp sync --dry-run`, and mutating `vsp sync` all call this one function, so
+/// a preview can never accept a selector combination that the real run refuses.
+///
+/// # Errors
+///
+/// Returns [`VspError::UsageOrConfig`] (exit `4`) for `--all` with a workspace, `--profile`,
+/// `--from`, or `--user`; `--from` with a workspace or `--user`; a workspace with `--user`;
+/// and `--user` with `--profile`.
+pub fn validate_selector_combination(kinds: SelectorKinds) -> VspResult<()> {
+    if kinds.all && (kinds.workspace || kinds.profile || kinds.from_bundle || kinds.user) {
+        return Err(VspError::UsageOrConfig(
+            "--all cannot be combined with workspace, --profile, --from, or --user".to_string(),
+        ));
+    }
+    if kinds.from_bundle && (kinds.workspace || kinds.user) {
+        return Err(VspError::UsageOrConfig(
+            "--from cannot be combined with workspace path or --user".to_string(),
+        ));
+    }
+    if kinds.workspace && kinds.user {
+        return Err(VspError::UsageOrConfig(
+            "cannot combine workspace path with --user".to_string(),
+        ));
+    }
+    if kinds.user && kinds.profile {
+        return Err(VspError::UsageOrConfig(
+            "cannot combine --user with -p/--profile".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Individual extension diff entry.
@@ -202,6 +260,13 @@ pub fn compute_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspResult
             "explicit target selector required: pass <PATH>, -p/--profile <NAME>, --preset <NAME>, or --user".to_string(),
         ));
     }
+    validate_selector_combination(SelectorKinds {
+        workspace: opts.workspace_path.is_some(),
+        profile: opts.profile.is_some(),
+        user: opts.user,
+        from_bundle: false,
+        all: false,
+    })?;
 
     if let Some(ws_path) = &opts.workspace_path {
         return compute_workspace_plan(catalog, ws_path, opts);
@@ -287,8 +352,10 @@ fn compute_workspace_plan(
         apply_ux_to_map(catalog, ux, &mut desired_settings, &mut delete_keys);
     }
 
+    let mut incomplete = false;
     let settings_file = ws_canon.join(".vscode/settings.json");
-    let current_settings = read_optional_jsonc_object(&settings_file, &mut warnings);
+    let current_settings =
+        read_optional_jsonc_object(&settings_file, &mut warnings, &mut incomplete);
     if let Some(prev) = load_workspace_provenance(&ws_canon) {
         for old_k in &prev.managed_settings_keys {
             if !desired_settings.contains_key(old_k) && !delete_keys.contains(old_k) {
@@ -307,26 +374,22 @@ fn compute_workspace_plan(
 
     let desired_exts = compile_workspace_extensions(catalog, &resolved_modules)?;
     let ext_file = ws_canon.join(".vscode/extensions.json");
-    let current_ext_obj = read_optional_jsonc_object(&ext_file, &mut warnings);
+    let current_ext_obj = read_optional_jsonc_object(&ext_file, &mut warnings, &mut incomplete);
     let extension_changes = diff_workspace_extensions(&current_ext_obj, &desired_exts);
 
     let desired_tasks = compile_tasks(catalog, RtkTaskMode::Plain, &resolved_modules)?;
     let tasks_file = ws_canon.join(".vscode/tasks.json");
     let task_changes = match desired_tasks {
         Some(dt) => {
-            let cur_tasks = read_optional_jsonc_object(&tasks_file, &mut warnings);
+            let cur_tasks =
+                read_optional_jsonc_object(&tasks_file, &mut warnings, &mut incomplete);
             diff_tasks(&cur_tasks, &dt)
         }
         None => Vec::new(),
     };
 
-    let has_drift = !settings_changes.is_empty()
-        || !extension_changes.is_empty()
-        || !task_changes.is_empty();
-
-    Ok(Plan {
-        schema: PLAN_SCHEMA_V1.to_string(),
-        target: PlanTargetSummary {
+    Ok(finish_plan(
+        PlanTargetSummary {
             kind: PlanScopeKind::Workspace,
             path: Some(ws_canon.display().to_string()),
             profile: None,
@@ -338,10 +401,9 @@ fn compute_workspace_plan(
         settings_changes,
         extension_changes,
         task_changes,
-        has_drift,
-        observation_complete: true,
+        incomplete,
         warnings,
-    })
+    ))
 }
 
 fn compute_profile_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspResult<Plan> {
@@ -351,8 +413,8 @@ fn compute_profile_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspRe
         .or(opts.preset.as_deref())
         .ok_or_else(|| VspError::UsageOrConfig("profile or preset name required".to_string()))?;
 
-    let (profile_name, legacy_ux) = match resolve_legacy_profile_name(raw_profile) {
-        Some((canon, ux)) => (canon.to_string(), Some(ux)),
+    let (profile_name, legacy_ux) = match catalog.resolve_alias(raw_profile) {
+        Some((canon, ux)) => (canon, Some(ux)),
         None => (raw_profile.to_string(), None),
     };
 
@@ -421,13 +483,17 @@ fn compute_profile_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspRe
             .apply_final_overrides(p_name, &mut desired_settings, &mut delete_keys);
     }
 
+    // The profile name goes to the `code` command line for the extension observation.
+    validate_profile_name(&profile_name)?;
+
     let mut warnings = Vec::new();
+    let mut incomplete = false;
     let store = resolve_vscode_store(opts.vscode_data_dir.as_deref(), false)?;
     let (settings_path, current_settings) =
         match find_storage_profile_location(&store.user_dir, &profile_name)? {
             Some(loc) => {
                 let p = store.user_dir.join("profiles").join(loc).join("settings.json");
-                let cur = read_optional_jsonc_object(&p, &mut warnings);
+                let cur = read_optional_jsonc_object(&p, &mut warnings, &mut incomplete);
                 (p, cur)
             }
             None => {
@@ -464,26 +530,19 @@ fn compute_profile_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspRe
         &delete_paths,
     );
 
-    let desired_exts = compile_profile_extensions(catalog, &resolved_modules)?;
-    let mut extension_changes: Vec<ExtensionChange> = desired_exts
+    let mut desired_ext_ids: Vec<String> = compile_profile_extensions(catalog, &resolved_modules)?
         .into_iter()
-        .map(|entry| ExtensionChange {
-            id: entry.identifier.id,
-            action: ExtensionChangeKind::EnsureInstalled,
-        })
+        .map(|entry| entry.identifier.id)
         .collect();
 
     // Exact-ID extra extensions from a custom user profile (personal user configuration).
     if let Some(p_name) = &preset_name {
         for extra in opts.user_overlay.extras_for(p_name) {
-            if !extension_changes
+            if !desired_ext_ids
                 .iter()
-                .any(|c| c.id.eq_ignore_ascii_case(&extra.id))
+                .any(|id| id.eq_ignore_ascii_case(&extra.id))
             {
-                extension_changes.push(ExtensionChange {
-                    id: extra.id.clone(),
-                    action: ExtensionChangeKind::EnsureInstalled,
-                });
+                desired_ext_ids.push(extra.id.clone());
             }
             if extra.tier == ExtensionTrustTier::UserUnlocked {
                 warnings.push(format!(
@@ -494,11 +553,36 @@ fn compute_profile_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspRe
         }
     }
 
-    let has_drift = !settings_changes.is_empty();
+    // Observe the installed extensions with the same observer as `vsp sync`. A missing
+    // `code` CLI or a failed `code --list-extensions` is an incomplete observation (exit 7):
+    // the planner never reports "no drift" for extensions that it could not see.
+    let extension_changes = match find_code_binary() {
+        None => {
+            incomplete = true;
+            warnings.push(
+                "observation incomplete: VS Code 'code' CLI not found on PATH; installed extensions were not observed"
+                    .to_string(),
+            );
+            Vec::new()
+        }
+        Some(code_bin) => match list_installed_extensions(&code_bin, &store, &profile_name) {
+            Ok(installed) => diff_profile_extensions(
+                catalog,
+                &desired_ext_ids,
+                &installed,
+                opts.ai == Some(AiMode::Off),
+            ),
+            Err(err @ VspError::SafetyRefusal(_)) => return Err(err),
+            Err(err) => {
+                incomplete = true;
+                warnings.push(format!("observation incomplete: {err}"));
+                Vec::new()
+            }
+        },
+    };
 
-    Ok(Plan {
-        schema: PLAN_SCHEMA_V1.to_string(),
-        target: PlanTargetSummary {
+    Ok(finish_plan(
+        PlanTargetSummary {
             kind: PlanScopeKind::Profile,
             path: Some(settings_path.display().to_string()),
             profile: Some(profile_name),
@@ -509,11 +593,10 @@ fn compute_profile_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspRe
         resolved_modules,
         settings_changes,
         extension_changes,
-        task_changes: Vec::new(),
-        has_drift,
-        observation_complete: true,
+        Vec::new(),
+        incomplete,
         warnings,
-    })
+    ))
 }
 
 fn compute_user_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspResult<Plan> {
@@ -576,9 +659,11 @@ fn compute_user_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspResul
     }
 
     let mut warnings = Vec::new();
+    let mut incomplete = false;
     let store = resolve_vscode_store(opts.vscode_data_dir.as_deref(), false)?;
     let settings_path = store.user_dir.join("settings.json");
-    let current_settings = read_optional_jsonc_object(&settings_path, &mut warnings);
+    let current_settings =
+        read_optional_jsonc_object(&settings_path, &mut warnings, &mut incomplete);
     if opts.ai == Some(AiMode::Off) {
         for k in retired_ai_off_keys(catalog, &current_settings) {
             if !delete_keys.contains(&k) {
@@ -603,11 +688,8 @@ fn compute_user_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspResul
         &delete_paths,
     );
 
-    let has_drift = !settings_changes.is_empty();
-
-    Ok(Plan {
-        schema: PLAN_SCHEMA_V1.to_string(),
-        target: PlanTargetSummary {
+    Ok(finish_plan(
+        PlanTargetSummary {
             kind: PlanScopeKind::User,
             path: Some(settings_path.display().to_string()),
             profile: Some("default".to_string()),
@@ -617,12 +699,11 @@ fn compute_user_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspResul
         },
         resolved_modules,
         settings_changes,
-        extension_changes: Vec::new(),
-        task_changes: Vec::new(),
-        has_drift,
-        observation_complete: true,
+        Vec::new(),
+        Vec::new(),
+        incomplete,
         warnings,
-    })
+    ))
 }
 
 /// Resolves a canonical or legacy preset name (such as `ai-profile-retina`) into
@@ -636,9 +717,9 @@ pub fn resolve_preset_name(
     catalog: &WorkspaceCatalog,
     raw: &str,
 ) -> VspResult<(String, Option<UxPreset>)> {
-    if let Some((canon, ux)) = resolve_legacy_profile_name(raw) {
-        if catalog.profiles.contains_key(canon) {
-            return Ok((canon.to_string(), Some(ux)));
+    if let Some((canon, ux)) = catalog.resolve_alias(raw) {
+        if catalog.profiles.contains_key(&canon) {
+            return Ok((canon, Some(ux)));
         }
     }
     if catalog.profiles.contains_key(raw) {
@@ -780,36 +861,146 @@ pub fn retired_ai_off_keys(
     out
 }
 
-fn read_optional_jsonc_object(path: &Path, warnings: &mut Vec<String>) -> Map<String, Value> {
-    if !path.is_file() {
-        return Map::new();
-    }
-    match fs::read_to_string(path) {
-        Ok(raw) => match parse_jsonc_value(&raw, &path.display().to_string()) {
-            Ok(Value::Object(map)) => map,
-            Ok(_) => {
-                warnings.push(format!(
-                    "existing {} is not a JSON object; treating as empty for diff",
-                    path.display()
-                ));
-                Map::new()
-            }
-            Err(err) => {
-                warnings.push(format!(
-                    "failed to parse existing {}: {err}",
-                    path.display()
-                ));
-                Map::new()
-            }
-        },
+/// Reads an existing target JSONC file for the diff.
+///
+/// A file that does not exist is a complete observation (an empty object). Every other
+/// failure (unreadable file, malformed JSONC, or a root that is not an object) is an
+/// INCOMPLETE observation: `incomplete` is set and a warning is recorded. The planner then
+/// reports exit `7` and classifies no drift, because a diff against an empty map would be
+/// wrong and `vsp sync` cannot merge that file safely either.
+fn read_optional_jsonc_object(
+    path: &Path,
+    warnings: &mut Vec<String>,
+    incomplete: &mut bool,
+) -> Map<String, Value> {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Map::new(),
         Err(err) => {
+            *incomplete = true;
             warnings.push(format!(
-                "failed to read existing {}: {err}",
+                "observation incomplete: failed to read existing {}: {err}",
+                path.display()
+            ));
+            return Map::new();
+        }
+    };
+    match parse_jsonc_value(&raw, &path.display().to_string()) {
+        Ok(Value::Object(map)) => map,
+        Ok(_) => {
+            *incomplete = true;
+            warnings.push(format!(
+                "observation incomplete: existing {} is not a JSON object",
+                path.display()
+            ));
+            Map::new()
+        }
+        Err(err) => {
+            *incomplete = true;
+            warnings.push(format!(
+                "observation incomplete: failed to parse existing {}: {err}",
                 path.display()
             ));
             Map::new()
         }
     }
+}
+
+/// Builds the final [`Plan`]. When the observation is incomplete, no change is classified
+/// and `has_drift` is `false`: the caller must report exit `7`, not a drift result.
+#[allow(clippy::too_many_arguments)]
+fn finish_plan(
+    target: PlanTargetSummary,
+    resolved_modules: Vec<String>,
+    settings_changes: Vec<SettingChange>,
+    extension_changes: Vec<ExtensionChange>,
+    task_changes: Vec<TaskChange>,
+    incomplete: bool,
+    warnings: Vec<String>,
+) -> Plan {
+    if incomplete {
+        return Plan {
+            schema: PLAN_SCHEMA_V1.to_string(),
+            target,
+            resolved_modules,
+            settings_changes: Vec::new(),
+            extension_changes: Vec::new(),
+            task_changes: Vec::new(),
+            has_drift: false,
+            observation_complete: false,
+            warnings,
+        };
+    }
+    let has_drift = !settings_changes.is_empty()
+        || !extension_changes.is_empty()
+        || !task_changes.is_empty();
+    Plan {
+        schema: PLAN_SCHEMA_V1.to_string(),
+        target,
+        resolved_modules,
+        settings_changes,
+        extension_changes,
+        task_changes,
+        has_drift,
+        observation_complete: true,
+        warnings,
+    }
+}
+
+/// Computes the extension changes of a profile target from the OBSERVED installed set.
+///
+/// - A desired extension that is not installed: [`ExtensionChangeKind::EnsureInstalled`].
+/// - An installed compromised or removed extension:
+///   [`ExtensionChangeKind::UninstallCompromised`].
+/// - An installed superseded extension whose replacement is installed or desired, and (with
+///   `ai_off`) an installed `AI`-group extension: [`ExtensionChangeKind::Uninstall`].
+fn diff_profile_extensions(
+    catalog: &WorkspaceCatalog,
+    desired_ids: &[String],
+    installed: &[crate::vscode::InstalledExtension],
+    ai_off: bool,
+) -> Vec<ExtensionChange> {
+    let installed_lc: BTreeSet<String> =
+        installed.iter().map(|e| e.id.to_ascii_lowercase()).collect();
+    let desired_lc: BTreeSet<String> =
+        desired_ids.iter().map(|id| id.to_ascii_lowercase()).collect();
+
+    let mut changes = Vec::new();
+    for ext in installed {
+        let Some(rec) = catalog.extension_record(&ext.id) else {
+            continue;
+        };
+        let action = match rec.status {
+            ExtensionStatus::Compromised | ExtensionStatus::Removed => {
+                Some(ExtensionChangeKind::UninstallCompromised)
+            }
+            ExtensionStatus::Superseded => rec
+                .replaced_by
+                .as_deref()
+                .map(str::to_ascii_lowercase)
+                .filter(|rep| installed_lc.contains(rep) || desired_lc.contains(rep))
+                .map(|_| ExtensionChangeKind::Uninstall),
+            _ if ai_off && rec.group.eq_ignore_ascii_case("AI") => {
+                Some(ExtensionChangeKind::Uninstall)
+            }
+            _ => None,
+        };
+        if let Some(action) = action {
+            changes.push(ExtensionChange {
+                id: ext.id.to_ascii_lowercase(),
+                action,
+            });
+        }
+    }
+    for id in desired_ids {
+        if !installed_lc.contains(&id.to_ascii_lowercase()) {
+            changes.push(ExtensionChange {
+                id: id.clone(),
+                action: ExtensionChangeKind::EnsureInstalled,
+            });
+        }
+    }
+    changes
 }
 
 fn diff_settings_maps(

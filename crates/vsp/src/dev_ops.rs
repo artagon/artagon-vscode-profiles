@@ -18,7 +18,7 @@ use crate::provenance::{now_rfc3339_utc, write_file_atomic};
 use crate::resolver::{
     compile_profile_extensions, resolve_profile_recipe, to_canonical_json_string,
 };
-use crate::vscode::find_code_binary;
+use crate::vscode::{find_binary, find_code_binary};
 use crate::vsix::{download_and_hash_vsix_url, query_marketplace_universal_pin};
 
 /// Default VS Code Marketplace extension query endpoint.
@@ -42,6 +42,111 @@ const DEFAULT_PIN_IDS: &[&str] = &[
     "pkief.material-product-icons",
     "tamasfe.even-better-toml",
 ];
+
+/// Refreshes the Tier 1 universal entries of a v2.2 `vsp.lock.json` in place.
+///
+/// For each Tier 1 entry with `universal: true`, the latest stable universal VSIX is
+/// resolved, downloaded, and hashed. The entry then gets `status: "verified"`, `version`,
+/// `sha256`, `vsixUrl`, `verifiedAt`, and a `targets.universal` record. Every other field
+/// (`tier`, `universal`, top-level `pinRequired`, `platforms`, `note`, and all other
+/// entries) is kept. The file is written atomically and the catalog is loaded again to
+/// verify it. When that verification fails, the earlier file content is restored.
+fn refresh_lockfile(
+    catalog_root: &Path,
+    lock_path: &Path,
+    json: bool,
+    quiet: bool,
+) -> VspResult<ExitCode> {
+    let original = fs::read(lock_path).map_err(|err| {
+        VspError::Operational(format!("failed to read {}: {err}", lock_path.display()))
+    })?;
+    let mut doc: Value = serde_json::from_slice(&original).map_err(|err| {
+        VspError::Operational(format!("malformed {}: {err}", lock_path.display()))
+    })?;
+    let entries = doc
+        .get_mut("extensions")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            VspError::Operational(format!(
+                "{} has no 'extensions' object",
+                lock_path.display()
+            ))
+        })?;
+
+    let api_url = marketplace_api_url();
+    let now = now_rfc3339_utc();
+    let mut refreshed: Vec<String> = Vec::new();
+    let mut skipped_native: Vec<String> = Vec::new();
+    for (ext_id, entry) in entries.iter_mut() {
+        let Some(obj) = entry.as_object_mut() else {
+            continue;
+        };
+        if obj.get("tier").and_then(Value::as_u64) != Some(1) {
+            continue;
+        }
+        if obj.get("universal").and_then(Value::as_bool) != Some(true) {
+            // A platform-specific extension has no universal VSIX to pin here.
+            skipped_native.push(ext_id.clone());
+            continue;
+        }
+        let mut pin = query_marketplace_universal_pin(ext_id, &api_url)?;
+        pin.sha256 = download_and_hash_vsix_url(&pin.vsix_url, ext_id)?;
+        if !quiet && !json {
+            println!("pinned {}@{} ({})", ext_id, pin.version, pin.sha256);
+        }
+        obj.insert("status".to_string(), Value::String("verified".to_string()));
+        obj.insert("version".to_string(), Value::String(pin.version.clone()));
+        obj.insert("sha256".to_string(), Value::String(pin.sha256.clone()));
+        obj.insert("vsixUrl".to_string(), Value::String(pin.vsix_url.clone()));
+        obj.insert("verifiedAt".to_string(), Value::String(now.clone()));
+        let mut targets = obj
+            .get("targets")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        targets.insert(
+            "universal".to_string(),
+            serde_json::json!({ "sha256": pin.sha256, "vsixUrl": pin.vsix_url }),
+        );
+        obj.insert("targets".to_string(), Value::Object(targets));
+        refreshed.push(ext_id.clone());
+    }
+
+    let content = to_canonical_json_string(&doc)?;
+    write_file_atomic(lock_path, content.as_bytes(), 0o644, true)?;
+
+    // Reload through the real loader. A lock that the loader rejects must not stay on disk.
+    // Test pin URLs (loopback fixtures) are accepted by the runtime only, so the reload
+    // check is skipped when that test hook is active.
+    if !crate::vsix::allow_test_pin_urls() {
+        if let Err(err) = crate::schema_loader::load_schema_from_dir(catalog_root) {
+            write_file_atomic(lock_path, &original, 0o644, true)?;
+            return Err(VspError::Operational(format!(
+                "refreshed {} failed verification and was restored: {err}",
+                lock_path.display()
+            )));
+        }
+    }
+
+    if json {
+        let payload = serde_json::json!({
+            "status": "refreshed",
+            "path": lock_path.display().to_string(),
+            "count": refreshed.len(),
+            "refreshed": refreshed,
+            "skippedPlatformSpecific": skipped_native,
+        });
+        print!("{}", to_canonical_json_string(&payload)?);
+    } else if !quiet {
+        println!(
+            "Wrote {} ({} Tier 1 universal entries refreshed, {} platform-specific entries unchanged)",
+            lock_path.display(),
+            refreshed.len(),
+            skipped_native.len()
+        );
+    }
+    Ok(ExitCode::Ok)
+}
 
 fn marketplace_api_url() -> String {
     env::var("VSP_MARKETPLACE_API_URL")
@@ -84,6 +189,12 @@ pub fn run_dev_pins(
                             .to_string(),
                     ));
                 }
+                // A v2.2 catalog is locked by `vsp.lock.json`. Refresh that file: the
+                // loader never reads `catalog/extension-pins.json` in this layout.
+                let lock_path = catalog.root.join("vsp.lock.json");
+                if lock_path.is_file() {
+                    return refresh_lockfile(&catalog.root, &lock_path, json, quiet);
+                }
                 catalog.root.join("catalog/extension-pins.json")
             }
         };
@@ -112,13 +223,19 @@ pub fn run_dev_pins(
             pins.insert(ext_id.clone(), pin);
         }
 
+        // A refresh updates digests only. It keeps the loaded `pinRequired` policy: a
+        // manifest that required pins must still require them after the refresh.
+        let loaded_pin_required = match &catalog.pins {
+            PinsLoadState::Loaded(existing) => existing.pin_required,
+            _ => false,
+        };
         let manifest = ExtensionPinsManifest {
             version: 1,
             note: Some(
                 "Install-time verified SHA-256 VSIX pins for universal core/UX extensions. Refresh via vsp dev pins --refresh."
                     .to_string(),
             ),
-            pin_required: false,
+            pin_required: loaded_pin_required,
             pins,
         };
         let content = to_canonical_json_string(&manifest)?;
@@ -271,12 +388,18 @@ pub fn run_dev_compat(
     let mut mp_extensions: Vec<Value> = Vec::new();
     for chunk in audit_ids.chunks(40) {
         let resp = query_marketplace_compat_batch(&agent, &api_url, chunk, 529)?;
-        if let Some(arr) = resp
+        // A success reply without `results[0].extensions` is missing evidence, not an
+        // authoritative empty batch: the verification is incomplete (exit 7).
+        let arr = resp
             .pointer("/results/0/extensions")
             .and_then(Value::as_array)
-        {
-            mp_extensions.extend(arr.iter().cloned());
-        }
+            .ok_or_else(|| {
+                VspError::IncompleteObservation(
+                    "compat: Marketplace API response has no results[0].extensions array (verification incomplete)"
+                        .to_string(),
+                )
+            })?;
+        mp_extensions.extend(arr.iter().cloned());
     }
 
     let mut entries = Vec::with_capacity(audit_ids.len());
@@ -310,7 +433,9 @@ pub fn run_dev_compat(
             continue;
         };
 
-        let Some((mut ver, mut eng, mut pre)) = pick_extension_version(ext_obj) else {
+        let Some((mut ver, mut eng, mut pre)) = pick_extension_version(ext_obj)
+            .map_err(|why| incomplete_engine_evidence(id, &why))?
+        else {
             not_found += 1;
             entries.push(CompatEntry {
                 id: id.clone(),
@@ -347,7 +472,9 @@ pub fn run_dev_compat(
                         "compat: verification unavailable for '{id}' (missing stable history)"
                     ))
                 })?;
-            if let Some((fb_ver, fb_eng, false)) = pick_extension_version(fb_ext) {
+            if let Some((fb_ver, fb_eng, false)) =
+                pick_extension_version(fb_ext).map_err(|why| incomplete_engine_evidence(id, &why))?
+            {
                 ver = fb_ver;
                 eng = fb_eng;
                 pre = false;
@@ -560,10 +687,24 @@ fn query_marketplace_compat_batch(
     Ok(val)
 }
 
-fn pick_extension_version(ext_obj: &Value) -> Option<(String, String, bool)> {
-    let versions = ext_obj.get("versions")?.as_array()?;
+fn incomplete_engine_evidence(ext_id: &str, why: &str) -> VspError {
+    VspError::IncompleteObservation(format!(
+        "compat: verification unavailable for '{ext_id}' ({why})"
+    ))
+}
+
+/// Picks the latest stable version (or the latest pre-release when no stable version
+/// exists) and its `engines.vscode` range: `(version, engine, is_prerelease)`.
+///
+/// `Ok(None)` means that the extension lists no version. `Err` means that the chosen
+/// version has no `Microsoft.VisualStudio.Code.Engine` property or no version string. A
+/// missing engine is NOT treated as `*`: compatibility is unknown, not confirmed.
+fn pick_extension_version(ext_obj: &Value) -> Result<Option<(String, String, bool)>, String> {
+    let Some(versions) = ext_obj.get("versions").and_then(Value::as_array) else {
+        return Ok(None);
+    };
     if versions.is_empty() {
-        return None;
+        return Ok(None);
     }
     let is_pre = |v: &Value| {
         v.get("properties")
@@ -580,7 +721,11 @@ fn pick_extension_version(ext_obj: &Value) -> Option<(String, String, bool)> {
         Some(stable) => (stable, false),
         None => (&versions[0], true),
     };
-    let ver = chosen.get("version").and_then(Value::as_str)?.to_string();
+    let ver = chosen
+        .get("version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "version entry has no version string".to_string())?
+        .to_string();
     let engine = chosen
         .get("properties")
         .and_then(Value::as_array)
@@ -590,9 +735,12 @@ fn pick_extension_version(ext_obj: &Value) -> Option<(String, String, bool)> {
             })
         })
         .and_then(|p| p.get("value").and_then(Value::as_str))
-        .unwrap_or("*")
+        .filter(|range| !range.trim().is_empty())
+        .ok_or_else(|| {
+            format!("version {ver} has no Microsoft.VisualStudio.Code.Engine property")
+        })?
         .to_string();
-    Some((ver, engine, pre))
+    Ok(Some((ver, engine, pre)))
 }
 
 /// Evaluates whether `vscode_ver` (`major.minor.patch`) satisfies a VS Code `engines.vscode`
@@ -737,8 +885,20 @@ pub fn run_dev_docs(
         catalog.root.clone()
     };
 
-    // 1. Rust docs policy sentinel sync/check across agent docs.
+    // Both source documents are required. A check that skips a missing source would pass
+    // with nothing verified.
     let rust_doc_path = docs_root.join("docs/rust.md");
+    let readme_path = docs_root.join("README.md");
+    for (label, path) in [("docs/rust.md", &rust_doc_path), ("README.md", &readme_path)] {
+        if !path.is_file() {
+            return Err(VspError::Operational(format!(
+                "vsp dev docs: required source {label} is missing in {}",
+                docs_root.display()
+            )));
+        }
+    }
+
+    // 1. Rust docs policy sentinel sync/check across agent docs.
     if rust_doc_path.is_file() {
         let policy_body = extract_rust_policy_block(&rust_doc_path)?;
         let expected_block = format!("{RUST_POLICY_BEGIN}\n{policy_body}\n{RUST_POLICY_END}");
@@ -820,7 +980,6 @@ pub fn run_dev_docs(
     }
 
     // 2. README.md generated matrix block sync/check.
-    let readme_path = docs_root.join("README.md");
     if readme_path.is_file() {
         let expected_matrix = render_readme_matrix_block(catalog)?;
         let readme_content = fs::read_to_string(&readme_path).map_err(|err| {
@@ -1111,7 +1270,15 @@ fn replace_marker_block(
 /// configured, or [`VspError::Operational`] if `git` fails or a hook script is not executable.
 pub fn run_dev_hooks(repo_root: &Path, json: bool, quiet: bool) -> VspResult<ExitCode> {
     let target = "scripts/git-hooks";
-    let get_out = Command::new("git")
+
+    // Verify the hook BEFORE any `git config` write or success report. A `core.hooksPath`
+    // that names a missing directory or a non-executable `pre-commit` makes Git skip the
+    // validation hook without any message.
+    verify_hooks_usable(&repo_root.join(target))?;
+
+    let git_bin = find_binary("git")
+        .ok_or_else(|| VspError::Operational("git executable not found on PATH".to_string()))?;
+    let get_out = Command::new(&git_bin)
         .arg("-C")
         .arg(repo_root)
         .args(["config", "--get", "core.hooksPath"])
@@ -1125,7 +1292,7 @@ pub fn run_dev_hooks(repo_root: &Path, json: bool, quiet: bool) -> VspResult<Exi
     };
 
     if current.is_empty() {
-        let set_out = Command::new("git")
+        let set_out = Command::new(&git_bin)
             .arg("-C")
             .arg(repo_root)
             .args(["config", "core.hooksPath", target])
@@ -1152,28 +1319,6 @@ pub fn run_dev_hooks(repo_root: &Path, json: bool, quiet: bool) -> VspResult<Exi
     }
 
     if current == target {
-        let hooks_dir = repo_root.join(target);
-        if hooks_dir.is_dir() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                for entry in fs::read_dir(&hooks_dir).into_iter().flatten().flatten() {
-                    let p = entry.path();
-                    if p.is_file() {
-                        let mode = fs::metadata(&p)
-                            .map(|m| m.permissions().mode())
-                            .unwrap_or(0);
-                        if mode & 0o111 == 0 {
-                            return Err(VspError::Operational(format!(
-                                "hook {} is not executable; run 'chmod +x {}'",
-                                p.display(),
-                                p.display()
-                            )));
-                        }
-                    }
-                }
-            }
-        }
         if json {
             print!(
                 "{}",
@@ -1191,6 +1336,67 @@ pub fn run_dev_hooks(repo_root: &Path, json: bool, quiet: bool) -> VspResult<Exi
     Err(VspError::SafetyRefusal(format!(
         "refusing to overwrite existing core.hooksPath = {current} (expected unset or '{target}')"
     )))
+}
+
+/// Checks that `hooks_dir` is a readable directory, that `pre-commit` in it is a readable
+/// regular file, and that each hook file is executable.
+fn verify_hooks_usable(hooks_dir: &Path) -> VspResult<()> {
+    if !hooks_dir.is_dir() {
+        return Err(VspError::Operational(format!(
+            "hooks directory {} is missing; core.hooksPath was not changed",
+            hooks_dir.display()
+        )));
+    }
+    let pre_commit = hooks_dir.join("pre-commit");
+    if !pre_commit.is_file() {
+        return Err(VspError::Operational(format!(
+            "required hook {} is missing; core.hooksPath was not changed",
+            pre_commit.display()
+        )));
+    }
+    fs::File::open(&pre_commit).map_err(|err| {
+        VspError::Operational(format!(
+            "hook {} is not readable: {err}",
+            pre_commit.display()
+        ))
+    })?;
+
+    let entries = fs::read_dir(hooks_dir).map_err(|err| {
+        VspError::Operational(format!(
+            "cannot list hooks directory {}: {err}",
+            hooks_dir.display()
+        ))
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|err| {
+            VspError::Operational(format!(
+                "cannot list hooks directory {}: {err}",
+                hooks_dir.display()
+            ))
+        })?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path)
+                .map_err(|err| {
+                    VspError::Operational(format!("cannot examine {}: {err}", path.display()))
+                })?
+                .permissions()
+                .mode();
+            if mode & 0o111 == 0 {
+                return Err(VspError::Operational(format!(
+                    "hook {} is not executable; run 'chmod +x {}'",
+                    path.display(),
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1216,6 +1422,103 @@ mod tests {
         assert!(!semver_satisfies("1.81.0", "1.80.x"));
         assert!(semver_satisfies("1.147.0", "*"));
         assert!(semver_satisfies("1.147.0", "^1.99.0 || ^1.100.0"));
+    }
+
+    /// Astra A03: missing engine metadata is missing evidence, not `*`.
+    #[test]
+    fn missing_engine_metadata_is_not_treated_as_compatible() {
+        let with_engine = serde_json::json!({"versions": [{"version": "1.2.3", "properties": [
+            {"key": "Microsoft.VisualStudio.Code.Engine", "value": "^1.80.0"}]}]});
+        assert_eq!(
+            pick_extension_version(&with_engine),
+            Ok(Some(("1.2.3".to_string(), "^1.80.0".to_string(), false)))
+        );
+        let explicit_star = serde_json::json!({"versions": [{"version": "1.0.0", "properties": [
+            {"key": "Microsoft.VisualStudio.Code.Engine", "value": "*"}]}]});
+        assert!(matches!(pick_extension_version(&explicit_star), Ok(Some(_))));
+
+        for missing in [
+            serde_json::json!({"versions": [{"version": "1.2.3"}]}),
+            serde_json::json!({"versions": [{"version": "1.2.3", "properties": []}]}),
+            serde_json::json!({"versions": [{"version": "1.2.3", "properties": [
+                {"key": "Microsoft.VisualStudio.Code.Engine", "value": " "}]}]}),
+            serde_json::json!({"versions": [{"properties": []}]}),
+        ] {
+            assert!(pick_extension_version(&missing).is_err(), "{missing}");
+        }
+        assert_eq!(pick_extension_version(&serde_json::json!({"versions": []})), Ok(None));
+        assert_eq!(
+            incomplete_engine_evidence("a.b", "x").exit_code(),
+            ExitCode::IncompleteObservation
+        );
+    }
+
+    /// Astra A04: the hook is verified before `core.hooksPath` is written.
+    #[cfg(unix)]
+    #[test]
+    fn dev_hooks_requires_executable_pre_commit_before_git_config() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().expect("tmp");
+        let repo = tmp.path();
+        let init = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["init", "-q"])
+            .status()
+            .expect("git init");
+        assert!(init.success());
+        let hooks_path = || {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(["config", "--get", "core.hooksPath"])
+                .output()
+                .expect("git config");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
+        // No hooks directory.
+        assert_eq!(
+            run_dev_hooks(repo, false, true).expect_err("missing dir").exit_code(),
+            ExitCode::Operational
+        );
+        // Directory without pre-commit.
+        let hooks = repo.join("scripts/git-hooks");
+        fs::create_dir_all(&hooks).expect("mkdir hooks");
+        assert!(run_dev_hooks(repo, false, true).is_err());
+        // pre-commit that is not executable.
+        let pre_commit = hooks.join("pre-commit");
+        fs::write(&pre_commit, "#!/bin/sh\nexit 0\n").expect("write hook");
+        fs::set_permissions(&pre_commit, fs::Permissions::from_mode(0o644)).expect("chmod");
+        assert!(run_dev_hooks(repo, false, true).is_err());
+        assert_eq!(hooks_path(), "", "core.hooksPath must not be set by a refused run");
+
+        // A usable hook installs, and a second run is idempotent.
+        fs::set_permissions(&pre_commit, fs::Permissions::from_mode(0o755)).expect("chmod");
+        assert_eq!(run_dev_hooks(repo, false, true).expect("install"), ExitCode::Ok);
+        assert_eq!(hooks_path(), "scripts/git-hooks");
+        assert_eq!(run_dev_hooks(repo, false, true).expect("again"), ExitCode::Ok);
+
+        // A hook that later loses its execute bit is reported on reinstall.
+        fs::set_permissions(&pre_commit, fs::Permissions::from_mode(0o644)).expect("chmod");
+        assert!(run_dev_hooks(repo, false, true).is_err());
+    }
+
+    /// Astra A05: a missing source document fails the docs check.
+    #[test]
+    fn dev_docs_check_fails_when_a_source_document_is_missing() {
+        let mut catalog = load_legacy_catalog(&repo_root()).expect("catalog");
+        let tmp = tempfile::TempDir::new().expect("tmp");
+        catalog.root = tmp.path().to_path_buf();
+        let err = run_dev_docs(&catalog, true, false, false, true).expect_err("no sources");
+        assert_eq!(err.exit_code(), ExitCode::Operational);
+        assert!(err.to_string().contains("docs/rust.md"));
+
+        fs::create_dir_all(tmp.path().join("docs")).expect("mkdir docs");
+        fs::copy(repo_root().join("docs/rust.md"), tmp.path().join("docs/rust.md"))
+            .expect("copy rust.md");
+        let err = run_dev_docs(&catalog, true, false, false, true).expect_err("no README");
+        assert!(err.to_string().contains("README.md"));
     }
 
     #[test]

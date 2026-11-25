@@ -43,7 +43,7 @@ use clap::Parser;
 
 use crate::cli::{execute, Cli};
 use crate::exit_codes::{ExitCode, VspError, VspResult};
-use crate::model::{resolve_legacy_profile_name, ModuleKind, WorkspaceCatalog};
+use crate::model::{ModuleKind, WorkspaceCatalog};
 use crate::schema_loader::load_catalog_auto;
 use crate::sync::install_single_extension;
 
@@ -222,9 +222,10 @@ pub fn run(args: &[OsString]) -> ExitCode {
         },
         Translation::InstallExt { profile, id } => {
             let result = load_catalog_auto(None).and_then(|catalog| {
-                let target = resolve_legacy_profile_name(&profile)
-                    .map_or(profile.as_str(), |(canonical, _)| canonical);
-                install_single_extension(&catalog, target, &id, None, false)
+                let target = catalog
+                    .resolve_alias(&profile)
+                    .map_or_else(|| profile.clone(), |(canonical, _)| canonical);
+                install_single_extension(&catalog, &target, &id, None, false)
             });
             match result {
                 Ok(()) => ExitCode::Ok,

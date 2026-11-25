@@ -13,6 +13,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 use crate::exit_codes::{VspError, VspResult};
+use crate::provenance::check_path_contained;
 use crate::model::{
     is_valid_module_id, DefaultsManifest, ExtensionCatalog, ExtensionPinsManifest,
     ModuleDefinition, ModuleKind, ModuleManifest, PinsLoadState, ProfileRecipe, PublishersManifest,
@@ -216,6 +217,18 @@ pub fn load_legacy_catalog(root: &Path) -> VspResult<WorkspaceCatalog> {
     let canon_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let catalog_dir = canon_root.join("catalog");
 
+    // Each file is checked against the catalog root before it is read. A symbolic link or
+    // a `..` path that leaves the root is refused (exit 5), as in the v2.2 loader.
+    for name in [
+        "defaults.json",
+        "extensions.json",
+        "publishers.json",
+        "extension-pins.json",
+        "setting-scopes.json",
+    ] {
+        verify_inside_root(&canon_root, &catalog_dir.join(name))?;
+    }
+
     let defaults_path = catalog_dir.join("defaults.json");
     let defaults: DefaultsManifest = if defaults_path.is_file() {
         read_strict_json(&defaults_path)?
@@ -272,6 +285,23 @@ pub fn load_legacy_catalog(root: &Path) -> VspResult<WorkspaceCatalog> {
         setting_scopes,
         modules,
         profiles,
+        legacy_aliases: BTreeMap::new(),
+    })
+}
+
+/// Checks that `path` stays inside the catalog `root` after symbolic links and `..` are
+/// resolved. A path that does not exist yet is accepted when its resolved location is
+/// inside the root.
+///
+/// # Errors
+///
+/// Returns [`VspError::SafetyRefusal`] (exit `5`) when `path` leaves `root`.
+fn verify_inside_root(root: &Path, path: &Path) -> VspResult<()> {
+    check_path_contained(root, path).map(|_| ()).map_err(|err| {
+        VspError::SafetyRefusal(format!(
+            "legacy catalog file escapes the catalog root {}: {err}",
+            root.display()
+        ))
     })
 }
 
@@ -336,6 +366,8 @@ pub fn discover_modules(root: &Path) -> VspResult<BTreeMap<String, ModuleDefinit
                 .to_string();
 
             let manifest_path = dir.join("module.json");
+            verify_inside_root(root, &dir)?;
+            verify_inside_root(root, &manifest_path)?;
             if !manifest_path.is_file() {
                 return Err(VspError::UsageOrConfig(format!(
                     "missing module.json in {}",
@@ -362,6 +394,19 @@ pub fn discover_modules(root: &Path) -> VspResult<BTreeMap<String, ModuleDefinit
                     "duplicate module id '{}' across modules/*/",
                     manifest.id
                 )));
+            }
+
+            // Fragment paths come from the manifest, so they are checked too.
+            for rel in [
+                &manifest.settings.workspace,
+                &manifest.settings.profile,
+                &manifest.tasks,
+            ]
+            .into_iter()
+            .flatten()
+            .filter(|rel| !rel.is_empty())
+            {
+                verify_inside_root(root, &dir.join(rel))?;
             }
 
             let workspace_settings = match &manifest.settings.workspace {
@@ -441,6 +486,8 @@ pub fn discover_profiles(root: &Path) -> VspResult<BTreeMap<String, ProfileRecip
 
     for dir in subdirs {
         let recipe_path = dir.join("profile.json");
+        verify_inside_root(root, &dir)?;
+        verify_inside_root(root, &recipe_path)?;
         if !recipe_path.is_file() {
             continue;
         }
@@ -456,4 +503,83 @@ pub fn discover_profiles(root: &Path) -> VspResult<BTreeMap<String, ProfileRecip
     }
 
     Ok(profiles)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+    use tempfile::TempDir;
+
+    const MODULE_JSON: &str =
+        r#"{"version":1,"id":"demo","kind":"capability","description":"d"}"#;
+
+    /// Builds a minimal legacy catalog root and returns `(tempdir, root, outside)`.
+    fn minimal_root() -> (TempDir, PathBuf, PathBuf) {
+        let tmp = TempDir::new().expect("tmp");
+        let root = tmp.path().join("repo");
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(root.join("catalog")).expect("mkdir catalog");
+        fs::create_dir_all(root.join("modules/capabilities/demo")).expect("mkdir module");
+        fs::create_dir_all(root.join("profiles")).expect("mkdir profiles");
+        fs::create_dir_all(&outside).expect("mkdir outside");
+        fs::write(
+            root.join("catalog/extensions.json"),
+            r#"{"version":1,"extensions":{}}"#,
+        )
+        .expect("write extensions");
+        fs::write(root.join("modules/capabilities/demo/module.json"), MODULE_JSON)
+            .expect("write module");
+        (tmp, root, outside)
+    }
+
+    /// Opus L10: each legacy-layout file must stay inside the catalog root.
+    #[test]
+    fn legacy_loader_rejects_files_that_leave_the_catalog_root() {
+        let (_tmp, root, _outside) = minimal_root();
+        let catalog = load_legacy_catalog(&root).expect("clean root loads");
+        assert!(catalog.modules.contains_key("demo"));
+        assert!(catalog.legacy_aliases.is_empty());
+
+        // Catalog file that is a symbolic link to a file outside the root.
+        let (_tmp, root, outside) = minimal_root();
+        fs::write(outside.join("publishers.json"), r#"{"version":1,"publishers":["evil"]}"#)
+            .expect("write outside");
+        symlink(outside.join("publishers.json"), root.join("catalog/publishers.json"))
+            .expect("symlink");
+        let err = load_legacy_catalog(&root).expect_err("linked catalog file");
+        assert_eq!(err.exit_code().as_i32(), 5, "{err}");
+
+        // Module directory that is a symbolic link to a directory outside the root.
+        let (_tmp, root, outside) = minimal_root();
+        fs::create_dir_all(outside.join("evil")).expect("mkdir evil");
+        fs::write(
+            outside.join("evil/module.json"),
+            r#"{"version":1,"id":"evil","kind":"capability"}"#,
+        )
+        .expect("write evil module");
+        symlink(outside.join("evil"), root.join("modules/capabilities/evil")).expect("symlink");
+        let err = load_legacy_catalog(&root).expect_err("linked module dir");
+        assert_eq!(err.exit_code().as_i32(), 5, "{err}");
+
+        // Settings fragment path with `..` that leaves the root.
+        let (_tmp, root, outside) = minimal_root();
+        fs::write(outside.join("settings.jsonc"), r#"{"a.b": 1}"#).expect("write fragment");
+        fs::write(
+            root.join("modules/capabilities/demo/module.json"),
+            r#"{"version":1,"id":"demo","kind":"capability",
+                "settings":{"profile":"../../../../outside/settings.jsonc"}}"#,
+        )
+        .expect("write module");
+        let err = load_legacy_catalog(&root).expect_err("fragment outside root");
+        assert_eq!(err.exit_code().as_i32(), 5, "{err}");
+
+        // Profile recipe directory that is a symbolic link to a directory outside the root.
+        let (_tmp, root, outside) = minimal_root();
+        fs::create_dir_all(outside.join("p")).expect("mkdir p");
+        fs::write(outside.join("p/profile.json"), r#"{"name":"p"}"#).expect("write recipe");
+        symlink(outside.join("p"), root.join("profiles/p")).expect("symlink");
+        let err = load_legacy_catalog(&root).expect_err("linked profile dir");
+        assert_eq!(err.exit_code().as_i32(), 5, "{err}");
+    }
 }

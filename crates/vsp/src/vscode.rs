@@ -224,31 +224,79 @@ pub fn find_storage_profile_location(
     Ok(Some(loc))
 }
 
+/// Maximum accepted length of a VS Code profile name, in bytes.
+pub const MAX_PROFILE_NAME_LEN: usize = 128;
+
+/// Validates a VS Code profile name before it reaches the `code` command line or
+/// `storage.json`.
+///
+/// A profile name can come from an untrusted source: `-p/--profile`, the `.name` field of a
+/// `--from` bundle, or `storage.json`. The name is rejected when it is empty, starts with
+/// `-` (it would be parsed as a `code` option), contains a control character, `/`, `\`, or
+/// `..`, or is longer than [`MAX_PROFILE_NAME_LEN`] bytes.
+///
+/// # Errors
+///
+/// Returns [`VspError::SafetyRefusal`] (exit `5`) for a rejected name.
+pub fn validate_profile_name(name: &str) -> VspResult<()> {
+    let reason = if name.is_empty() {
+        Some("it is empty")
+    } else if name.len() > MAX_PROFILE_NAME_LEN {
+        Some("it is longer than 128 bytes")
+    } else if name.starts_with('-') {
+        Some("it starts with '-'")
+    } else if name.chars().any(char::is_control) {
+        Some("it contains a control character")
+    } else if name.contains('/') || name.contains('\\') {
+        Some("it contains a path separator")
+    } else if name.contains("..") {
+        Some("it contains '..'")
+    } else {
+        None
+    };
+    match reason {
+        None => Ok(()),
+        Some(why) => Err(VspError::SafetyRefusal(format!(
+            "unsafe VS Code profile name {name:?}: {why}"
+        ))),
+    }
+}
+
+/// Locates an executable on `PATH` with [`which::which`].
+#[must_use]
+pub fn find_binary(name: &str) -> Option<PathBuf> {
+    which::which(name).ok()
+}
+
 /// Locates the `code` executable on `PATH` (if available).
 #[must_use]
 pub fn find_code_binary() -> Option<PathBuf> {
-    let path_var = env::var_os("PATH")?;
-    for dir in env::split_paths(&path_var) {
-        let candidate = dir.join("code");
-        if is_executable_file(&candidate) {
-            return Some(candidate);
-        }
-    }
-    None
+    find_binary("code")
 }
 
-#[cfg(unix)]
-fn is_executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    match fs::metadata(path) {
-        Ok(meta) => meta.is_file() && (meta.permissions().mode() & 0o111 != 0),
-        Err(_) => false,
+/// Builds `code [--user-data-dir <root>] [--profile=<name>]` for one profile.
+///
+/// The profile name is validated with [`validate_profile_name`] and passed as the single
+/// argument `--profile=<name>`, so a name can never be read as a separate `code` option.
+/// The Default profile (`"default"`) needs no `--profile` argument.
+///
+/// # Errors
+///
+/// Returns [`VspError::SafetyRefusal`] (exit `5`) for an unsafe profile name.
+pub fn code_command(
+    code_bin: &Path,
+    store: &VsCodeStore,
+    profile_name: &str,
+) -> VspResult<Command> {
+    validate_profile_name(profile_name)?;
+    let mut cmd = Command::new(code_bin);
+    if let Some(root) = &store.data_root {
+        cmd.arg("--user-data-dir").arg(root);
     }
-}
-
-#[cfg(not(unix))]
-fn is_executable_file(path: &Path) -> bool {
-    path.is_file()
+    if profile_name != "default" {
+        cmd.arg(format!("--profile={profile_name}"));
+    }
+    Ok(cmd)
 }
 
 /// Installed VS Code extension parsed from `code --list-extensions --show-versions`.
@@ -265,19 +313,14 @@ pub struct InstalledExtension {
 ///
 /// # Errors
 ///
-/// Returns [`VspError::IncompleteObservation`] (exit `7`) if `code` fails to spawn or exits nonzero.
+/// - [`VspError::SafetyRefusal`] (exit `5`) if `profile_name` is unsafe (`code` is not run).
+/// - [`VspError::IncompleteObservation`] (exit `7`) if `code` fails to spawn or exits nonzero.
 pub fn list_installed_extensions(
     code_bin: &Path,
     store: &VsCodeStore,
     profile_name: &str,
 ) -> VspResult<Vec<InstalledExtension>> {
-    let mut cmd = Command::new(code_bin);
-    if let Some(root) = &store.data_root {
-        cmd.arg("--user-data-dir").arg(root);
-    }
-    if profile_name != "default" {
-        cmd.arg("--profile").arg(profile_name);
-    }
+    let mut cmd = code_command(code_bin, store, profile_name)?;
     cmd.arg("--list-extensions").arg("--show-versions");
 
     let output = cmd.output().map_err(|err| {
@@ -325,4 +368,62 @@ pub fn list_installed_extensions(
         });
     }
     Ok(exts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Opus H2: a profile name can never become a separate `code` option.
+    #[test]
+    fn profile_name_validation_rejects_argv_injection_and_path_forms() {
+        for ok in ["rust", "My Profile", "java-spring", "rust-profile-crisp", "a.b_c"] {
+            assert!(validate_profile_name(ok).is_ok(), "{ok}");
+        }
+        let too_long = "a".repeat(MAX_PROFILE_NAME_LEN + 1);
+        for bad in [
+            "",
+            "-p",
+            "--install-extension=attackerpub.backdoor",
+            "a/b",
+            "a\\b",
+            "..",
+            "a..b",
+            "new\nline",
+            "nul\0byte",
+            "tab\tname",
+            "del\x7fname",
+            too_long.as_str(),
+        ] {
+            let err = validate_profile_name(bad).expect_err(bad);
+            assert_eq!(err.exit_code().as_i32(), 5, "{bad:?}");
+        }
+        assert!(validate_profile_name(&"a".repeat(MAX_PROFILE_NAME_LEN)).is_ok());
+    }
+
+    #[test]
+    fn code_command_passes_profile_as_one_argument() {
+        let store = VsCodeStore {
+            user_dir: PathBuf::from("/data/User"),
+            data_root: Some(PathBuf::from("/data")),
+        };
+        let cmd = code_command(Path::new("/bin/code"), &store, "my rust").expect("command");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["--user-data-dir", "/data", "--profile=my rust"]);
+
+        let default_cmd = code_command(Path::new("/bin/code"), &store, "default").expect("default");
+        assert_eq!(default_cmd.get_args().count(), 2);
+
+        let err = code_command(Path::new("/bin/code"), &store, "--install-extension=x.y")
+            .expect_err("unsafe name");
+        assert_eq!(err.exit_code().as_i32(), 5);
+    }
+
+    #[test]
+    fn find_binary_uses_path_lookup() {
+        assert!(find_binary("vsp-definitely-not-a-real-binary-name").is_none());
+    }
 }
