@@ -16,3 +16,5 @@ User/sync/
 .agents/settings.local.json
 .ntm/
 scratch/
+/target/
+/dist/
