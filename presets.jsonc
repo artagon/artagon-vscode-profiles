@@ -1,0 +1,167 @@
+// Consolidated canonical profile presets and legacy export aliases (v2.2.0).
+// Any toolchain pack ID not explicitly overridden below resolves implicitly
+// as `general + <toolchain>` via `schema_loader::resolve_preset_or_toolchain`.
+{
+  "version": 2,
+  "presets": {
+    // Decision D5: explicit 1-key override on general preserving byte-for-byte parity with legacy _merged/ai.json.
+    "ai": {
+      "description": "AI-first multi-agent workflow profile (Google Antigravity default, Claude Code, OpenAI Codex, and unified GitHub Copilot Chat)",
+      "extends": "general",
+      "packs": [
+        "ai-agents"
+      ],
+      "overrides": {
+        "profile": {
+          "chat.editor.fontSize": 14
+        }
+      }
+    },
+    // Strict Copilot-only target for legacy ai-profile-{crisp,retina} aliases (zero non-Copilot AI IDs).
+    "ai-copilot": {
+      "description": "Strict Copilot-only AI profile (unified GitHub Copilot Chat without Antigravity, Claude Code, or Codex; target of legacy ai-profile-* links)",
+      "extends": "general",
+      "packs": [
+        "ai-copilot"
+      ],
+      "excludePacks": [
+        "ai-agents"
+      ],
+      "overrides": {
+        "profile": {
+          "chat.editor.fontSize": 14
+        }
+      }
+    },
+    "ai-plus": {
+      "description": "Full-stack AI power profile adding GitLens + GitHub PRs, Container Tools, SonarQube for IDE, DX Pro (Bookmarks/Scratchpads/Project Manager/Bruno), and curated extra themes",
+      "extends": "ai",
+      "packs": [
+        "git-pro",
+        "containers",
+        "quality",
+        "dx-pro",
+        "themes-pack"
+      ]
+    },
+    "astro": {
+      "description": "Astro + TypeScript web development with Tailwind CSS, Stylelint, and ESLint+Prettier (swap with --with biome)",
+      "extends": "general",
+      "packs": [
+        "astro"
+      ]
+    },
+    "cpp-clangd": {
+      "description": "C/C++ development with LLVM clangd, CMake Tools, and CodeLLDB",
+      "extends": "general",
+      "packs": [
+        "cpp-clangd"
+      ]
+    },
+    "cpp-intellisense": {
+      "description": "C/C++ development with Microsoft C/C++ IntelliSense, CMake Tools, and CodeLLDB",
+      "extends": "general",
+      "packs": [
+        "cpp-intellisense"
+      ]
+    },
+    "general": {
+      "description": "General-purpose developer profile with slim core editor, default AI agent suite (Antigravity + Claude + Codex + Copilot), Markdown, and Shell",
+      "useDefaults": true,
+      "packs": [],
+      "excludePacks": [],
+      "ux": "default",
+      "overrides": {}
+    },
+    "general-minimal": {
+      "description": "AI-free general developer profile (excludes ai-agents and disables built-in VS Code AI features)",
+      "extends": "general",
+      "excludePacks": [
+        "ai-agents"
+      ],
+      "overrides": {
+        "profile": {
+          "chat.disableAIFeatures": true
+        }
+      }
+    },
+    "github-workflows": {
+      "description": "GitHub Actions CI/CD workflow authoring with YAML schema validation and Shell support",
+      "extends": "general",
+      "packs": [
+        "github-workflows"
+      ]
+    },
+    "java-gradle": {
+      "description": "Java development with Red Hat JDT LS (native Lombok), Gradle, JUnit, and Checkstyle",
+      "extends": "general",
+      "packs": [
+        "java-gradle"
+      ]
+    },
+    "java-maven": {
+      "description": "Java development with Red Hat JDT LS (native Lombok), Apache Maven, JUnit, and Checkstyle",
+      "extends": "general",
+      "packs": [
+        "java-maven"
+      ]
+    },
+    "java-spring": {
+      "description": "Spring Boot development layered on Gradle (for Maven Spring, compose java-maven --with java-spring)",
+      "extends": "general",
+      "packs": [
+        "java-gradle",
+        "java-spring"
+      ]
+    },
+    "python": {
+      "description": "Python development with Ruff, BasedPyright, Python Environments (venv/uv), Debugpy, and pytest (swap BasedPyright with --with python-ty --without python)",
+      "extends": "general",
+      "packs": [
+        "python"
+      ]
+    },
+    "rust": {
+      "description": "Rust development with rust-analyzer, CodeLLDB, Dependi, Coverage Gutters, and strict docs policy",
+      "extends": "general",
+      "packs": [
+        "rust"
+      ]
+    },
+    // Inherits general cleanly (identical resolved pack set and settings/extensions SHA-256).
+    "shell": {
+      "description": "Shell scripting profile with Bash IDE, ShellCheck, shfmt, Fish, and BATS Test Runner",
+      "extends": "general",
+      "packs": [
+        "shell"
+      ]
+    }
+  },
+  // All 22 legacy <flavor>-{crisp,retina} aliases mapping to canonical presets.
+  "legacyAliases": {
+    "ai-plus-crisp": { "preset": "ai-plus", "ux": "crisp" },
+    "ai-plus-retina": { "preset": "ai-plus", "ux": "retina" },
+    // Security invariant: strictly maps to ai-copilot (zero non-Copilot AI IDs).
+    "ai-profile-crisp": { "preset": "ai-copilot", "ux": "crisp" },
+    // Security invariant: strictly maps to ai-copilot (zero non-Copilot AI IDs).
+    "ai-profile-retina": { "preset": "ai-copilot", "ux": "retina" },
+    "cpp-clangd-crisp": { "preset": "cpp-clangd", "ux": "crisp" },
+    "cpp-clangd-retina": { "preset": "cpp-clangd", "ux": "retina" },
+    "cpp-intellisense-crisp": { "preset": "cpp-intellisense", "ux": "crisp" },
+    "cpp-intellisense-retina": { "preset": "cpp-intellisense", "ux": "retina" },
+    "github-workflows-crisp": { "preset": "github-workflows", "ux": "crisp" },
+    "github-workflows-retina": { "preset": "github-workflows", "ux": "retina" },
+    "java-gradle-crisp": { "preset": "java-gradle", "ux": "crisp" },
+    "java-gradle-retina": { "preset": "java-gradle", "ux": "retina" },
+    "java-maven-crisp": { "preset": "java-maven", "ux": "crisp" },
+    "java-maven-retina": { "preset": "java-maven", "ux": "retina" },
+    "java-profile-crisp": { "preset": "java-maven", "ux": "crisp" },
+    "java-profile-retina": { "preset": "java-maven", "ux": "retina" },
+    "java-spring-crisp": { "preset": "java-spring", "ux": "crisp" },
+    "java-spring-retina": { "preset": "java-spring", "ux": "retina" },
+    "rust-profile-crisp": { "preset": "rust", "ux": "crisp" },
+    "rust-profile-retina": { "preset": "rust", "ux": "retina" },
+    "web-astro-crisp": { "preset": "astro", "ux": "crisp" },
+    "web-astro-retina": { "preset": "astro", "ux": "retina" }
+  }
+}

@@ -1,0 +1,1141 @@
+// Consolidated v2.2 extension lifecycle registry, default pack selection,
+// extension group ordering, and blocked publishers.
+// Allowed publishers are derived dynamically as:
+//   { ext.publisher | ext.status == "active" } \ blockedPublishers
+// Tier 0 (compromised + removed) extensions stay here for unconditional Step 0 uninstall.
+{
+  "version": 2,
+  "defaults": {
+    "capabilities": [
+      "core-editor",
+      "ai-agents",
+      "markdown",
+      "shell"
+    ],
+    "ux": "crisp"
+  },
+  "groupOrder": [
+    "AI",
+    "Themes",
+    "DX",
+    "CMake",
+    "Java",
+    "Rust",
+    "Python",
+    "Web",
+    "Shell",
+    "Markdown",
+    "Quality",
+    "Git",
+    "Containers",
+    "Collaboration",
+    "General"
+  ],
+  "blockedPublishers": [
+    "jscearcy"
+  ],
+  "extensions": {
+    "aaron-bond.better-comments": {
+      "publisher": "aaron-bond",
+      "group": "DX",
+      "status": "active",
+      "universal": true
+    },
+    "akamud.vscode-theme-onedark": {
+      "publisher": "akamud",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "Atom One Dark"
+      ]
+    },
+    "alefragnani.bookmarks": {
+      "publisher": "alefragnani",
+      "group": "DX",
+      "status": "active",
+      "universal": true
+    },
+    "alefragnani.project-manager": {
+      "publisher": "alefragnani",
+      "group": "DX",
+      "status": "active",
+      "universal": true
+    },
+    "antfu.icons-carbon": {
+      "publisher": "antfu",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "icons-carbon"
+      ]
+    },
+    "anthropic.claude-code": {
+      "publisher": "anthropic",
+      "group": "AI",
+      "status": "active",
+      "universal": false,
+      "notes": "Official Anthropic Claude Code extension"
+    },
+    "astral-sh.ty": {
+      "publisher": "astral-sh",
+      "group": "Python",
+      "status": "active",
+      "universal": false,
+      "notes": "Optional Astral ty Python type checker (pre-release)"
+    },
+    "astro-build.astro-vscode": {
+      "publisher": "astro-build",
+      "group": "Web",
+      "status": "active",
+      "universal": true
+    },
+    "barbosshack.crates-io": {
+      "publisher": "barbosshack",
+      "group": "Rust",
+      "status": "removed",
+      "universal": true,
+      "notes": "Pre-v2 Rust bundle legacy ID; replaced by fill-labs.dependi"
+    },
+    "beardedbear.beardedicons": {
+      "publisher": "beardedbear",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "bearded-icons"
+      ]
+    },
+    "beardedbear.beardedtheme": {
+      "publisher": "beardedbear",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "Bearded Theme Monokai Metallian",
+        "Bearded Theme Monokai Terra",
+        "Bearded Theme Monokai Stone",
+        "Bearded Theme Monokai Black",
+        "Bearded Theme Monokai Reversed",
+        "Bearded Theme Solarized",
+        "Bearded Theme Solarized Reversed",
+        "Bearded Theme Solarized Light",
+        "Bearded Theme Oceanic",
+        "Bearded Theme Oceanic Reversed",
+        "Bearded Theme Arc",
+        "Bearded Theme Arc Eggplant",
+        "Bearded Theme Arc EolStorm",
+        "Bearded Theme Arc Blueberry",
+        "Bearded Theme Arc Reversed",
+        "Bearded Theme Black & Amethyst",
+        "Bearded Theme Black & Amethyst Soft",
+        "Bearded Theme Black & Diamond",
+        "Bearded Theme Black & Diamond Soft",
+        "Bearded Theme Black & Emerald",
+        "Bearded Theme Black & Emerald Soft",
+        "Bearded Theme Black & Gold",
+        "Bearded Theme Black & Gold Soft",
+        "Bearded Theme Black & Ruby",
+        "Bearded Theme Black & Ruby Soft",
+        "Bearded Theme Stained Purple",
+        "Bearded Theme Stained Blue",
+        "Bearded Theme Vivid Purple",
+        "Bearded Theme Vivid Black",
+        "Bearded Theme Vivid Light",
+        "Bearded Theme feat. Will",
+        "Bearded Theme feat. Gold D Raynh",
+        "Bearded Theme feat. Melle Julie",
+        "Bearded Theme feat. Melle Julie Light",
+        "Bearded Theme feat. Mintshake D Raynh",
+        "Bearded Theme feat. WebDevCody",
+        "Bearded Theme Earth",
+        "Bearded Theme Coffee",
+        "Bearded Theme Coffee Reversed",
+        "Bearded Theme Coffee Cream",
+        "Bearded Theme Void",
+        "Bearded Theme Altica",
+        "Bearded Theme Anthracite",
+        "Bearded Theme Light",
+        "Bearded Theme Surprising Eggplant",
+        "Bearded Theme Surprising Blueberry",
+        "Bearded Theme Surprising Watermelon",
+        "Bearded Theme HC Ebony",
+        "Bearded Theme HC Midnight Void",
+        "Bearded Theme HC Wonderland Wood",
+        "Bearded Theme HC Brewing Storm",
+        "Bearded Theme HC Minuit",
+        "Bearded Theme HC Chocolate Espresso",
+        "Bearded Theme HC Flurry",
+        "Bearded Theme Milkshake Raspberry",
+        "Bearded Theme Milkshake Blueberry",
+        "Bearded Theme Milkshake Mango",
+        "Bearded Theme Milkshake Mint",
+        "Bearded Theme Milkshake Vanilla Banana",
+        "Bearded Themanopia (Experimental)",
+        "Bearded Theme Aquarelle Cymbidium",
+        "Bearded Theme Aquarelle Hydrangea",
+        "Bearded Theme Aquarelle Lilac",
+        "Bearded Theme OLED (Experimental)"
+      ]
+    },
+    "bierner.markdown-mermaid": {
+      "publisher": "bierner",
+      "group": "Markdown",
+      "status": "active",
+      "universal": true
+    },
+    "bierner.markdown-preview-github-styles": {
+      "publisher": "bierner",
+      "group": "Markdown",
+      "status": "active",
+      "universal": true
+    },
+    "biomejs.biome": {
+      "publisher": "biomejs",
+      "group": "Web",
+      "status": "active",
+      "universal": false
+    },
+    "bmalehorn.vscode-fish": {
+      "publisher": "bmalehorn",
+      "group": "Shell",
+      "status": "active",
+      "universal": true
+    },
+    "bradlc.vscode-tailwindcss": {
+      "publisher": "bradlc",
+      "group": "Web",
+      "status": "active",
+      "universal": true
+    },
+    "bruno-api-client.bruno": {
+      "publisher": "bruno-api-client",
+      "group": "DX",
+      "status": "active",
+      "universal": true
+    },
+    "buenon.scratchpads": {
+      "publisher": "buenon",
+      "group": "DX",
+      "status": "active",
+      "universal": true
+    },
+    "catppuccin.catppuccin-vsc": {
+      "publisher": "catppuccin",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "Catppuccin Latte",
+        "Catppuccin Frappé",
+        "Catppuccin Macchiato",
+        "Catppuccin Mocha"
+      ]
+    },
+    "catppuccin.catppuccin-vsc-icons": {
+      "publisher": "catppuccin",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "catppuccin-latte",
+        "catppuccin-frappe",
+        "catppuccin-macchiato",
+        "catppuccin-mocha"
+      ]
+    },
+    "chadalen.vscode-jetbrains-icon-theme": {
+      "publisher": "chadalen",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "vscode-jetbrains-icon-theme",
+        "vscode-jetbrains-icon-theme-2023-light",
+        "vscode-jetbrains-icon-theme-2023-dark",
+        "vscode-jetbrains-icon-theme-2023-auto"
+      ]
+    },
+    "charliermarsh.ruff": {
+      "publisher": "charliermarsh",
+      "group": "Python",
+      "status": "active",
+      "universal": false
+    },
+    "christian-kohler.npm-intellisense": {
+      "publisher": "christian-kohler",
+      "group": "Web",
+      "status": "retired",
+      "universal": true,
+      "notes": "Retired: superseded by built-in TypeScript auto-imports"
+    },
+    "christian-kohler.path-intellisense": {
+      "publisher": "christian-kohler",
+      "group": "Web",
+      "status": "retired",
+      "universal": true,
+      "notes": "Retired: superseded by built-in VS Code path completion"
+    },
+    "chrmarti.regex": {
+      "publisher": "chrmarti",
+      "group": "DX",
+      "status": "active",
+      "universal": true
+    },
+    "clinyong.vscode-css-modules": {
+      "publisher": "clinyong",
+      "group": "Web",
+      "status": "active",
+      "universal": true
+    },
+    "continue.continue": {
+      "publisher": "continue",
+      "group": "AI",
+      "status": "retired",
+      "universal": true,
+      "notes": "Pre-v2 ai-plus bundle legacy ID; retired in favor of default AI agent suite"
+    },
+    "davidanson.vscode-markdownlint": {
+      "publisher": "davidanson",
+      "group": "Markdown",
+      "status": "active",
+      "universal": true
+    },
+    "dbaeumer.vscode-eslint": {
+      "publisher": "dbaeumer",
+      "group": "Web",
+      "status": "active",
+      "universal": true
+    },
+    "detachhead.basedpyright": {
+      "publisher": "detachhead",
+      "group": "Python",
+      "status": "active",
+      "universal": false
+    },
+    "dotenv.dotenv-vscode": {
+      "publisher": "dotenv",
+      "group": "General",
+      "status": "active",
+      "universal": true
+    },
+    "dracula-theme.theme-dracula": {
+      "publisher": "dracula-theme",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "Dracula Theme",
+        "Dracula Theme Soft",
+        "Dracula",
+        "Dracula Soft"
+      ]
+    },
+    "dustypomerleau.rust-syntax": {
+      "publisher": "dustypomerleau",
+      "group": "Rust",
+      "status": "retired",
+      "universal": true,
+      "notes": "Retired (last updated 2022); rust-analyzer provides semantic highlighting"
+    },
+    "eamodio.gitlens": {
+      "publisher": "eamodio",
+      "group": "Git",
+      "status": "active",
+      "universal": true
+    },
+    "ecmel.vscode-html-css": {
+      "publisher": "ecmel",
+      "group": "Web",
+      "status": "active",
+      "universal": true
+    },
+    "editorconfig.editorconfig": {
+      "publisher": "editorconfig",
+      "group": "General",
+      "status": "active",
+      "universal": true
+    },
+    "eg2.vscode-npm-script": {
+      "publisher": "eg2",
+      "group": "Web",
+      "status": "removed",
+      "universal": true,
+      "notes": "Pre-v2 astro bundle legacy ID; deprecated by built-in VS Code npm scripts"
+    },
+    "eliverlara.andromeda": {
+      "publisher": "eliverlara",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "Andromeda",
+        "Andromeda Bordered",
+        "Andromeda Italic Bordered",
+        "Andromeda Italic",
+        "Andromeda Colorizer"
+      ]
+    },
+    "enkia.tokyo-night": {
+      "publisher": "enkia",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "Tokyo Night",
+        "Tokyo Night Storm",
+        "Tokyo Night Light"
+      ]
+    },
+    "esbenp.prettier-vscode": {
+      "publisher": "esbenp",
+      "group": "Web",
+      "status": "active",
+      "universal": true
+    },
+    "fawwazfirdaus.poimandres-darker": {
+      "publisher": "fawwazfirdaus",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "poimandres-darker"
+      ]
+    },
+    "fill-labs.dependi": {
+      "publisher": "fill-labs",
+      "group": "Rust",
+      "status": "active",
+      "universal": false
+    },
+    "foxundermoon.shell-format": {
+      "publisher": "foxundermoon",
+      "group": "Shell",
+      "status": "superseded",
+      "replacedBy": "mkhl.shfmt",
+      "universal": true,
+      "notes": "Superseded by mkhl.shfmt"
+    },
+    "gabrielbb.vscode-lombok": {
+      "publisher": "gabrielbb",
+      "group": "Java",
+      "status": "removed",
+      "universal": true,
+      "notes": "Removed from Marketplace (404); redhat.java ships native Lombok support"
+    },
+    "github.copilot": {
+      "publisher": "github",
+      "group": "AI",
+      "status": "superseded",
+      "replacedBy": "github.copilot-chat",
+      "universal": true,
+      "notes": "Deprecated standalone Copilot merged into github.copilot-chat"
+    },
+    "github.copilot-chat": {
+      "publisher": "github",
+      "group": "AI",
+      "status": "active",
+      "universal": true,
+      "notes": "Unified GitHub Copilot completions, chat, and agent mode"
+    },
+    "github.github-vscode-theme": {
+      "publisher": "github",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "GitHub Dark",
+        "GitHub Dark Default",
+        "GitHub Dark Dimmed",
+        "GitHub Dark High Contrast",
+        "GitHub Dark Colorblind (Beta)",
+        "GitHub Light",
+        "GitHub Light Default",
+        "GitHub Light High Contrast",
+        "GitHub Light Colorblind (Beta)"
+      ]
+    },
+    "github.vscode-github-actions": {
+      "publisher": "github",
+      "group": "General",
+      "status": "active",
+      "universal": true
+    },
+    "github.vscode-pull-request-github": {
+      "publisher": "github",
+      "group": "Git",
+      "status": "active",
+      "universal": true
+    },
+    "google.geminicodeassist": {
+      "publisher": "google",
+      "group": "AI",
+      "status": "superseded",
+      "replacedBy": "google.google-antigravity",
+      "universal": true,
+      "notes": "Superseded by google.google-antigravity (avoids inline completion, YAML autoIndent, and Cmd+I conflicts with Copilot Chat)"
+    },
+    "google.google-antigravity": {
+      "publisher": "google",
+      "group": "AI",
+      "status": "active",
+      "universal": true,
+      "notes": "Default AI agent extension: Google Antigravity for VS Code"
+    },
+    "hediet.vscode-drawio": {
+      "publisher": "hediet",
+      "group": "DX",
+      "status": "active",
+      "universal": true
+    },
+    "jdinhlife.gruvbox": {
+      "publisher": "jdinhlife",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "Gruvbox Dark Medium",
+        "Gruvbox Dark Hard",
+        "Gruvbox Dark Soft",
+        "Gruvbox Light Medium",
+        "Gruvbox Light Hard",
+        "Gruvbox Light Soft"
+      ]
+    },
+    "jeff-hykin.better-cpp-syntax": {
+      "publisher": "jeff-hykin",
+      "group": "CMake",
+      "status": "active",
+      "universal": true
+    },
+    "jeff-hykin.better-shellscript-syntax": {
+      "publisher": "jeff-hykin",
+      "group": "Shell",
+      "status": "active",
+      "universal": true
+    },
+    "jetmartin.bats": {
+      "publisher": "jetmartin",
+      "group": "Shell",
+      "status": "superseded",
+      "replacedBy": "kherring.bats-test-runner",
+      "universal": true,
+      "notes": "Superseded by actively maintained kherring.bats-test-runner"
+    },
+    "johnpapa.vscode-peacock": {
+      "publisher": "johnpapa",
+      "group": "DX",
+      "status": "active",
+      "universal": true
+    },
+    "jscearcy.rust-doc-viewer": {
+      "publisher": "jscearcy",
+      "group": "Rust",
+      "status": "compromised",
+      "universal": true,
+      "notes": "SECURITY: v4.2.1 compromised in Oct 2025 GlassWorm campaign; auto-uninstall immediately"
+    },
+    "k--kato.intellij-idea-keybindings": {
+      "publisher": "k--kato",
+      "group": "DX",
+      "status": "active",
+      "universal": true,
+      "notes": "Opt-in IntelliJ IDEA keyboard shortcuts module"
+    },
+    "kherring.bats-test-runner": {
+      "publisher": "kherring",
+      "group": "Shell",
+      "status": "active",
+      "universal": true
+    },
+    "littensy.charmed-icons": {
+      "publisher": "littensy",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "charmed-icons",
+        "charmed-light",
+        "charmed-soft",
+        "charmed-warm"
+      ]
+    },
+    "liviuschera.noctis": {
+      "publisher": "liviuschera",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "Noctis",
+        "Noctis Azureus",
+        "Noctis Bordo",
+        "Noctis Hibernus",
+        "Noctis Lilac",
+        "Noctis Lux",
+        "Noctis Minimus",
+        "Noctis Obscuro",
+        "Noctis Sereno",
+        "Noctis Uva",
+        "Noctis Viola"
+      ]
+    },
+    "llvm-vs-code-extensions.vscode-clangd": {
+      "publisher": "llvm-vs-code-extensions",
+      "group": "CMake",
+      "status": "active",
+      "universal": true
+    },
+    "mads-hartmann.bash-ide-vscode": {
+      "publisher": "mads-hartmann",
+      "group": "Shell",
+      "status": "active",
+      "universal": true
+    },
+    "mechatroner.rainbow-csv": {
+      "publisher": "mechatroner",
+      "group": "DX",
+      "status": "active",
+      "universal": true
+    },
+    "miguelsolorio.fluent-icons": {
+      "publisher": "miguelsolorio",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "fluent-icons"
+      ]
+    },
+    "miguelsolorio.symbols": {
+      "publisher": "miguelsolorio",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "symbols"
+      ]
+    },
+    "mikestead.dotenv": {
+      "publisher": "mikestead",
+      "group": "General",
+      "status": "superseded",
+      "replacedBy": "dotenv.dotenv-vscode",
+      "universal": true,
+      "notes": "Unmaintained since 2018; superseded by dotenv.dotenv-vscode"
+    },
+    "mkhl.shfmt": {
+      "publisher": "mkhl",
+      "group": "Shell",
+      "status": "active",
+      "universal": true
+    },
+    "monokai.theme-monokai-pro-vscode": {
+      "publisher": "monokai",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "Monokai Classic",
+        "Monokai Classic Icons",
+        "Monokai Classic Monochrome Icons",
+        "Monokai Pro",
+        "Monokai Pro Icons",
+        "Monokai Pro Monochrome Icons",
+        "Monokai Pro (Filter Machine)",
+        "Monokai Pro (Filter Machine) Icons",
+        "Monokai Pro (Filter Machine) Monochrome Icons",
+        "Monokai Pro (Filter Octagon)",
+        "Monokai Pro (Filter Octagon) Icons",
+        "Monokai Pro (Filter Octagon) Monochrome Icons",
+        "Monokai Pro (Filter Ristretto)",
+        "Monokai Pro (Filter Ristretto) Icons",
+        "Monokai Pro (Filter Ristretto) Monochrome Icons",
+        "Monokai Pro (Filter Spectrum)",
+        "Monokai Pro (Filter Spectrum) Icons",
+        "Monokai Pro (Filter Spectrum) Monochrome Icons",
+        "Monokai Pro Light",
+        "Monokai Pro Light Icons",
+        "Monokai Pro Light Monochrome Icons",
+        "Monokai Pro Light (Filter Sun)",
+        "Monokai Pro Light (Filter Sun) Icons",
+        "Monokai Pro Light (Filter Sun) Monochrome Icons"
+      ]
+    },
+    "ms-azuretools.vscode-containers": {
+      "publisher": "ms-azuretools",
+      "group": "Containers",
+      "status": "active",
+      "universal": true
+    },
+    "ms-azuretools.vscode-docker": {
+      "publisher": "ms-azuretools",
+      "group": "Containers",
+      "status": "superseded",
+      "replacedBy": "ms-azuretools.vscode-containers",
+      "universal": true,
+      "notes": "Renamed/superseded by ms-azuretools.vscode-containers"
+    },
+    "ms-pyright.pyright": {
+      "publisher": "ms-pyright",
+      "group": "Python",
+      "status": "superseded",
+      "replacedBy": "detachhead.basedpyright",
+      "universal": true,
+      "notes": "Superseded by detachhead.basedpyright"
+    },
+    "ms-python.debugpy": {
+      "publisher": "ms-python",
+      "group": "Python",
+      "status": "active",
+      "universal": false
+    },
+    "ms-python.python": {
+      "publisher": "ms-python",
+      "group": "Python",
+      "status": "active",
+      "universal": false
+    },
+    "ms-python.vscode-python-envs": {
+      "publisher": "ms-python",
+      "group": "Python",
+      "status": "active",
+      "universal": true
+    },
+    "ms-vscode.cmake-tools": {
+      "publisher": "ms-vscode",
+      "group": "CMake",
+      "status": "active",
+      "universal": true
+    },
+    "ms-vscode.cpptools": {
+      "publisher": "ms-vscode",
+      "group": "CMake",
+      "status": "active",
+      "universal": false
+    },
+    "ms-vscode.cpptools-extension-pack": {
+      "publisher": "ms-vscode",
+      "group": "CMake",
+      "status": "retired",
+      "universal": true,
+      "notes": "Retired redundant meta-pack; individual modules declare explicit C++ tools"
+    },
+    "ms-vsliveshare.vsliveshare": {
+      "publisher": "ms-vsliveshare",
+      "group": "Collaboration",
+      "status": "active",
+      "universal": false
+    },
+    "mutantdino.resourcemonitor": {
+      "publisher": "mutantdino",
+      "group": "General",
+      "status": "retired",
+      "universal": true,
+      "notes": "Retired (unmaintained since 2020)"
+    },
+    "mvllow.rose-pine": {
+      "publisher": "mvllow",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "Rosé Pine",
+        "Rosé Pine (no italics)",
+        "Rosé Pine Dawn",
+        "Rosé Pine Dawn (no italics)",
+        "Rosé Pine Moon",
+        "Rosé Pine Moon (no italics)",
+        "rose-pine-icons"
+      ]
+    },
+    "naco-siren.gradle-language": {
+      "publisher": "naco-siren",
+      "group": "Java",
+      "status": "retired",
+      "universal": true,
+      "notes": "Retired (unmaintained since 2018; vscjava.vscode-gradle handles Gradle)"
+    },
+    "naumovs.color-highlight": {
+      "publisher": "naumovs",
+      "group": "Web",
+      "status": "active",
+      "universal": true
+    },
+    "notskm.clang-tidy": {
+      "publisher": "notskm",
+      "group": "CMake",
+      "status": "retired",
+      "universal": true,
+      "notes": "Pre-v2 cpp-clangd bundle legacy ID; handled natively by llvm-vs-code-extensions.vscode-clangd"
+    },
+    "nyoomengineering.oxocarbon-vscode": {
+      "publisher": "nyoomengineering",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "oxocarbon",
+        "oxocarbon OLED",
+        "oxocarbon (compatibility)",
+        "oxocarbon OLED (compatibility)",
+        "oxocarbon monochrom",
+        "oxocarbon OLED monochrom",
+        "oxocarbon monochrom (compatibility)",
+        "oxocarbon OLED monochrom (compatibility)",
+        "PRINT"
+      ]
+    },
+    "oderwat.indent-rainbow": {
+      "publisher": "oderwat",
+      "group": "General",
+      "status": "retired",
+      "universal": true,
+      "notes": "Retired (unmaintained since 2022; built-in indent/bracket guides suffice)"
+    },
+    "openai.chatgpt": {
+      "publisher": "openai",
+      "group": "AI",
+      "status": "active",
+      "universal": false,
+      "packMembers": [
+        "openai.codex-audio"
+      ],
+      "notes": "Official OpenAI Codex IDE extension"
+    },
+    "panicbit.cargo": {
+      "publisher": "panicbit",
+      "group": "Rust",
+      "status": "retired",
+      "universal": true,
+      "notes": "Unmaintained Cargo helper; superseded by rust-lang.rust-analyzer"
+    },
+    "pivotal.vscode-spring-boot": {
+      "publisher": "pivotal",
+      "group": "Java",
+      "status": "superseded",
+      "replacedBy": "vmware.vscode-spring-boot",
+      "universal": false,
+      "notes": "Removed from Marketplace (404); replaced by vmware.vscode-spring-boot"
+    },
+    "pkief.material-icon-theme": {
+      "publisher": "pkief",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "material-icon-theme"
+      ]
+    },
+    "pkief.material-product-icons": {
+      "publisher": "pkief",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "material-product-icons"
+      ]
+    },
+    "pmd.pmd": {
+      "publisher": "pmd",
+      "group": "Java",
+      "status": "removed",
+      "universal": true,
+      "notes": "Removed from Marketplace (404)"
+    },
+    "pranaygp.vscode-css-peek": {
+      "publisher": "pranaygp",
+      "group": "Web",
+      "status": "active",
+      "universal": true
+    },
+    "raunofreiberg.vesper": {
+      "publisher": "raunofreiberg",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "Vesper"
+      ]
+    },
+    "redhat.java": {
+      "publisher": "redhat",
+      "group": "Java",
+      "status": "active",
+      "universal": false
+    },
+    "redhat.vscode-xml": {
+      "publisher": "redhat",
+      "group": "Java",
+      "status": "active",
+      "universal": false
+    },
+    "redhat.vscode-yaml": {
+      "publisher": "redhat",
+      "group": "General",
+      "status": "active",
+      "universal": true
+    },
+    "richardwillis.vscode-gradle": {
+      "publisher": "richardwillis",
+      "group": "Java",
+      "status": "superseded",
+      "replacedBy": "vscjava.vscode-gradle",
+      "universal": true,
+      "notes": "Pre-v2 Java bundle legacy ID; superseded by vscjava.vscode-gradle"
+    },
+    "rust-lang.rust-analyzer": {
+      "publisher": "rust-lang",
+      "group": "Rust",
+      "status": "active",
+      "universal": false
+    },
+    "ryanluker.vscode-coverage-gutters": {
+      "publisher": "ryanluker",
+      "group": "Rust",
+      "status": "active",
+      "universal": true
+    },
+    "sdras.night-owl": {
+      "publisher": "sdras",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "Night Owl",
+        "Night Owl (No Italics)",
+        "Night Owl Light",
+        "Night Owl Light (No Italics)"
+      ]
+    },
+    "serayuzgur.crates": {
+      "publisher": "serayuzgur",
+      "group": "Rust",
+      "status": "superseded",
+      "replacedBy": "fill-labs.dependi",
+      "universal": true,
+      "notes": "Archived Cargo.toml dependency helper; superseded by fill-labs.dependi"
+    },
+    "shd101wyy.markdown-preview-enhanced": {
+      "publisher": "shd101wyy",
+      "group": "Markdown",
+      "status": "retired",
+      "universal": true,
+      "notes": "Retired duplicate previewer; built-in preview + bierner extensions suffice"
+    },
+    "shengchen.vscode-checkstyle": {
+      "publisher": "shengchen",
+      "group": "Java",
+      "status": "active",
+      "universal": true
+    },
+    "shirdows.vscode-maven-dependency-explorer": {
+      "publisher": "shirdows",
+      "group": "Java",
+      "status": "removed",
+      "universal": true,
+      "notes": "Removed from Marketplace (404)"
+    },
+    "sonarsource.sonarlint-vscode": {
+      "publisher": "sonarsource",
+      "group": "Quality",
+      "status": "active",
+      "universal": false
+    },
+    "sourcegraph.cody-ai": {
+      "publisher": "sourcegraph",
+      "group": "AI",
+      "status": "retired",
+      "universal": true,
+      "notes": "Pre-v2 ai-plus bundle legacy ID; retired in favor of default AI agent suite"
+    },
+    "streetsidesoftware.code-spell-checker": {
+      "publisher": "streetsidesoftware",
+      "group": "General",
+      "status": "active",
+      "universal": true
+    },
+    "stylelint.vscode-stylelint": {
+      "publisher": "stylelint",
+      "group": "Web",
+      "status": "active",
+      "universal": true
+    },
+    "tamasfe.even-better-toml": {
+      "publisher": "tamasfe",
+      "group": "General",
+      "status": "active",
+      "universal": true
+    },
+    "teabyii.ayu": {
+      "publisher": "teabyii",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "Ayu Dark",
+        "Ayu Dark Bordered",
+        "Ayu Light",
+        "Ayu Light Bordered",
+        "Ayu Mirage",
+        "Ayu Mirage Bordered",
+        "ayu"
+      ]
+    },
+    "timonwong.shellcheck": {
+      "publisher": "timonwong",
+      "group": "Shell",
+      "status": "active",
+      "universal": true
+    },
+    "twxs.cmake": {
+      "publisher": "twxs",
+      "group": "CMake",
+      "status": "retired",
+      "universal": true,
+      "notes": "Retired (unmaintained since 2017; ms-vscode.cmake-tools handles CMake)"
+    },
+    "usernamehw.errorlens": {
+      "publisher": "usernamehw",
+      "group": "General",
+      "status": "active",
+      "universal": true
+    },
+    "vadimcn.vscode-lldb": {
+      "publisher": "vadimcn",
+      "group": "Rust",
+      "status": "active",
+      "universal": false
+    },
+    "vitest.explorer": {
+      "publisher": "vitest",
+      "group": "Web",
+      "status": "active",
+      "universal": true
+    },
+    "vmware.vscode-spring-boot": {
+      "publisher": "vmware",
+      "group": "Java",
+      "status": "active",
+      "universal": false
+    },
+    "vscjava.vscode-gradle": {
+      "publisher": "vscjava",
+      "group": "Java",
+      "status": "active",
+      "universal": true
+    },
+    "vscjava.vscode-java-debug": {
+      "publisher": "vscjava",
+      "group": "Java",
+      "status": "active",
+      "universal": true
+    },
+    "vscjava.vscode-java-dependency": {
+      "publisher": "vscjava",
+      "group": "Java",
+      "status": "active",
+      "universal": true
+    },
+    "vscjava.vscode-java-pack": {
+      "publisher": "vscjava",
+      "group": "Java",
+      "status": "retired",
+      "universal": true,
+      "notes": "Retired meta-pack; causes Gradle/Maven cross-leakage"
+    },
+    "vscjava.vscode-java-test": {
+      "publisher": "vscjava",
+      "group": "Java",
+      "status": "active",
+      "universal": true
+    },
+    "vscjava.vscode-maven": {
+      "publisher": "vscjava",
+      "group": "Java",
+      "status": "active",
+      "universal": true
+    },
+    "vscjava.vscode-spring-boot-dashboard": {
+      "publisher": "vscjava",
+      "group": "Java",
+      "status": "active",
+      "universal": true
+    },
+    "vscjava.vscode-spring-cloud": {
+      "publisher": "vscjava",
+      "group": "Java",
+      "status": "removed",
+      "universal": true,
+      "notes": "Removed from Marketplace (404)"
+    },
+    "vscjava.vscode-spring-initializr": {
+      "publisher": "vscjava",
+      "group": "Java",
+      "status": "active",
+      "universal": true
+    },
+    "vscode-icons-team.vscode-icons": {
+      "publisher": "vscode-icons-team",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "vscode-icons"
+      ]
+    },
+    "yatasun.jetbrains-product-icons": {
+      "publisher": "yatasun",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "jetbrains-product-icons"
+      ]
+    },
+    "yoavbls.pretty-ts-errors": {
+      "publisher": "yoavbls",
+      "group": "Web",
+      "status": "active",
+      "universal": true
+    },
+    "yzhang.markdown-all-in-one": {
+      "publisher": "yzhang",
+      "group": "Markdown",
+      "status": "active",
+      "universal": true
+    },
+    "zguolee.tabler-icons": {
+      "publisher": "zguolee",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "Tabler"
+      ]
+    },
+    "zhuangtongfa.material-theme": {
+      "publisher": "zhuangtongfa",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "One Dark Pro",
+        "One Dark Pro Darker",
+        "One Dark Pro Flat",
+        "One Dark Pro Mix",
+        "One Dark Pro Night Flat"
+      ]
+    },
+    "zxchhh.jetbrains-dark-new-ui": {
+      "publisher": "zxchhh",
+      "group": "Themes",
+      "status": "active",
+      "universal": true,
+      "themeLabels": [
+        "JetBrains Dark (New UI)",
+        "JetBrains Islands Dark (New UI)"
+      ]
+    }
+  }
+}

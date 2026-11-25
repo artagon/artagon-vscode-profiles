@@ -1,0 +1,32 @@
+// Consolidated v2.2 pack: rtk-terminal (capability)
+{
+  "version": 2,
+  "id": "rtk-terminal",
+  "kind": "capability",
+  "description": "Portable XDG-installed RTK terminal wrappers for Fish, Bash, and Zsh (ZDOTDIR proxy)",
+  "requires": [
+    "core-editor"
+  ],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [],
+    "profile": [],
+    "unwanted": []
+  },
+  "settings": {
+    "workspace": null,
+    "profile": null
+  },
+  "tasks": null,
+  "detect": null,
+  "scripts": [
+    "scripts/rtk-init.bash",
+    "scripts/rtk-init.fish",
+    "scripts/rtk-init.zsh",
+    "scripts/zsh/.zlogin",
+    "scripts/zsh/.zprofile",
+    "scripts/zsh/.zshenv",
+    "scripts/zsh/.zshrc"
+  ]
+}

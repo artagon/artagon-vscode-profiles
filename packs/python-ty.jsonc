@@ -1,0 +1,53 @@
+// Consolidated v2.2 pack: python-ty (toolchain)
+{
+  "version": 2,
+  "id": "python-ty",
+  "kind": "toolchain",
+  "description": "Optional Python toolchain using Astral ty type checker (mutually exclusive with python/BasedPyright)",
+  "requires": [
+    "python-base"
+  ],
+  "defaultWith": [],
+  "conflicts": [
+    "python"
+  ],
+  "extensions": {
+    "workspace": [
+      "astral-sh.ty"
+    ],
+    "profile": [],
+    "unwanted": [
+      "ms-pyright.pyright",
+      "detachhead.basedpyright"
+    ]
+  },
+  "settings": {
+    // Astral ty workspace settings: workspace-wide Rust checking + selective non-noisy inlay hints.
+    "workspace": {
+      "ty.diagnosticMode": "workspace",
+      "ty.completions.autoImport": true,
+      "ty.inlayHints.variableTypes": false,
+      "ty.inlayHints.callArgumentNames": true
+    },
+    "profile": null
+  },
+  "tasks": null,
+  "detect": null,
+  "retireOnSwitch": {
+    "settings": [
+      "basedpyright.analysis.typeCheckingMode",
+      "basedpyright.analysis.diagnosticMode",
+      "basedpyright.analysis.autoImportCompletions",
+      "basedpyright.analysis.autoSearchPaths",
+      "basedpyright.analysis.useLibraryCodeForTypes",
+      "basedpyright.analysis.inlayHints.variableTypes",
+      "basedpyright.analysis.inlayHints.genericTypes",
+      "basedpyright.analysis.inlayHints.functionReturnTypes",
+      "basedpyright.analysis.inlayHints.callArgumentNames",
+      "basedpyright.analysis.diagnosticSeverityOverrides"
+    ],
+    "extensions": [
+      "detachhead.basedpyright"
+    ]
+  }
+}

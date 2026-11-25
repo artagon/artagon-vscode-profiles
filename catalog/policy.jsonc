@@ -1,0 +1,1062 @@
+// Consolidated v2.2 security policy, VS Code setting scopes, nested-safe autonomy
+// deny-list rules, Default-profile audit expectations, UX managed keys, and
+// Tier 1 privileged extension IDs.
+{
+  "version": 2,
+  "vscodeVersion": "1.147.0",
+  "forbiddenKeys": [
+    "editor.hover.showDefinitionPreview",
+    "editor.scrollbar.useShadows",
+    "extensions.ignoreWorkspaceRecommendations",
+    "terminal.integrated.fontLigatures",
+    "workbench.tree.findMatchType",
+    "inlineChat.enableV2",
+    "antigravity.enableTelemetry",
+    "chat.commandCenter.enabled",
+    "chat.editor.renderWhitespace",
+    "clangd.semanticHighlighting",
+    "testing.openTesting",
+    "testing.countBadge",
+    "errorLens.maxProblemLength",
+    "shellformat.path",
+    "shellformat.flag",
+    "rust-analyzer.typing.autoClosingAngleBrackets.enable",
+    "rust-analyzer.inlayHints.reborrowHints.enable",
+    "java.implementationsCodeLens.enabled",
+    "java.sources.downloadSources",
+    "java.sources.downloadJavadoc",
+    "java.jdt.ls.javadoc.references.enabled",
+    "java.test.editor.enableShortcuts",
+    "java.import.gradle.java.homeFallback",
+    "gradle.completion",
+    "java.saveActions.organizeImports",
+    "json.colorDecorators.enable",
+    "scratchpads.useSubfolders",
+    "ruff.nativeServer",
+    "chat.tools.terminal.shellIntegrationTimeout",
+    "chatgpt.runCodexInWindowsSubsystemForLinux"
+  ],
+  "autonomyDenyList": {
+    "patterns": [
+      "^chat\\.tools\\..*autoApprove$"
+    ],
+    "presenceKeys": [
+      "claudeCode.claudeProcessWrapper",
+      "claudeCode.environmentVariables",
+      "antigravity.serverArgs",
+      "antigravity.releaseBaseUrl",
+      "antigravity.caCertificates",
+      "chatgpt.cliExecutable"
+    ],
+    "denyTrueKeys": [
+      "claudeCode.allowDangerouslySkipPermissions",
+      "geminicodeassist.agentYoloMode"
+    ],
+    "denyValues": {
+      "claudeCode.initialPermissionMode": [
+        "bypassPermissions"
+      ]
+    },
+    "denyValueSubstrings": [
+      "bypassPermissions",
+      "--dangerously-skip-permissions"
+    ]
+  },
+  "defaultProfileExpectations": {
+    "telemetry.telemetryLevel": {
+      "expected": "off",
+      "type": "string",
+      "reason": "Disable VS Code telemetry at application scope"
+    },
+    "security.workspace.trust.untrustedFiles": {
+      "expected": "prompt",
+      "type": "string",
+      "reason": "Require explicit trust prompt before running tasks or extensions in untrusted workspaces"
+    },
+    "extensions.autoUpdate": {
+      "expected": false,
+      "type": "boolean",
+      "reason": "Prevent automatic background updates from advancing install-time VSIX pins"
+    }
+  },
+  "ux": {
+    "managedKeys": [
+      "editor.fontFamily",
+      "editor.fontLigatures",
+      "editor.fontSize",
+      "editor.fontVariations",
+      "editor.letterSpacing",
+      "editor.lineHeight",
+      "terminal.integrated.fontFamily",
+      "terminal.integrated.fontSize",
+      "window.density.editorTabHeight",
+      "workbench.colorTheme",
+      "workbench.fontAliasing",
+      "workbench.iconTheme",
+      "workbench.preferredDarkColorTheme",
+      "workbench.productIconTheme",
+      "workbench.tree.indent"
+    ]
+  },
+  "tier1Privileged": [
+    "anthropic.claude-code",
+    "editorconfig.editorconfig",
+    "github.copilot-chat",
+    "google.google-antigravity",
+    "mads-hartmann.bash-ide-vscode",
+    "mkhl.shfmt",
+    "openai.chatgpt",
+    "redhat.vscode-xml",
+    "redhat.vscode-yaml",
+    "tamasfe.even-better-toml",
+    "timonwong.shellcheck"
+  ],
+  "scopes": {
+    "telemetry.telemetryLevel": {
+      "type": "string",
+      "enum": [
+        "all",
+        "error",
+        "crash",
+        "off"
+      ],
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "security.workspace.trust.untrustedFiles": {
+      "type": "string",
+      "enum": [
+        "prompt",
+        "open",
+        "newWindow"
+      ],
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "window.titleBarStyle": {
+      "type": "string",
+      "enum": [
+        "native",
+        "custom"
+      ],
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "window.nativeTabs": {
+      "type": "boolean",
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "window.autoDetectHighContrast": {
+      "type": "boolean",
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "update.mode": {
+      "type": "string",
+      "enum": [
+        "none",
+        "manual",
+        "start",
+        "default"
+      ],
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "update.showReleaseNotes": {
+      "type": "boolean",
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "workbench.welcomePage.walkthroughs.openOnInstall": {
+      "type": "boolean",
+      "scope": "machine"
+    },
+    "catppuccin.accentColor": {
+      "type": "string",
+      "enum": [
+        "rosewater",
+        "flamingo",
+        "pink",
+        "mauve",
+        "red",
+        "maroon",
+        "peach",
+        "yellow",
+        "green",
+        "teal",
+        "sky",
+        "sapphire",
+        "blue",
+        "lavender"
+      ],
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "catppuccin.workbenchMode": {
+      "type": "string",
+      "enum": [
+        "default",
+        "flat",
+        "minimal"
+      ],
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "catppuccin.bracketMode": {
+      "type": "string",
+      "enum": [
+        "rainbow",
+        "dimmed",
+        "monochromatic",
+        "neovim"
+      ],
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "catppuccin.italicComments": {
+      "type": "boolean",
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "catppuccin.italicKeywords": {
+      "type": "boolean",
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "catppuccin.boldKeywords": {
+      "type": "boolean",
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "catppuccin.extraBordersEnabled": {
+      "type": "boolean",
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "catppuccin.syncWithIconPack": {
+      "type": "boolean",
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "antigravity.keybindingScheme": {
+      "type": "string",
+      "enum": [
+        "vscode",
+        "agy"
+      ],
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "antigravity.enableInlineDiff": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "antigravity.autoAcceptOnChat": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "antigravity.autoOpenFiles": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "antigravity.enableComments": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "extensions.autoUpdate": {
+      "type": "string",
+      "enum": [
+        "on",
+        "off"
+      ],
+      "scope": "application",
+      "allowInCompiledProfile": false,
+      "effectiveTarget": "default-profile"
+    },
+    "extensions.autoCheckUpdates": {
+      "type": "boolean",
+      "scope": "application",
+      "allowInCompiledProfile": false,
+      "effectiveTarget": "default-profile"
+    },
+    "extensions.ignoreRecommendations": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "extensions.experimental.affinity": {
+      "type": "object",
+      "valueType": "integer",
+      "scope": "profile"
+    },
+    "workbench.sideBar.location": {
+      "type": "string",
+      "enum": [
+        "left",
+        "right"
+      ],
+      "scope": "profile"
+    },
+    "workbench.fontAliasing": {
+      "type": "string",
+      "enum": [
+        "default",
+        "antialiased",
+        "none",
+        "auto"
+      ],
+      "scope": "profile"
+    },
+    "workbench.productIconTheme": {
+      "type": "string",
+      "scope": "profile"
+    },
+    "workbench.editor.highlightModifiedTabs": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "workbench.tree.enableStickyScroll": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "workbench.tree.stickyScrollMaxItemCount": {
+      "type": "integer",
+      "scope": "profile"
+    },
+    "workbench.list.defaultFindMode": {
+      "type": "string",
+      "enum": [
+        "highlight",
+        "filter"
+      ],
+      "scope": "profile"
+    },
+    "workbench.list.defaultFindMatchType": {
+      "type": "string",
+      "enum": [
+        "fuzzy",
+        "contiguous"
+      ],
+      "scope": "profile"
+    },
+    "explorer.fileNesting.enabled": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "explorer.fileNesting.expand": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "explorer.fileNesting.patterns": {
+      "type": "object",
+      "scope": "profile"
+    },
+    "explorer.sortOrder": {
+      "type": "string",
+      "enum": [
+        "default",
+        "mixed",
+        "filesFirst",
+        "type",
+        "modified",
+        "foldersNestsFiles"
+      ],
+      "scope": "profile"
+    },
+    "explorer.autoReveal": {
+      "type": "string",
+      "enum": [
+        "focusNoScroll"
+      ],
+      "allowBoolean": true,
+      "scope": "profile"
+    },
+    "explorer.excludeGitIgnore": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "explorer.incrementalNaming": {
+      "type": "string",
+      "enum": [
+        "simple",
+        "smart",
+        "disabled"
+      ],
+      "scope": "profile"
+    },
+    "explorer.openEditors.visible": {
+      "type": "integer",
+      "scope": "profile"
+    },
+    "explorer.copyRelativePathSeparator": {
+      "type": "string",
+      "enum": [
+        "/",
+        "\\",
+        "auto"
+      ],
+      "scope": "profile"
+    },
+    "explorer.confirmDelete": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "window.density.editorTabHeight": {
+      "type": "string",
+      "enum": [
+        "default",
+        "compact"
+      ],
+      "scope": "profile"
+    },
+    "editor.hover.enabled": {
+      "type": "string",
+      "enum": [
+        "on",
+        "off",
+        "onKeyboardModifier"
+      ],
+      "scope": "workspace"
+    },
+    "editor.hover.delay": {
+      "type": "number",
+      "scope": "workspace"
+    },
+    "editor.inlayHints.enabled": {
+      "type": "string",
+      "enum": [
+        "on",
+        "onUnlessPressed",
+        "offUnlessPressed",
+        "off"
+      ],
+      "scope": "profile"
+    },
+    "editor.inlayHints.padding": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "editor.minimap.autohide": {
+      "type": "string",
+      "enum": [
+        "none",
+        "mouseover",
+        "scroll"
+      ],
+      "scope": "profile"
+    },
+    "editor.guides.bracketPairs": {
+      "type": "string",
+      "enum": [
+        "true",
+        "active",
+        "false"
+      ],
+      "allowBoolean": true,
+      "scope": "profile"
+    },
+    "editor.quickSuggestions": {
+      "type": "object",
+      "scope": "profile"
+    },
+    "editor.suggestSelection": {
+      "type": "string",
+      "enum": [
+        "first",
+        "recentlyUsed",
+        "recentlyUsedByPrefix"
+      ],
+      "scope": "profile"
+    },
+    "editor.acceptSuggestionOnEnter": {
+      "type": "string",
+      "enum": [
+        "on",
+        "smart",
+        "off"
+      ],
+      "scope": "profile"
+    },
+    "editor.snippetSuggestions": {
+      "type": "string",
+      "enum": [
+        "top",
+        "bottom",
+        "inline",
+        "none"
+      ],
+      "scope": "profile"
+    },
+    "editor.tabCompletion": {
+      "type": "string",
+      "enum": [
+        "on",
+        "off",
+        "onlySnippets"
+      ],
+      "scope": "profile"
+    },
+    "editor.wordBasedSuggestions": {
+      "type": "string",
+      "enum": [
+        "off",
+        "offWithInlineSuggestions",
+        "currentDocument",
+        "matchingDocuments",
+        "allDocuments"
+      ],
+      "scope": "profile"
+    },
+    "editor.inlineSuggest.showToolbar": {
+      "type": "string",
+      "enum": [
+        "always",
+        "onHover",
+        "never"
+      ],
+      "scope": "profile"
+    },
+    "inlineChat.askInChat": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "editor.suggest.insertMode": {
+      "type": "string",
+      "enum": [
+        "insert",
+        "replace"
+      ],
+      "scope": "profile"
+    },
+    "editor.suggest.matchOnWordStartOnly": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "editor.suggest.filterGraceful": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "editor.occurrencesHighlight": {
+      "type": "string",
+      "enum": [
+        "off",
+        "singleFile",
+        "multiFile"
+      ],
+      "scope": "profile"
+    },
+    "editor.foldingImportsByDefault": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "editor.smartSelect.selectSubwords": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "editor.rename.enablePreview": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "editor.lightbulb.enabled": {
+      "type": "string",
+      "enum": [
+        "off",
+        "onCode",
+        "on"
+      ],
+      "scope": "profile"
+    },
+    "editor.stickyScroll.defaultModel": {
+      "type": "string",
+      "enum": [
+        "outlineModel",
+        "foldingProviderModel",
+        "indentationModel"
+      ],
+      "scope": "profile"
+    },
+    "editor.gotoLocation.multipleDefinitions": {
+      "type": "string",
+      "enum": [
+        "peek",
+        "gotoAndPeek",
+        "goto"
+      ],
+      "scope": "profile"
+    },
+    "editor.gotoLocation.multipleImplementations": {
+      "type": "string",
+      "enum": [
+        "peek",
+        "gotoAndPeek",
+        "goto"
+      ],
+      "scope": "profile"
+    },
+    "editor.gotoLocation.multipleReferences": {
+      "type": "string",
+      "enum": [
+        "peek",
+        "gotoAndPeek",
+        "goto"
+      ],
+      "scope": "profile"
+    },
+    "editor.multiCursorModifier": {
+      "type": "string",
+      "enum": [
+        "ctrlCmd",
+        "alt"
+      ],
+      "scope": "profile"
+    },
+    "debug.inlineValues": {
+      "type": "string",
+      "enum": [
+        "on",
+        "off",
+        "auto"
+      ],
+      "scope": "profile"
+    },
+    "workbench.editor.revealIfOpen": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "workbench.editor.limit.enabled": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "workbench.editor.limit.value": {
+      "type": "integer",
+      "scope": "profile"
+    },
+    "workbench.editor.limit.excludeDirty": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "workbench.editor.limit.perEditorGroup": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "workbench.localHistory.enabled": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "workbench.localHistory.maxFileEntries": {
+      "type": "integer",
+      "scope": "profile"
+    },
+    "search.smartCase": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "scm.defaultViewMode": {
+      "type": "string",
+      "enum": [
+        "tree",
+        "list"
+      ],
+      "scope": "profile"
+    },
+    "problems.showCurrentInStatus": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "bookmarks.label.suggestion": {
+      "type": "string",
+      "enum": [
+        "dontUse",
+        "useWhenSelected",
+        "suggestWhenSelected",
+        "suggestWhenSelectedOrLineWhenNoSelected"
+      ],
+      "scope": "profile"
+    },
+    "bookmarks.confirmClear": {
+      "type": "string",
+      "enum": [
+        "never",
+        "always",
+        "commandPalette",
+        "sideBar"
+      ],
+      "scope": "profile"
+    },
+    "rainbow_csv.virtual_alignment_mode": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "manual",
+        "always"
+      ],
+      "scope": "profile"
+    },
+    "peacock.surpriseMeOnStartup": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "redhat.telemetry.enabled": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "json.validate.enable": {
+      "type": "boolean",
+      "scope": "workspace"
+    },
+    "json.format.enable": {
+      "type": "boolean",
+      "scope": "workspace"
+    },
+    "json.schemaDownload.enable": {
+      "type": "boolean",
+      "scope": "workspace"
+    },
+    "yaml.validate": {
+      "type": "boolean",
+      "scope": "workspace"
+    },
+    "yaml.format.enable": {
+      "type": "boolean",
+      "scope": "workspace"
+    },
+    "yaml.format.proseWrap": {
+      "type": "string",
+      "enum": [
+        "preserve",
+        "never",
+        "always"
+      ],
+      "scope": "workspace"
+    },
+    "evenBetterToml.schema.enabled": {
+      "type": "boolean",
+      "scope": "workspace"
+    },
+    "xml.server.preferBinary": {
+      "type": "boolean",
+      "scope": "workspace"
+    },
+    "xml.validation.noGrammar": {
+      "type": "string",
+      "enum": [
+        "ignore",
+        "hint",
+        "info",
+        "warning",
+        "error"
+      ],
+      "scope": "workspace"
+    },
+    "shellcheck.enableQuickFix": {
+      "type": "boolean",
+      "scope": "workspace"
+    },
+    "bashIde.includeAllWorkspaceSymbols": {
+      "type": "boolean",
+      "scope": "workspace"
+    },
+    "bashIde.enableSourceErrorDiagnostics": {
+      "type": "boolean",
+      "scope": "workspace"
+    },
+    "terminal.integrated.fontLigatures.enabled": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "terminal.integrated.cursorStyle": {
+      "type": "string",
+      "enum": [
+        "block",
+        "line",
+        "underline"
+      ],
+      "scope": "profile"
+    },
+    "terminal.integrated.cursorStyleInactive": {
+      "type": "string",
+      "enum": [
+        "outline",
+        "block",
+        "line",
+        "underline",
+        "none"
+      ],
+      "scope": "profile"
+    },
+    "terminal.integrated.shellIntegration.decorationsEnabled": {
+      "type": "string",
+      "enum": [
+        "both",
+        "gutter",
+        "overviewRuler",
+        "never"
+      ],
+      "scope": "profile"
+    },
+    "catppuccin-icons.hidesExplorerArrows": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "material-icon-theme.hidesExplorerArrows": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "material-icon-theme.activeIconPack": {
+      "type": "string",
+      "enum": [
+        "angular",
+        "angular_ngrx",
+        "react",
+        "react_redux",
+        "roblox",
+        "qwik",
+        "vue",
+        "vue_vuex",
+        "nest",
+        "bashly",
+        "none"
+      ],
+      "scope": "profile"
+    },
+    "material-icon-theme.folders.theme": {
+      "type": "string",
+      "enum": [
+        "specific",
+        "classic",
+        "none"
+      ],
+      "scope": "profile"
+    },
+    "material-icon-theme.saturation": {
+      "type": "number",
+      "scope": "profile"
+    },
+    "chat.agent.enabled": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "chat.disableAIFeatures": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "chat.useAgentsMdFile": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "chat.useNestedAgentsMdFiles": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "chat.useClaudeMdFile": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "chat.useAgentSkills": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "chatgpt.openOnStartup": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "chatgpt.commentCodeLensEnabled": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "claudeCode.lockEditorGroups": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "claudeCode.hideOnboarding": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "errorLens.messageMaxChars": {
+      "type": "integer",
+      "scope": "profile"
+    },
+    "errorLens.delay": {
+      "type": "integer",
+      "scope": "profile"
+    },
+    "errorLens.delayMode": {
+      "type": "string",
+      "enum": [
+        "new",
+        "old",
+        "debounce"
+      ],
+      "scope": "profile"
+    },
+    "errorLens.messageBackgroundMode": {
+      "type": "string",
+      "enum": [
+        "line",
+        "message",
+        "none"
+      ],
+      "scope": "profile"
+    },
+    "errorLens.fontStyleItalic": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "gitlens.plusFeatures.enabled": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "gitlens.gitkraken.mcp.autoEnabled": {
+      "type": "boolean",
+      "scope": "profile"
+    },
+    "sonarlint.focusOnNewCode": {
+      "type": "boolean",
+      "scope": "machine"
+    },
+    "testing.automaticallyOpenTestResults": {
+      "type": "string",
+      "enum": [
+        "neverOpen",
+        "openOnTestStart",
+        "openOnTestFailure",
+        "openExplorerOnTestStart"
+      ],
+      "scope": "workspace"
+    },
+    "python-envs.defaultEnvManager": {
+      "type": "string",
+      "scope": "workspace"
+    },
+    "python-envs.alwaysUseUv": {
+      "type": "boolean",
+      "scope": "machine"
+    },
+    "python-envs.terminal.autoActivationType": {
+      "type": "string",
+      "enum": [
+        "command",
+        "shellStartup",
+        "off"
+      ],
+      "scope": "machine"
+    },
+    "basedpyright.analysis.typeCheckingMode": {
+      "type": "string",
+      "enum": [
+        "off",
+        "basic",
+        "standard",
+        "strict",
+        "recommended",
+        "all"
+      ],
+      "scope": "workspace"
+    },
+    "js/ts.tsserver.maxMemory": {
+      "type": "integer",
+      "scope": "workspace"
+    },
+    "markdown.updateLinksOnFileMove.enabled": {
+      "type": "string",
+      "enum": [
+        "prompt",
+        "always",
+        "never"
+      ],
+      "scope": "workspace"
+    },
+    "java.import.gradle.arguments": {
+      "type": "string",
+      "scope": "machine"
+    },
+    "java.import.gradle.jvmArguments": {
+      "type": "string",
+      "scope": "machine"
+    },
+    "java.project.importHint": {
+      "type": "boolean",
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "java.project.importOnFirstTimeStartup": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "interactive",
+        "automatic"
+      ],
+      "scope": "application",
+      "allowInCompiledProfile": true,
+      "effectiveTarget": "default-profile"
+    },
+    "java.jdt.ls.lombokSupport.enabled": {
+      "type": "boolean",
+      "scope": "workspace"
+    },
+    "java.implementationCodeLens": {
+      "type": "string",
+      "enum": [
+        "none",
+        "types",
+        "methods",
+        "all"
+      ],
+      "scope": "workspace"
+    },
+    "java.inlayHints.parameterNames.enabled": {
+      "type": "string",
+      "enum": [
+        "none",
+        "literals",
+        "all"
+      ],
+      "scope": "workspace"
+    },
+    "java.jdt.ls.javac.enabled": {
+      "type": "string",
+      "enum": [
+        "on",
+        "off"
+      ],
+      "scope": "workspace"
+    },
+    "java.maxConcurrentBuilds": {
+      "type": "integer",
+      "scope": "workspace"
+    },
+    "shfmt.formatIgnored": {
+      "type": "boolean",
+      "scope": "workspace"
+    },
+    "shfmt.executableArgs": {
+      "type": "array",
+      "scope": "workspace"
+    },
+    "C_Cpp.intelliSenseEngine": {
+      "type": "string",
+      "enum": [
+        "default",
+        "disabled"
+      ],
+      "scope": "workspace"
+    }
+  }
+}

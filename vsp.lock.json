@@ -1,0 +1,627 @@
+{
+  "version": 2,
+  "note": "Four-tier per-platform VSIX supply-chain lockfile covering all 103 active catalog extensions. Tier 0 (compromised/removed) lives in catalog/extensions.jsonc for unconditional Step 0 uninstall. Tier 1 (28 IDs): SHA-256 hash-locked; Tier 2 (49 IDs): version-locked exec-capable; Tier 3 (26 IDs): unlocked declarative themes/grammars/keymaps. Refresh via `vsp dev pins --refresh`.",
+  "pinRequired": false,
+  "platforms": [
+    "darwin-arm64",
+    "darwin-x64",
+    "linux-x64",
+    "linux-arm64",
+    "win32-x64",
+    "universal"
+  ],
+  "extensions": {
+    "aaron-bond.better-comments": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "akamud.vscode-theme-onedark": {
+      "tier": 3
+    },
+    "alefragnani.bookmarks": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "alefragnani.project-manager": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "antfu.icons-carbon": {
+      "tier": 3
+    },
+    "anthropic.claude-code": {
+      "tier": 1,
+      "universal": false,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "astral-sh.ty": {
+      "tier": 2,
+      "universal": false,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "astro-build.astro-vscode": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "beardedbear.beardedicons": {
+      "tier": 3
+    },
+    "beardedbear.beardedtheme": {
+      "tier": 3
+    },
+    "bierner.markdown-mermaid": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "bierner.markdown-preview-github-styles": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "biomejs.biome": {
+      "tier": 2,
+      "universal": false,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "bmalehorn.vscode-fish": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "bradlc.vscode-tailwindcss": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "bruno-api-client.bruno": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "buenon.scratchpads": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "catppuccin.catppuccin-vsc": {
+      "tier": 1,
+      "universal": true,
+      "status": "verified",
+      "version": "3.19.0",
+      "sha256": "ebf347664837edbe91c9920ff3d14c96d4a28beeec0b95137c76058326329780",
+      "vsixUrl": "https://Catppuccin.gallerycdn.vsassets.io/extensions/catppuccin/catppuccin-vsc/3.19.0/1777714479763/Microsoft.VisualStudio.Services.VSIXPackage",
+      "verifiedAt": "2026-11-24T12:22:45Z",
+      "targets": {
+        "universal": {
+          "sha256": "ebf347664837edbe91c9920ff3d14c96d4a28beeec0b95137c76058326329780",
+          "vsixUrl": "https://Catppuccin.gallerycdn.vsassets.io/extensions/catppuccin/catppuccin-vsc/3.19.0/1777714479763/Microsoft.VisualStudio.Services.VSIXPackage"
+        }
+      }
+    },
+    "catppuccin.catppuccin-vsc-icons": {
+      "tier": 1,
+      "universal": true,
+      "status": "verified",
+      "version": "1.26.0",
+      "sha256": "57566136d0a8ba8d040eb6e5be866c88ccbb04f3d219d3a7e52a19978900ff3d",
+      "vsixUrl": "https://Catppuccin.gallerycdn.vsassets.io/extensions/catppuccin/catppuccin-vsc-icons/1.26.0/1760305508250/Microsoft.VisualStudio.Services.VSIXPackage",
+      "verifiedAt": "2026-11-24T12:22:45Z",
+      "targets": {
+        "universal": {
+          "sha256": "57566136d0a8ba8d040eb6e5be866c88ccbb04f3d219d3a7e52a19978900ff3d",
+          "vsixUrl": "https://Catppuccin.gallerycdn.vsassets.io/extensions/catppuccin/catppuccin-vsc-icons/1.26.0/1760305508250/Microsoft.VisualStudio.Services.VSIXPackage"
+        }
+      }
+    },
+    "chadalen.vscode-jetbrains-icon-theme": {
+      "tier": 3
+    },
+    "charliermarsh.ruff": {
+      "tier": 2,
+      "universal": false,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "chrmarti.regex": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "clinyong.vscode-css-modules": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "davidanson.vscode-markdownlint": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "dbaeumer.vscode-eslint": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "detachhead.basedpyright": {
+      "tier": 2,
+      "universal": false,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "dotenv.dotenv-vscode": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "dracula-theme.theme-dracula": {
+      "tier": 3
+    },
+    "eamodio.gitlens": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "ecmel.vscode-html-css": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "editorconfig.editorconfig": {
+      "tier": 1,
+      "universal": true,
+      "status": "verified",
+      "version": "0.18.2",
+      "sha256": "cbc0370ff204bc16d84a3ee6830536fc04355856fa0e895ab064e1a03cfcb84a",
+      "vsixUrl": "https://EditorConfig.gallerycdn.vsassets.io/extensions/editorconfig/editorconfig/0.18.2/1775654237423/Microsoft.VisualStudio.Services.VSIXPackage",
+      "verifiedAt": "2026-11-24T12:22:45Z",
+      "targets": {
+        "universal": {
+          "sha256": "cbc0370ff204bc16d84a3ee6830536fc04355856fa0e895ab064e1a03cfcb84a",
+          "vsixUrl": "https://EditorConfig.gallerycdn.vsassets.io/extensions/editorconfig/editorconfig/0.18.2/1775654237423/Microsoft.VisualStudio.Services.VSIXPackage"
+        }
+      }
+    },
+    "eliverlara.andromeda": {
+      "tier": 3
+    },
+    "enkia.tokyo-night": {
+      "tier": 1,
+      "universal": true,
+      "status": "verified",
+      "version": "1.1.2",
+      "sha256": "a16d1b90b2a29a9723cf14dbff28d285a823c954d4144835f7ca0f6d8e49da13",
+      "vsixUrl": "https://enkia.gallerycdn.vsassets.io/extensions/enkia/tokyo-night/1.1.2/1738784080756/Microsoft.VisualStudio.Services.VSIXPackage",
+      "verifiedAt": "2026-11-24T12:22:45Z",
+      "targets": {
+        "universal": {
+          "sha256": "a16d1b90b2a29a9723cf14dbff28d285a823c954d4144835f7ca0f6d8e49da13",
+          "vsixUrl": "https://enkia.gallerycdn.vsassets.io/extensions/enkia/tokyo-night/1.1.2/1738784080756/Microsoft.VisualStudio.Services.VSIXPackage"
+        }
+      }
+    },
+    "esbenp.prettier-vscode": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "fawwazfirdaus.poimandres-darker": {
+      "tier": 3
+    },
+    "fill-labs.dependi": {
+      "tier": 2,
+      "universal": false,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "github.copilot-chat": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "github.github-vscode-theme": {
+      "tier": 3
+    },
+    "github.vscode-github-actions": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "github.vscode-pull-request-github": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "google.google-antigravity": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "hediet.vscode-drawio": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "jdinhlife.gruvbox": {
+      "tier": 3
+    },
+    "jeff-hykin.better-cpp-syntax": {
+      "tier": 3
+    },
+    "jeff-hykin.better-shellscript-syntax": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "johnpapa.vscode-peacock": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "k--kato.intellij-idea-keybindings": {
+      "tier": 3
+    },
+    "kherring.bats-test-runner": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "littensy.charmed-icons": {
+      "tier": 3
+    },
+    "liviuschera.noctis": {
+      "tier": 3
+    },
+    "llvm-vs-code-extensions.vscode-clangd": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "mads-hartmann.bash-ide-vscode": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "mechatroner.rainbow-csv": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "miguelsolorio.fluent-icons": {
+      "tier": 1,
+      "universal": true,
+      "status": "verified",
+      "version": "0.0.19",
+      "sha256": "39f3d287449aa53f9839f8b4733ddea7c8448600931e98ecd457e6800ca3379f",
+      "vsixUrl": "https://miguelsolorio.gallerycdn.vsassets.io/extensions/miguelsolorio/fluent-icons/0.0.19/1729895481238/Microsoft.VisualStudio.Services.VSIXPackage",
+      "verifiedAt": "2026-11-24T12:22:45Z",
+      "targets": {
+        "universal": {
+          "sha256": "39f3d287449aa53f9839f8b4733ddea7c8448600931e98ecd457e6800ca3379f",
+          "vsixUrl": "https://miguelsolorio.gallerycdn.vsassets.io/extensions/miguelsolorio/fluent-icons/0.0.19/1729895481238/Microsoft.VisualStudio.Services.VSIXPackage"
+        }
+      }
+    },
+    "miguelsolorio.symbols": {
+      "tier": 3
+    },
+    "mkhl.shfmt": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "monokai.theme-monokai-pro-vscode": {
+      "tier": 3
+    },
+    "ms-azuretools.vscode-containers": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "ms-python.debugpy": {
+      "tier": 2,
+      "universal": false,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "ms-python.python": {
+      "tier": 2,
+      "universal": false,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "ms-python.vscode-python-envs": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "ms-vscode.cmake-tools": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "ms-vscode.cpptools": {
+      "tier": 2,
+      "universal": false,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "ms-vsliveshare.vsliveshare": {
+      "tier": 2,
+      "universal": false,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "mvllow.rose-pine": {
+      "tier": 3
+    },
+    "naumovs.color-highlight": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "nyoomengineering.oxocarbon-vscode": {
+      "tier": 3
+    },
+    "openai.chatgpt": {
+      "tier": 1,
+      "universal": false,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "pkief.material-icon-theme": {
+      "tier": 1,
+      "universal": true,
+      "status": "verified",
+      "version": "5.40.0",
+      "sha256": "55b565f200881abfd807baf9be52fce45fd52fef013ba71b0f8394984ce1ae06",
+      "vsixUrl": "https://PKief.gallerycdn.vsassets.io/extensions/pkief/material-icon-theme/5.40.0/1793017860653/Microsoft.VisualStudio.Services.VSIXPackage",
+      "verifiedAt": "2026-11-24T12:22:45Z",
+      "targets": {
+        "universal": {
+          "sha256": "55b565f200881abfd807baf9be52fce45fd52fef013ba71b0f8394984ce1ae06",
+          "vsixUrl": "https://PKief.gallerycdn.vsassets.io/extensions/pkief/material-icon-theme/5.40.0/1793017860653/Microsoft.VisualStudio.Services.VSIXPackage"
+        }
+      }
+    },
+    "pkief.material-product-icons": {
+      "tier": 1,
+      "universal": true,
+      "status": "verified",
+      "version": "1.7.1",
+      "sha256": "9276111b88fc714e9facb5d2a70bda4b213e11615dd677bf72d61ae64aa9e5bc",
+      "vsixUrl": "https://PKief.gallerycdn.vsassets.io/extensions/pkief/material-product-icons/1.7.1/1720860434568/Microsoft.VisualStudio.Services.VSIXPackage",
+      "verifiedAt": "2026-11-24T12:22:45Z",
+      "targets": {
+        "universal": {
+          "sha256": "9276111b88fc714e9facb5d2a70bda4b213e11615dd677bf72d61ae64aa9e5bc",
+          "vsixUrl": "https://PKief.gallerycdn.vsassets.io/extensions/pkief/material-product-icons/1.7.1/1720860434568/Microsoft.VisualStudio.Services.VSIXPackage"
+        }
+      }
+    },
+    "pranaygp.vscode-css-peek": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "raunofreiberg.vesper": {
+      "tier": 3
+    },
+    "redhat.java": {
+      "tier": 2,
+      "universal": false,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "redhat.vscode-xml": {
+      "tier": 1,
+      "universal": false,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "redhat.vscode-yaml": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "rust-lang.rust-analyzer": {
+      "tier": 2,
+      "universal": false,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "ryanluker.vscode-coverage-gutters": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "sdras.night-owl": {
+      "tier": 3
+    },
+    "shengchen.vscode-checkstyle": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "sonarsource.sonarlint-vscode": {
+      "tier": 2,
+      "universal": false,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "streetsidesoftware.code-spell-checker": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "stylelint.vscode-stylelint": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "tamasfe.even-better-toml": {
+      "tier": 1,
+      "universal": true,
+      "status": "verified",
+      "version": "0.21.2",
+      "sha256": "21b8d66af4285eee31e21a4492f921ab36dffcd859a67f1115d2930274650808",
+      "vsixUrl": "https://tamasfe.gallerycdn.vsassets.io/extensions/tamasfe/even-better-toml/0.21.2/1734716634992/Microsoft.VisualStudio.Services.VSIXPackage",
+      "verifiedAt": "2026-11-24T12:22:45Z",
+      "targets": {
+        "universal": {
+          "sha256": "21b8d66af4285eee31e21a4492f921ab36dffcd859a67f1115d2930274650808",
+          "vsixUrl": "https://tamasfe.gallerycdn.vsassets.io/extensions/tamasfe/even-better-toml/0.21.2/1734716634992/Microsoft.VisualStudio.Services.VSIXPackage"
+        }
+      }
+    },
+    "teabyii.ayu": {
+      "tier": 3
+    },
+    "timonwong.shellcheck": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "usernamehw.errorlens": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "vadimcn.vscode-lldb": {
+      "tier": 2,
+      "universal": false,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "vitest.explorer": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "vmware.vscode-spring-boot": {
+      "tier": 2,
+      "universal": false,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "vscjava.vscode-gradle": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "vscjava.vscode-java-debug": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "vscjava.vscode-java-dependency": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "vscjava.vscode-java-test": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "vscjava.vscode-maven": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "vscjava.vscode-spring-boot-dashboard": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "vscjava.vscode-spring-initializr": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "vscode-icons-team.vscode-icons": {
+      "tier": 3
+    },
+    "yatasun.jetbrains-product-icons": {
+      "tier": 3
+    },
+    "yoavbls.pretty-ts-errors": {
+      "tier": 2,
+      "universal": true,
+      "status": "pending_refresh",
+      "version": null
+    },
+    "yzhang.markdown-all-in-one": {
+      "tier": 1,
+      "universal": true,
+      "status": "pending_refresh",
+      "targets": {}
+    },
+    "zguolee.tabler-icons": {
+      "tier": 3
+    },
+    "zhuangtongfa.material-theme": {
+      "tier": 3
+    },
+    "zxchhh.jetbrains-dark-new-ui": {
+      "tier": 3
+    }
+  }
+}

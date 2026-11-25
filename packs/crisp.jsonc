@@ -1,0 +1,47 @@
+// Consolidated v2.2 pack: crisp (ux)
+{
+  "version": 2,
+  "id": "crisp",
+  "kind": "ux",
+  "description": "High-density crisp preset for external / standard-DPI monitors (Tokyo Night + Material Icons + Material Product Icons)",
+  "requires": [
+    "core-editor"
+  ],
+  "defaultWith": [],
+  "conflicts": [
+    "retina"
+  ],
+  "extensions": {
+    "workspace": [],
+    "profile": [
+      "enkia.tokyo-night",
+      "pkief.material-icon-theme",
+      "pkief.material-product-icons"
+    ],
+    "unwanted": []
+  },
+  "settings": {
+    "workspace": null,
+    // Crisp UX preset — 15 exact symmetric keys (identical key set to retina, disjoint from core-editor).
+    // Tuned for 1x external QHD (2560x1440) with automatic 2x Retina fallback via fontAliasing="auto".
+    "profile": {
+      "workbench.colorTheme": "Tokyo Night",
+      "workbench.preferredDarkColorTheme": "Tokyo Night",
+      "workbench.iconTheme": "material-icon-theme",
+      "workbench.productIconTheme": "material-product-icons",
+      "workbench.fontAliasing": "auto",
+      "workbench.tree.indent": 14,
+      "window.density.editorTabHeight": "compact",
+      "editor.fontFamily": "'JetBrains Mono', 'JetBrainsMono NF', 'CommitMono', 'Monaspace Neon', 'Lilex', 'JetBrainsMono Nerd Font', 'Fira Code', Menlo, monospace",
+      "terminal.integrated.fontFamily": "'JetBrainsMono NF', 'JetBrainsMono Nerd Font', 'Monaspace Neon NF', 'GeistMono NF', 'Maple Mono NF', 'JetBrains Mono', Menlo, monospace",
+      "editor.fontLigatures": "'calt', 'liga', 'zero'",
+      "editor.fontVariations": true,
+      "editor.fontSize": 13,
+      "editor.lineHeight": 1.55,
+      "terminal.integrated.fontSize": 12,
+      "editor.letterSpacing": 0
+    }
+  },
+  "tasks": null,
+  "detect": null
+}

@@ -1,0 +1,61 @@
+// Consolidated v2.2 pack: java-spring (toolchain)
+{
+  "version": 2,
+  "id": "java-spring",
+  "kind": "toolchain",
+  "description": "Spring Boot framework layer (layers cleanly with either java-gradle or java-maven)",
+  "requires": [
+    "java-base"
+  ],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [
+      "vmware.vscode-spring-boot",
+      "vscjava.vscode-spring-boot-dashboard",
+      "vscjava.vscode-spring-initializr"
+    ],
+    "profile": [],
+    "unwanted": [
+      "pivotal.vscode-spring-boot",
+      "vscjava.vscode-spring-cloud"
+    ]
+  },
+  "settings": {
+    // Spring Boot workspace settings: activates Spring Boot YAML LSP selector, AOT CDS, and cron hints.
+    "workspace": {
+      "spring-boot.ls.java.vmargs": ["-Xms256m", "-Xmx2G", "-XX:+UseStringDeduplication"],
+      "spring-boot.ls.cds.enabled": true,
+      "boot-java.cron.inlay-hints": true,
+      "spring.initializr.serviceUrl": "https://start.spring.io",
+      "files.associations": {
+        "*.jsp": "jsp",
+        "application*.yml": "spring-boot-properties-yaml",
+        "application*.yaml": "spring-boot-properties-yaml",
+        "bootstrap*.yml": "spring-boot-properties-yaml",
+        "bootstrap*.yaml": "spring-boot-properties-yaml"
+      }
+    },
+    "profile": null
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 35,
+    "fallback": false,
+    "match": "any",
+    "supersedes": [],
+    "rules": [
+      {
+        "type": "file_and_grep",
+        "paths": [
+          "build.gradle",
+          "build.gradle.kts",
+          "pom.xml"
+        ],
+        "search_dir": "src/main/java",
+        "glob": "*Application.java",
+        "pattern": "@SpringBootApplication"
+      }
+    ]
+  }
+}

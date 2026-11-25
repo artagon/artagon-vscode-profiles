@@ -7,6 +7,7 @@
 //! - [`exit_codes`]: Canonical exit codes (`0..=7`) and structured [`VspError`](exit_codes::VspError).
 //! - [`model`]: Typed catalog, module, profile recipe, extension, and bundle structs.
 //! - [`legacy_loader`]: Offline reader for `catalog/`, `modules/`, and `profiles/` using strict JSONC parsing.
+//! - [`schema_loader`]: Consolidated v2.2 schema loader supporting embedded build snapshots and explicit catalog directories.
 //! - [`resolver`]: Topological DAG module resolver, deterministic settings/extensions/tasks compiler, and `dev dist`.
 //! - [`policy`]: Nested-safe autonomy deny-list, Marketplace VSIX URL/pin checks, scope checks, collision detection, and UX symmetry.
 //! - [`detect`]: Strictly read-only data-driven workspace toolchain detector.
@@ -26,4 +27,5 @@ pub mod model;
 pub mod plan;
 pub mod policy;
 pub mod resolver;
+pub mod schema_loader;
 pub mod vscode;

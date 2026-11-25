@@ -1,0 +1,41 @@
+// Consolidated v2.2 pack: git-pro (capability)
+{
+  "version": 2,
+  "id": "git-pro",
+  "kind": "capability",
+  "description": "Enhanced Git and GitHub PR workflow (GitLens with Plus disabled + GitHub Pull Requests)",
+  "requires": [
+    "core-editor"
+  ],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [],
+    "profile": [
+      "eamodio.gitlens",
+      "github.vscode-pull-request-github"
+    ],
+    "unwanted": []
+  },
+  "settings": {
+    "workspace": null,
+    // GitLens + GitHub PR noise reduction and Git ergonomics (zero duplicate status-bar blame or MCP auto-install).
+    "profile": {
+      "gitlens.plusFeatures.enabled": false,
+      "gitlens.codeLens.enabled": false,
+      "gitlens.currentLine.enabled": true,
+      "gitlens.gitkraken.mcp.autoEnabled": false,
+      "gitlens.ai.enabled": false,
+      "gitlens.telemetry.enabled": false,
+      "gitlens.showWhatsNewAfterUpgrades": false,
+      "gitlens.advanced.skipOnboarding": true,
+      "gitlens.launchpad.indicator.enabled": false,
+      "gitlens.graph.statusBar.enabled": false,
+      "git.blame.statusBarItem.enabled": false,
+      "githubPullRequests.createOnPublishBranch": "never",
+      "githubPullRequests.codingAgent.autoCommitAndPush": false
+    }
+  },
+  "tasks": null,
+  "detect": null
+}

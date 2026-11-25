@@ -1,0 +1,56 @@
+// Consolidated v2.2 pack: dx-pro (capability)
+{
+  "version": 2,
+  "id": "dx-pro",
+  "kind": "capability",
+  "description": "IntelliJ-grade developer experience toolkit (Bookmarks, Project Manager, Scratchpads, Better Comments, Regex Previewer, Peacock, Bruno HTTP, Draw.io)",
+  "requires": [
+    "core-editor"
+  ],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [],
+    "profile": [
+      "alefragnani.bookmarks",
+      "alefragnani.project-manager",
+      "buenon.scratchpads",
+      "aaron-bond.better-comments",
+      "chrmarti.regex",
+      "johnpapa.vscode-peacock",
+      "bruno-api-client.bruno",
+      "hediet.vscode-drawio"
+    ],
+    "unwanted": []
+  },
+  "settings": {
+    "workspace": null,
+    // IntelliJ-grade developer experience extension defaults (verified against live Marketplace manifests).
+    "profile": {
+      "bookmarks.navigateThroughAllFiles": true,
+      "bookmarks.wrapNavigation": true,
+      "bookmarks.sideBar.hideWelcome": true,
+      "bookmarks.label.suggestion": "useWhenSelected",
+      "bookmarks.confirmClear": "commandPalette",
+
+      "projectManager.showProjectNameInStatusBar": true,
+      "projectManager.showParentFolderInfoOnDuplicates": true,
+      "projectManager.filterOnFullPath": true,
+
+      "scratchpads.autoPaste": true,
+      "scratchpads.autoFormat": true,
+      "scratchpads.useGlobalFolder": true,
+
+      "better-comments.multilineComments": true,
+      "better-comments.highlightPlainText": false,
+
+      "peacock.surpriseMeOnStartup": false,
+      "peacock.showColorInStatusBar": false,
+      "peacock.affectActivityBar": false,
+      "peacock.affectTitleBar": true,
+      "peacock.affectStatusBar": true
+    }
+  },
+  "tasks": null,
+  "detect": null
+}

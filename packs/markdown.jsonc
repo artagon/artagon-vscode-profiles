@@ -1,0 +1,50 @@
+// Consolidated v2.2 pack: markdown (capability)
+{
+  "version": 2,
+  "id": "markdown",
+  "kind": "capability",
+  "description": "Markdown authoring, linting, Mermaid diagrams, and GitHub preview styles",
+  "requires": [
+    "core-editor"
+  ],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [
+      "yzhang.markdown-all-in-one",
+      "davidanson.vscode-markdownlint",
+      "bierner.markdown-mermaid",
+      "bierner.markdown-preview-github-styles"
+    ],
+    "profile": [],
+    "unwanted": [
+      "shd101wyy.markdown-preview-enhanced"
+    ]
+  },
+  "settings": {
+    // Markdown workspace editing settings: preserves two-space hard line breaks and validates links.
+    "workspace": {
+      "[markdown]": {
+        "files.trimTrailingWhitespace": false,
+        "editor.wordWrap": "on",
+        "editor.rulers": [80, 120],
+        "editor.quickSuggestions": {
+          "comments": "off",
+          "strings": "off",
+          "other": "off"
+        }
+      },
+      "markdown.validate.enabled": true,
+      "markdown.updateLinksOnFileMove.enabled": "prompt",
+      "markdown.occurrencesHighlight.enabled": true,
+      "markdown.preview.scrollPreviewWithEditor": true,
+      "markdown.preview.scrollEditorWithPreview": true,
+      "markdown.preview.markEditorSelection": true,
+      "markdownlint.run": "onSave",
+      "markdownlint.focusMode": true
+    },
+    "profile": null
+  },
+  "tasks": null,
+  "detect": null
+}
