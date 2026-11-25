@@ -2,6 +2,50 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.0]
+
+Release target. See the [cutover checklist](openspec/changes/unify-vsp-cli-and-composition/tasks.md#phase-3-legacy-retirement-homebrew-launch--final-cutover-v300) for implementation and publication status.
+
+### Cutover
+
+- Make the compiled Rust `vsp` the primary CLI. Keep `vspcli` as the v2.x migration shim.
+- Use the native v3.0.0 binary for `brew install artagon/aitools/vsp` and source installs via `cargo build --release` and `vsp self install`. The tag release workflow targets macOS arm64, macOS x64, and Linux x64, with GitHub Release archives, `SHA256SUMS`, and signed build provenance.
+- Keep personal composition at `~/.config/vsp/config.jsonc` (or under `XDG_CONFIG_HOME`) in the v3 design. Use explicit selectors and standard VS Code workspace files for repository configuration. Repository-local `.vsp.toml` is unsupported.
+
+## [2.2.0]
+
+### Added
+
+- Rust `sync` applies workspace, profile, and Default-user changes, imports offline bundles, and runs compromised-extension sweeps. `open --sync` can synchronize before opening a workspace. Standard dry-runs share the `vsp-plan/v1` planner with `diff`.
+- Consolidated configuration into JSONC packs, `presets.jsonc`, the two-file extension and policy catalog, and the four-tier VSIX policy in `vsp.lock.json`. The native binary embeds these inputs and can load an explicit checkout via `--catalog`.
+
+### Security
+
+- Apply lossless JSONC CST edits with workspace path containment and provenance for retiring managed keys. Protect VS Code registration with advisory locks, SHA-256 preimage checks, and atomic writes.
+- Preserve compromised-first Step 0 on profile sync. Verify staged VSIX contents against available SHA-256 pins and enforce approved HTTPS Marketplace hosts. Persist the verification bypass in local provenance when explicitly enabled.
+
+### Changed
+
+- Untrack 83 generated settings, extension, and export files. CI validates the embedded and on-disk inputs and compares two `vsp dev dist` output trees. Pre-commit rejects staged legacy outputs.
+- Preserve the 15 canonical recipes and 22 legacy bundle names against frozen v2.1 checksums. The two `ai-profile-*` aliases still map to the Copilot-only profile, and the `ai` recipe retains `chat.editor.fontSize=14`.
+
+## [2.1.0]
+
+### Added
+
+- Introduce the thin `bin/vsp` facade with compiled-binary delegation and retain the existing `vspcli` entry point. Require explicit selectors for `sync` and `diff` and define exit codes `0`–`7`, including incomplete observation at `7`.
+- Bootstrap the Rust read-only engine with the legacy catalog loader, DAG resolver, policy checks, `vsp-plan/v1`, read-only inspection, reproducible exports, and completions.
+- Add the SHA-pinned release workflow with a three-target binary matrix, deterministic profile archives, and artifact provenance attestation.
+
+## [2.0.1]
+
+### Security and fixes
+
+- Check nested autonomy paths, case-insensitive execution overrides, and boolean strings. Fail closed when VSIX pin metadata is missing or invalid. Propagate atomic publish failures.
+- Detect macOS VS Code process paths with spaces and harden contested lock reclamation.
+- Fail closed on incomplete `doctor` scans and require boolean `false` for the Default-profile extension auto-update check. Propagate detection and compatibility errors, validate extension lists strictly, and tighten symlink resolution.
+- Keep workspace and Java dry-runs offline unless compatibility checks are requested. Guard workspace recommendations against file loss and avoid leaking literal home paths in workspace RTK settings. Protect Rust policy synchronization with safe rewrites and verify documented flags in BATS.
+
 ## Unreleased — `refactor-capability-modules-and-defaults`
 
 ### Changed (BREAKING — vertical capability-module architecture & default AI agents)

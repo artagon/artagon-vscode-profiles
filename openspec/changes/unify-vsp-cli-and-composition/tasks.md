@@ -18,19 +18,24 @@
 
 ### 1.2 Rust Read-Only Core & Golden Parity (`crates/vsp`)
 
-- [ ] 1.2.1 Bootstrap workspace `Cargo.toml` and `crates/vsp` with `clap`, `clap_complete`, `serde`, `serde_json`, `jsonc-parser`, `sha2`, `semver`, and `thiserror`.
-- [ ] 1.2.2 Implement CLI exit codes `0`–`7` (mapping clap parse errors to `4`, `--help`/`--version` to `0`, incomplete observation to `7`) and read-only commands (`list`, `show`, `detect`, `diff`, `doctor`, `export`, `completions`, `dev validate`, `dev dist`, `self path`).
-- [ ] 1.2.3 Implement legacy-layout loader (`catalog/`, `modules/`, `profiles/`), DAG resolver, nested-safe autonomy policy validator, and deterministic `.code-profile` + 22 legacy alias generator (preserving `D5` `chat.editor.fontSize=14` and `ai-profile-*` -> `ai-copilot`).
-- [ ] 1.2.4 Pass 100% golden parity tests against all 15 `_merged/*.json`, 15 `profiles/*/extensions.json`, 22 legacy aliases, double-run `dev dist` determinism, all 5 N1 security payloads, `cargo clippy -- -D warnings`, and `RUSTDOCFLAGS="-D warnings" cargo doc`.
+- [x] 1.2.1 Bootstrap workspace `Cargo.toml` and `crates/vsp` with `clap`, `clap_complete`, `serde`, `serde_json`, `jsonc-parser`, `sha2`, `semver`, and `thiserror`.
+- [x] 1.2.2 Implement CLI exit codes `0`–`7` (mapping clap parse errors to `4`, `--help`/`--version` to `0`, incomplete observation to `7`) and read-only commands (`list`, `show`, `detect`, `diff`, `doctor`, `export`, `completions`, `dev validate`, `dev dist`, `self path`).
+- [x] 1.2.3 Implement legacy-layout loader (`catalog/`, `modules/`, `profiles/`), DAG resolver, nested-safe autonomy policy validator, and deterministic `.code-profile` + 22 legacy alias generator (preserving `D5` `chat.editor.fontSize=14` and `ai-profile-*` -> `ai-copilot`).
+- [x] 1.2.4 Pass 100% golden parity tests against the frozen v2.1 checksums for all 15 profile settings and extension lists, 15 canonical bundles, and 22 legacy aliases, double-run `dev dist` determinism, all 5 N1 security payloads, `cargo clippy -- -D warnings`, and `RUSTDOCFLAGS="-D warnings" cargo doc`.
 
 ## Phase 2: Rust Mutating `sync`, `fs4`/CAS Locking, `vsp.lock.json` & Untrack Generated Files (`v2.2.0`)
 
-- [ ] 2.1 Implement Rust mutating `sync`, `open`, `init` (`~/.config/vsp/config.jsonc` per `D1`), and `self {install,uninstall}` with `fs4` advisory locking and SHA-256 CAS guards on VS Code `storage.json` (`D3`).
-- [ ] 2.2 Implement JSONC comment-preserving writes, workspace symlink containment, and 4-tier `vsp.lock.json` provenance state.
-- [ ] 2.3 Untrack the 83 generated files (`15` `_merged/*.json`, `30` `profiles/*/{settings,extensions}.json`, `38` `exports/*`) from git and update CI/pre-commit hooks to validate via `vsp dev validate` and `vsp dev dist`.
+- [x] 2.1 Implement Rust mutating `sync` and `open` with `fs4` advisory locking and SHA-256 CAS guards on VS Code `storage.json` (`D3`).
+  - Profile registration and workspace/profile sync are covered by `crates/vsp/tests/sync_cst_integration.rs`. User configuration and binary installation are tracked in Phase 3.1.
+- [x] 2.2 Implement JSONC comment-preserving writes, workspace symlink containment, XDG target provenance, and four-tier VSIX policy (`vsp.lock.json` plus catalog Tier 0).
+- [x] 2.3 Untrack the 83 generated files (`15` `_merged/*.json`, `30` `profiles/*/{settings,extensions}.json`, `38` `exports/*`) from git (`6972eeb`). Reject staged generated files in pre-commit and run `vsp dev validate` for relevant changes. CI validates and compares two `vsp dev dist` outputs.
 
 ## Phase 3: Legacy Retirement, Homebrew Launch & Final Cutover (`v3.0.0`)
 
 - [ ] 3.1 Retire legacy Bash compiler internals (`scripts/lib/*.sh`) and finalize `scripts/vspcli` deprecation shim per deprecation policy.
+  - [ ] Implement `vsp init` and load user-only composition defaults from `~/.config/vsp/config.jsonc` (`D1`).
+  - [ ] Implement and verify native `vsp self install` and `vsp self uninstall`.
 - [ ] 3.2 Publish signed, SLSA-attested `vsp` tag release via `.github/workflows/release.yml` and launch the Homebrew formula (`D4`).
+  - [x] Update README, project overview, changelog, contributor workflow, and OpenSpec context for the v3.0.0 cutover.
+  - [ ] Verify the published tarballs and `SHA256SUMS` attestations and run the Homebrew install and audit gates.
 - [ ] 3.3 Archive superseded OpenSpec changes and sync `openspec/specs/` to reflect the unified `vsp` architecture.

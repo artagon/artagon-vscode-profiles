@@ -2,92 +2,66 @@
 
 [![CI](https://github.com/Artagon/artagon-vscode-profiles/actions/workflows/ci.yml/badge.svg)](https://github.com/Artagon/artagon-vscode-profiles/actions/workflows/ci.yml)
 [![Platforms: macOS & Linux](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-0969da)](ABOUT.md#overview)
-[![Runtime: Bash + jq](https://img.shields.io/badge/runtime-Bash%20%2B%20jq-4a7bbb)](ABOUT.md#design-guarantees)
+[![Runtime: Rust](https://img.shields.io/badge/runtime-Rust-4a7bbb)](ABOUT.md#design-guarantees)
 [![VS Code: 1.147+](https://img.shields.io/badge/VS%20Code-1.147%2B-007acc)](#profile--module-matrix)
-[![Profiles: 15](https://img.shields.io/badge/profiles-15-8250df)](#profile--module-matrix)
-[![Modules: 32](https://img.shields.io/badge/modules-32-bf3989)](#profile--module-matrix)
 [![VSIX Pins: SHA-256](https://img.shields.io/badge/VSIX%20pins-SHA--256-2ea44f)](#security--supply-chain-controls)
-[![About](https://img.shields.io/badge/about-design%20%26%20verification-57606a)](ABOUT.md)
 
-Vertical capability-module architecture for Visual Studio Code (`1.147+`) profiles, team-shareable workspace toolchains, IntelliJ-grade developer ergonomics, multi-agent AI coexistence, and supply-chain-hardened extension management. Runs on **portable Bash + `jq`** (stock macOS and Linux Bash) with zero Python, Node, or Rust runtime dependencies.
+**vsp** is the unified CLI for Visual Studio Code profiles, workspace toolchains, and extension management. The v3.0.0 cutover uses a native Rust binary with an embedded catalog. It composes 15 profiles from editor, AI, language, and UX packs.
 
-> [!IMPORTANT]
-> **Security & Non-Invasiveness Contract**
-> - **Clean team workspaces**: `vspcli apply --target=workspace` writes only team-shareable toolchain recommendations, workspace settings, and portable plain `tasks.json` into `.vscode/`; personal AI agents, UX presets (`crisp`/`retina`), and RTK terminal wiring stay out of `.vscode/` unless explicitly opted in.
-> - **Hardened local-first defaults**: Profiles default `security.workspace.trust.untrustedFiles` to `"prompt"`, disable telemetry (`telemetry.telemetryLevel: "off"`), block auto-approve / CLI-wrapper bypass settings during bundle import, and provide first-class Copilot-only (`ai-copilot`) and zero-AI (`general-minimal`, `--no-ai`) opt-outs.
-> - **Verified supply chain**: Universal core/UX extensions install via SHA-256-pinned official `https://` Marketplace VSIX packages through a zero-TOCTOU local cache; publisher allowlists gate every install; and compromised `jscearcy.rust-doc-viewer` (GlassWorm) is uninstalled first by `vspcli reconcile` and flagged `FAIL` across all profiles by `vspcli doctor`.
+[Installation](#installation) · [Quick Start](#quick-start) · [Composition](#composition) · [Profiles & Modules](#profile--module-matrix) · [Security](#security--supply-chain-controls) · [CLI Reference](#cli-quick-reference) · [Migrating from v2](#migrating-from-v2)
 
-[Quick Start](#quick-start) · [Highlights](#architecture--capability-highlights) · [Profiles & Modules](#profile--module-matrix) · [AI Agents & Opt-Outs](#ai-agent-coexistence--explicit-opt-outs) · [UX & Typography](#ux-presets-typography--themes) · [Security Controls](#security--supply-chain-controls) · [CLI Reference](#cli-quick-reference) · [Troubleshooting](#troubleshooting--faq)
+## Installation
 
----
+The Homebrew formula and native installer are v3.0.0 cutover deliverables. Check the [release checklist](openspec/changes/unify-vsp-cli-and-composition/tasks.md#phase-3-legacy-retirement-homebrew-launch--final-cutover-v300) for their status.
+
+```bash
+brew install artagon/aitools/vsp
+vsp --version
+```
+
+To build from the v3.0.0 source checkout, use Cargo and install the compiled binary into your user bin directory:
+
+```bash
+cargo build --release --locked
+./target/release/vsp self install
+```
+
+Add the user bin directory (normally `~/.local/bin`) to your `PATH`. Use the VS Code CLI (`code`) for live profile operations.
 
 ## Quick Start
 
-### 1. Import a Compiled Profile Bundle (Recommended)
-
 ```bash
-# Full stack with default AI agent suite (Antigravity + Claude Code + Codex + Copilot Chat)
-bash scripts/import-profile.sh rust exports/rust.code-profile
+# Browse recipes and inspect the Rust preset
+vsp list presets
+vsp show rust
 
-# Import a profile, then apply your personal Retina or Crisp UX preset
-bash scripts/import-profile.sh rust exports/rust.code-profile
-bash scripts/vspcli apply --target=profile --profile rust --ux=retina
+# Detect workspace toolchains and preview .vscode changes
+vsp detect /path/to/repo --explain
+vsp diff --workspace /path/to/repo --preset rust
+vsp sync --workspace /path/to/repo --preset rust
 
-bash scripts/import-profile.sh java-gradle exports/java-gradle.code-profile
-bash scripts/vspcli apply --target=profile --profile java-gradle --ux=crisp
+# Sync a named profile with a personal display preset, then open it
+vsp sync --profile rust --preset rust --ux retina
+vsp open --profile rust /path/to/repo
 
-# Strict Copilot-only (never adds Antigravity, Claude Code, or Codex)
-bash scripts/import-profile.sh ai-copilot exports/ai-copilot.code-profile
-
-# Zero-AI minimal profile, or strip AI from any compiled bundle
-bash scripts/import-profile.sh general-minimal exports/general-minimal.code-profile
-bash scripts/import-profile.sh --no-ai rust-clean exports/rust.code-profile
+# Audit installed profiles, including Default
+vsp doctor --strict
 ```
 
-> [!NOTE]
-> Always import via `scripts/import-profile.sh` (or `bash scripts/vspcli import`), not the VS Code UI (`Settings → Profiles → Import`). The VS Code UI skips extensions that are not already installed, whereas `import-profile.sh` verifies `exports/SHA256SUMS`, enforces the autonomy deny-list and publisher allowlist, installs pinned VSIX packages with SHA-256 verification, batches installs with per-extension retry fallback (`--no-batch` to disable), and applies graceful theme fallbacks if any theme extension fails.
+Use `vsp sync --dry-run` with the same selector and composition flags to preview a standard sync. Use `vsp diff --check` to detect drift in automation.
 
-### 2. Apply Team-Shareable Workspace Configuration
+## Composition
 
-```bash
-# Auto-detect toolchains and write team-shareable .vscode/{extensions,settings,tasks}.json
-bash scripts/vspcli apply --target=workspace /path/to/repo
-
-# Java Maven + Spring Boot (layers cleanly with either Gradle or Maven)
-bash scripts/vspcli apply --target=workspace --toolchain java-maven --with java-spring /path/to/maven-spring-repo
-
-# Astro + Biome (automatic formatter settings-key cleanup from ESLint+Prettier)
-bash scripts/vspcli apply --target=workspace --with biome --without ts-eslint-prettier /path/to/astro-repo
-
-# Python with Astral ty instead of BasedPyright
-bash scripts/vspcli apply --target=workspace --with python-ty --without python /path/to/python-repo
-
-# Apply personal UX preset to VS Code User settings (keeps team .vscode/ clean)
-bash scripts/vspcli apply --target=workspace --ux=retina --ux-target=user /path/to/repo
-
-# Explicitly opt in to workspace UX or RTK terminal wiring when desired
-bash scripts/vspcli apply --target=workspace --ux=crisp --ux-in-workspace --rtk-in-workspace /path/to/repo
-```
-
-### 3. Reconcile & Audit Installed Profiles
-
-```bash
-# Audit tools, catalog, Default-profile application scopes, pin drift, and compromised extensions
-bash scripts/vspcli doctor --strict
-
-# Preview reconciliation with zero mutations (including Step 0)
-bash scripts/vspcli reconcile --profile rust --dry-run
-
-# Remove compromised extensions across all registered profiles (including Default)
-bash scripts/vspcli reconcile --all --compromised-only
-
-# Sync a profile to a canonical recipe, or switch an existing profile to Copilot-only
-bash scripts/vspcli reconcile --profile ai-copilot --as ai-copilot --prune-unmanaged
-```
-
----
+- `--with` and `--without` add or exclude packs. The resolver loads required packs and rejects conflicting combinations. For example, `vsp diff /path/to/astro-repo --preset astro --with biome --without ts-eslint-prettier` previews changing the Astro formatter.
+- `--profile NAME` selects a named VS Code profile. `--preset NAME` selects a recipe and can be combined with a profile or workspace selector. Use `--user` for the Default VS Code profile.
+- The v3.0.0 design uses `vsp init` to create `~/.config/vsp/config.jsonc` (or `$XDG_CONFIG_HOME/vsp/config.jsonc`) for personal defaults without a fork. Until the config loader lands, pass composition flags explicitly. For security, `vsp` does not support repo-local `.vsp.toml`. Use VS Code workspace files and explicit CLI selectors to express project intent.
+- Use `--ux retina` or `--ux crisp` on a profile or user target for personal typography and themes. Workspace sync can apply an explicitly selected UX preset. Leave `--ux` out of team workspace commands to keep personal display settings out of the workspace.
 
 ## Architecture & Capability Highlights
+
+The Rust engine in [`crates/vsp`](crates/vsp) resolves capability and toolchain packs from `packs/*.jsonc`. It reads recipes and legacy aliases from [`presets.jsonc`](presets.jsonc), and reads extension metadata and settings policy from [`catalog/`](catalog). The embedded snapshot lets the compiled binary work outside a clone. Use `--catalog DIR` to test a local catalog.
+
+The 83 generated files formerly tracked in `_merged/`, `exports/`, and `profiles/*/{extensions,settings}.json` are built in memory on demand. Use `vsp export rust --out ./exports` for a single bundle or `vsp dev dist --out ./dist` for all 15 canonical bundles, 22 legacy aliases, and their `SHA256SUMS`. The tag release workflow publishes binary and profile archives as GitHub Release assets with `SHA256SUMS` and signed build provenance attestations. [GitHub Releases](https://github.com/Artagon/artagon-vscode-profiles/releases)
 
 | Domain | Included Capabilities & Tuning | Modules |
 | :--- | :--- | :--- |
@@ -101,6 +75,8 @@ bash scripts/vspcli reconcile --profile ai-copilot --as ai-copilot --prune-unman
 ---
 
 ## Profile & Module Matrix
+
+The generated table retains historical `exports/` paths as bundle names. Generate the bundles locally or download the profile archive from GitHub Releases.
 
 <!-- BEGIN GENERATED-MATRIX -->
 ### Profiles (15 Compiled Recipes)
@@ -165,7 +141,7 @@ bash scripts/vspcli reconcile --profile ai-copilot --as ai-copilot --prune-unman
 
 ## AI Agent Coexistence & Explicit Opt-Outs
 
-Default compiled profiles (`general`, `ai`, `ai-plus`, `rust`, `python`, `astro`, `java-*`, `cpp-*`, `github-workflows`, `shell`) and the 18 legacy toolchain export symlinks include [`modules/capabilities/ai-agents`](modules/capabilities/ai-agents):
+Default compiled profiles (`general`, `ai`, `ai-plus`, `rust`, `python`, `astro`, `java-*`, `cpp-*`, `github-workflows`, `shell`) and the 18 legacy toolchain bundle aliases include [`packs/ai-agents.jsonc`](packs/ai-agents.jsonc):
 
 | Extension | Role in `ai-agents` | Coexistence Defaults |
 | :--- | :--- | :--- |
@@ -174,15 +150,15 @@ Default compiled profiles (`general`, `ai`, `ai-plus`, `rust`, `python`, `astro`
 | `openai.chatgpt` (+ `openai.codex-audio`) | OpenAI Codex IDE agent | `followUpQueueMode: "queue"`, `composerEnterBehavior: "cmdIfMultiline"`, `reviewDelivery: "inline"` |
 | `github.copilot-chat` | Inline ghost-text completions & Next Edit Suggestions (NES) | Replaces legacy `github.copilot`; paired with `Monaspace Krypton NF` inline ghost text |
 
-- **Strict Copilot-only preserved**: Legacy `ai-profile-crisp` / `ai-profile-retina` aliases and export symlinks strictly resolve to [`exports/ai-copilot.code-profile`](exports/ai-copilot.code-profile) (`github.copilot-chat` only — never silently upgraded to Antigravity, Claude, or Codex).
-- **Zero-AI profile**: Use [`exports/general-minimal.code-profile`](exports/general-minimal.code-profile), which excludes `ai-agents` and sets `"chat.disableAIFeatures": true`.
-- **Strip AI on any import or apply**: Pass `--no-ai` to `scripts/import-profile.sh` (strips all AI extensions and `ai-agents`/`chat.*`/`inlineChat.*` settings while preserving shared `core-editor` keys, and sets `"chat.disableAIFeatures": true`), or pass `--without ai-agents` to `vspcli apply`.
+- **Strict Copilot-only.** Legacy `ai-profile-crisp` and `ai-profile-retina` aliases resolve to `ai-copilot`, which uses `github.copilot-chat`.
+- **Zero-AI profile.** Use `general-minimal`, which excludes `ai-agents` and sets `"chat.disableAIFeatures": true`.
+- **AI modes.** Use `--ai off` (or `--no-ai`) with `vsp sync` to disable AI, or `--ai copilot` for Copilot only.
 
 ---
 
 ## UX Presets, Typography & Themes
 
-Profiles compile **UX-agnostic** (`_merged/*.json`) so you can pair any toolchain profile with your display preset via `--ux=retina`, `--ux=crisp`, or `--ux=default`. Both `retina` and `crisp` manage the exact same **15 symmetric keys** (enforced by [`scripts/tests/check-ux-symmetry.sh`](scripts/tests/check-ux-symmetry.sh)):
+Profile bundles are UX-agnostic. Apply `--ux retina`, `--ux crisp`, or `--ux default` when you sync a profile. Both `retina` and `crisp` manage the same 15 settings keys.
 
 | Aspect | `retina` (HiDPI / Liquid Retina XDR) | `crisp` (External QHD / 1x DPI) |
 | :--- | :--- | :--- |
@@ -213,7 +189,7 @@ brew install --cask \
   font-fira-code
 ```
 
-Need extra color or icon themes beyond Tokyo Night and Catppuccin Mocha? Include `themes-pack` (`ai-plus` includes all 30 curated packs automatically, or pass `--with themes-pack` to `vspcli apply`).
+Need extra color or icon themes beyond Tokyo Night and Catppuccin Mocha? Include `themes-pack` (`ai-plus` includes all 30 curated packs automatically, or pass `--with themes-pack` to `vsp sync`).
 
 </details>
 
@@ -221,103 +197,59 @@ Need extra color or icon themes beyond Tokyo Night and Catppuccin Mocha? Include
 
 ## Security & Supply-Chain Controls
 
-- **GlassWorm Compromise Remediation (`jscearcy.rust-doc-viewer`)**: Marked `status: "compromised"` in [`catalog/extensions.json`](catalog/extensions.json), listed in `rust` `unwantedRecommendations`, unconditionally uninstalled first (Step 0) by `vspcli reconcile` even when network installs fail, and flagged **`FAIL`** by `vspcli doctor` across every profile including Default.
-- **Install-Time SHA-256 VSIX Pins & Verified Local Cache ([`catalog/extension-pins.json`](catalog/extension-pins.json))**: The 8 universal core/UX extensions (`catppuccin.catppuccin-vsc`, `catppuccin.catppuccin-vsc-icons`, `editorconfig.editorconfig`, `enkia.tokyo-night`, `miguelsolorio.fluent-icons`, `pkief.material-icon-theme`, `pkief.material-product-icons`, `tamasfe.even-better-toml`) download from official `https://` Marketplace URLs, verify SHA-256 digests before installation, and reuse a zero-TOCTOU copy-before-hash content-addressed cache (`VSCODE_VSIX_CACHE_DIR`, `0700`/`0600` private permissions). Refresh pins via `bash scripts/refresh-pins.sh`.
-- **Trusted Bundle Settings Guard**: `scripts/import-profile.sh` verifies `<bundle-dir>/SHA256SUMS` and blocks autonomy/process-wrapper bypass keys (`chat.tools.*.autoApprove`, `bypassPermissions`, `claudeProcessWrapper`, `antigravity.serverArgs`, `antigravity.releaseBaseUrl`, `antigravity.caCertificates`, `chatgpt.cliExecutable`, `geminicodeassist.agentYoloMode`, etc.) unless `--allow-unsafe-settings` is explicitly passed.
-- **Exact Active-Module Publisher Allowlist ([`catalog/publishers.json`](catalog/publishers.json))**: Enforced across `install-extensions.sh`, `import-profile.sh`, `vspcli install-ext`, and `vspcli reconcile` (`ARTAGON_VSCODE_TRUST_UNKNOWN_PUBLISHER=1` for explicit per-run override).
-- **Application-Scope Settings (VS Code `1.147.0`)**: `telemetry.telemetryLevel`, `security.workspace.trust.untrustedFiles`, `extensions.autoUpdate`, `extensions.autoCheckUpdates`, `update.mode`, `update.showReleaseNotes`, `window.titleBarStyle`, `window.nativeTabs`, `window.autoDetectHighContrast`, `catppuccin.*`, and `antigravity.keybindingScheme` are `APPLICATION`-scoped (`scope: 1`) and take effect from the **Default** VS Code profile (`<CODE_USER_DIR>/settings.json`). Run `bash scripts/vspcli doctor --strict` to verify your host Default profile.
-- **Graceful Theme Fallback on Import**: If a theme, icon-theme, or product-icon-theme extension fails to install during `import-profile.sh`, dangling `workbench.colorTheme`, `workbench.preferredDarkColorTheme`, `workbench.iconTheme`, and `workbench.productIconTheme` keys are stripped before VS Code reads the profile.
-
----
+- **Autonomy policy.** The settings deny-list checks dotted and nested paths, including case-insensitive execution overrides and boolean strings. It catches automatic approval and process-wrapper bypass settings before writes. Profile defaults prompt for Workspace Trust and disable telemetry. Use `vsp doctor --strict` to audit the Default profile's application-scoped settings.
+- **GlassWorm remediation.** Named-profile sync removes installed compromised or removed extensions in Step 0 before settings writes and extension installs. `vsp sync --all --compromised-only` sweeps every registered profile and Default. `vsp doctor` reports compromised extensions such as `jscearcy.rust-doc-viewer` and returns exit `7` if a required extension listing fails.
+- **Four-tier VSIX lock.** Tier 0 records compromised or removed IDs in `catalog/extensions.jsonc` for Step 0. [`vsp.lock.json`](vsp.lock.json) records tiers 1–3. Tier 1 uses SHA-256 hashes and platform-specific VSIX URLs. Tier 2 records version locks for executable extensions. Tier 3 covers unlocked declarative extensions such as themes, grammars, and keymaps. Entries marked `pending_refresh` represent incomplete verification. Available VSIX pins require approved HTTPS Marketplace hosts and matching hashes before installation.
+- **Bundle integrity.** Keep `SHA256SUMS` beside exported bundles. `vsp sync --from ./exports/rust.code-profile --profile rust` checks a matching checksum and rejects mismatches. Verify the release archive against its published checksum and attestation before extracting it.
+- **Lossless JSONC writes.** The concrete syntax tree (CST) merge preserves comments and formatting on untouched settings and keeps user-owned keys. Sync checks workspace symlink containment. Advisory locks and a SHA-256 compare-and-swap guard protect VS Code's `storage.json` updates.
 
 ## Shell Formatting & RTK Terminal Wrappers
 
-<details>
-<summary><strong>Shell / Zsh formatting safety (`.editorconfig`) & portable XDG RTK terminal wrappers</strong></summary>
-
-### Shell & Zsh Formatting (`modules/capabilities/shell`)
-
-Every compiled profile includes `bash-ide-vscode`, `shellcheck`, `mkhl.shfmt`, `bmalehorn.vscode-fish`, `jeff-hykin.better-shellscript-syntax`, and `kherring.bats-test-runner` while preserving VS Code's built-in `shellscript` grammar.
-
-Because `shfmt` does not parse Zsh syntax reliably, `modules/capabilities/shell` sets `[shellscript].editor.formatOnSave: false`, `shfmt.formatIgnored: false`, and excludes Zsh files from `shellcheck.ignorePatterns`. To opt into format-on-save for POSIX/Bash scripts while protecting Zsh files per repository, add `.editorconfig`:
-
-```ini
-root = true
-
-[*.{sh,bash}]
-indent_style = space
-indent_size = 2
-
-[*.zsh]
-shfmt_ignore = true
-```
-
-### RTK Terminal Wrappers (Zsh, Fish, Bash)
-
-[`modules/capabilities/rtk-terminal`](modules/capabilities/rtk-terminal) installs wrappers atomically (`--no-follow`) into `${XDG_CONFIG_HOME:-~/.config}/artagon-vscode/rtk/`:
-- **Zsh (`ZDOTDIR` proxy)**: Preserves user `ARTAGON_ORIG_ZDOTDIR` and restores it cleanly in `.zshrc` (non-login) or `.zlogin` (login).
-- **Bash (`rtk-init.bash`)**: Uses an isolated `_ARTAGON_RTK_RC_LOADED` recursion guard before sourcing `~/.bash_profile` / `~/.bashrc` and wraps commands via `type -P` + `unalias`.
-- **Fish (`rtk-init.fish`)**: Resolves `command -v rtk` safely even when paths contain spaces.
-
-Workspace `.vscode/tasks.json` uses portable plain `cargo doc` commands by default; pass `--rtk-in-workspace` to emit `rtk`-prefixed tasks and workspace terminal profiles.
-
-</details>
-
----
+The shell pack ships syntax support for Bash, Fish, and Zsh. Use `shfmt` for POSIX and Bash sources, and exclude `*.zsh` files from automatic `shfmt` formatting. The optional [RTK terminal pack](packs/rtk-terminal) keeps its Bash, Fish, and Zsh wrappers under `packs/rtk-terminal/scripts/`. Profile or user sync with `--with rtk-terminal` installs wrappers under `${XDG_CONFIG_HOME:-~/.config}/vsp/rtk/`. Workspace tasks use portable shell commands.
 
 ## CLI Quick Reference
 
 | Command | Purpose |
-| :--- | :--- |
-| `bash scripts/vspcli list` | List all 15 compiled profile recipes |
-| `bash scripts/vspcli build` | Compile `_merged/`, `profiles/*/`, `exports/`, 22 legacy symlinks, and `exports/SHA256SUMS` |
-| `bash scripts/vspcli validate` | Run all JSON/JSONC, catalog/publisher, `GROUP_ORDER`, DAG, collision, scope, and security checks |
-| `bash scripts/vspcli detect [--json] <path>` | Detect workspace toolchains from `modules/*/*/module.json` |
-| `bash scripts/vspcli apply [flags] <path>` | Compile & write workspace, profile, or global config |
-| `bash scripts/vspcli import [--no-ai] [--no-batch] <name> <bundle>` | Verify, install extensions (batched + SHA-256 VSIX pins), and register a VS Code profile (follow with `vspcli apply --target=profile --profile <name> --ux=retina` for UX presets) |
-| `bash scripts/vspcli reconcile [flags]` | Sync installed profile extensions & remove compromised extensions first (Step 0) |
-| `bash scripts/vspcli doctor [--strict]` | Audit tools, catalog, Default-profile application scopes, pin drift, and security |
-| `bash scripts/refresh-pins.sh` | Refresh live SHA-256 VSIX pins in `catalog/extension-pins.json` |
-| `bash scripts/check-extension-compatibility.sh --all --marketplace-only --json` | Live VS Code Marketplace compatibility audit across all 15 profiles |
-| `bash scripts/install-hooks.sh` | Configure `core.hooksPath = scripts/git-hooks` |
-| `bash scripts/tests/run.sh` | Run full hermetic offline script + 128-test BATS suite |
+| --- | --- |
+| `vsp sync --workspace PATH` | Sync a workspace. Other selectors include positional `PATH`, `--profile NAME`, `--preset NAME`, `--user`, bundle import with `--from BUNDLE --profile NAME`, and `--all --compromised-only`. |
+| `vsp diff --workspace PATH --check` | Preview a workspace, profile, preset, or user plan and report confirmed drift with exit `3`. |
+| `vsp open --profile NAME PATH` | Open a workspace in a named profile. Add `--sync` to sync first. |
+| `vsp doctor --strict` | Audit VS Code profiles, extensions, and Default-profile settings. |
+| `vsp list presets` | List presets. Use `packs`, `ux`, or `installed` for other categories. |
+| `vsp show NAME` | Inspect a preset, pack, UX preset, or legacy alias. |
+| `vsp detect PATH --explain` | Inspect workspace signals without writing files. |
+| `vsp export rust --out DIR` | Export a bundle and checksum. Omit the names to export all canonical profiles. |
+| `vsp init` | Bootstrap personal configuration for the v3.0.0 cutover. |
+| `vsp completions zsh` | Generate completions for Bash, Zsh, or Fish. |
+| `vsp self path`, `vsp self install` | Locate the running binary or install the v3.0.0 binary in your user bin directory. |
+| `vsp dev validate`, `vsp dev dist --out DIR` | Validate composition inputs or build deterministic distribution bundles. |
 
----
+Both `sync` and `diff` require an explicit target selector. A missing selector exits `4`.
 
-## Repository Layout & Maintainer Workflow
+| Exit | Meaning |
+| ---: | --- |
+| `0` | Success, clean check, preview, help, or version |
+| `1` | Operational, audit, or validation failure |
+| `2` | Target missing |
+| `3` | Complete negative check, such as no detection match or confirmed drift |
+| `4` | Incorrect usage, invalid configuration, or composition conflict |
+| `5` | Safety guard refused a write |
+| `6` | Retryable lock or state conflict, or partial apply |
+| `7` | Incomplete observation or unavailable verification |
 
-```text
-.
-├─ catalog/          # Authoritative registries (extensions, publishers, defaults, pins, setting-scopes)
-├─ modules/
-│  ├─ capabilities/  # 14 vertical capabilities (core-editor, ai-agents, ai-copilot, dx-pro, shell, rtk-terminal, ...)
-│  ├─ toolchains/    # 15 language toolchains (rust, java-*, python*, ts-base, astro, biome, cpp-*)
-│  └─ ux/            # 15-key symmetric UX presets (crisp, retina) + empty default
-├─ profiles/         # 15 thin profile.json recipes + compiled settings.json symlink & extensions.json
-├─ _merged/          # Compiled UX-agnostic profile settings (generated; do not edit)
-├─ exports/          # Compiled .code-profile bundles, 22 legacy v1 symlinks, and SHA256SUMS (generated)
-├─ scripts/          # vspcli, scripts/lib/ (portable Bash libraries), hooks, completions, and BATS test suite
-├─ docs/             # Stack documentation (e.g. docs/rust.md)
-└─ openspec/         # OpenSpec specifications, research notes, and adversarial review ledgers
-```
+## Migrating from v2
 
-1. Edit source definitions under [`catalog/`](catalog), [`modules/`](modules), or [`profiles/<name>/profile.json`](profiles) — never hand-edit `_merged/`, `profiles/*/extensions.json`, or `exports/`.
-2. Run `bash scripts/vspcli build` to regenerate compiled artifacts and `exports/SHA256SUMS`.
-3. Run `bash scripts/generate-readme-matrix.sh --write` whenever profiles or modules change.
-4. Run `bash scripts/vspcli validate` and `bash scripts/tests/run.sh`.
-5. Stage source and generated changes together (`git add catalog/ modules/ profiles/ _merged/ exports/`).
+The v3.0.0 cutover retains the checkout's `scripts/vspcli` compatibility shim for existing v2.x users. Use `vsp` for new automation.
 
----
+| v2 workflow | `vsp` workflow |
+| --- | --- |
+| `vspcli apply --target=workspace PATH` | `vsp sync --workspace PATH` |
+| `vspcli reconcile --profile rust` | `vsp sync --profile rust` |
+| `vspcli import rust BUNDLE` | `vsp sync --from BUNDLE --profile rust` |
+| `vspcli doctor --strict` | `vsp doctor --strict` |
+| `vspcli build` | `vsp dev dist --out ./dist` |
+| `vspcli validate` | `vsp dev validate` |
 
-## Troubleshooting & FAQ
+Move raw branch export downloads to the release profile archive. The archive materializes the 22 legacy bundle filenames. Both `ai-profile-crisp.code-profile` and `ai-profile-retina.code-profile` contain the Copilot-only bundle.
 
-| Symptom | Cause | Fix |
-| :--- | :--- | :--- |
-| Extensions are missing after importing a `.code-profile` | Imported via VS Code UI instead of `import-profile.sh` | Re-import via `bash scripts/import-profile.sh <name> exports/<name>.code-profile` |
-| `vspcli doctor --strict` warns on Default-profile settings | `APPLICATION`-scoped keys (`telemetry.telemetryLevel`, `security.workspace.trust.untrustedFiles`, `extensions.autoUpdate`) are read from the Default profile | Set those keys in your local VS Code Default `User/settings.json` and re-run `vspcli doctor --strict` |
-| `vspcli doctor` reports `FAIL` for `jscearcy.rust-doc-viewer` | Compromised GlassWorm extension is installed in a profile or Default | Run `bash scripts/vspcli reconcile --all --compromised-only` |
-| `import-profile.sh` rejects a bundle with unsafe settings | Bundle contains an autonomy or CLI-wrapper bypass setting | Inspect the reported key; only pass `--allow-unsafe-settings` for explicitly trusted local overrides |
-| Batched extension install hits a Marketplace hiccup | A single extension error can trigger per-extension retry fallback | Pass `--no-batch` to force serial installation, or rerun `vspcli reconcile --profile <name>` |
-| `import-profile.sh` refuses to overwrite while VS Code is open | VS Code `1.147+` holds `storage.json` while running | Quit VS Code cleanly (detected across macOS `Contents/MacOS/Code` and Linux) and re-run |
-
-See [`ABOUT.md`](ABOUT.md), [`CHANGELOG.md`](CHANGELOG.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), and [`SECURITY.md`](SECURITY.md) for project guarantees, release history, contribution rules, and vulnerability reporting.
+See [Contributing](CONTRIBUTING.md) for source paths and checks, [About](ABOUT.md) for architecture, and [Security](SECURITY.md) to report a vulnerability.
