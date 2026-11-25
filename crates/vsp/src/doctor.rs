@@ -3,13 +3,14 @@
 
 use std::collections::BTreeMap;
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::exit_codes::ExitCode;
+use crate::exit_codes::{ExitCode, VspError};
 use crate::legacy_loader::parse_jsonc_value;
 use crate::model::{ExtensionStatus, WorkspaceCatalog};
 use crate::policy::validate_repository;
@@ -176,7 +177,10 @@ pub fn run_doctor(
         report.record(
             CheckSeverity::Warn,
             "rtk",
-            format!("XDG RTK wrappers not yet installed at {}", vsp_rtk.display()),
+            format!(
+                "XDG RTK wrappers not yet installed at {}",
+                vsp_rtk.display()
+            ),
         );
     }
 
@@ -270,17 +274,16 @@ pub fn run_doctor(
                             for ext in installed {
                                 if let Some(rec) = catalog.extension_record(&ext.id) {
                                     if rec.status == ExtensionStatus::Compromised {
+                                        // A write to a `String` cannot fail.
                                         let mut hint = String::from("code");
                                         if let Some(ref dr) = st.data_root {
-                                            hint.push_str(&format!(
-                                                " --user-data-dir '{}'",
-                                                dr.display()
-                                            ));
+                                            let _ =
+                                                write!(hint, " --user-data-dir '{}'", dr.display());
                                         }
                                         if prof != "default" {
-                                            hint.push_str(&format!(" --profile '{prof}'"));
+                                            let _ = write!(hint, " --profile '{prof}'");
                                         }
-                                        hint.push_str(&format!(" --uninstall-extension {}", ext.id));
+                                        let _ = write!(hint, " --uninstall-extension {}", ext.id);
                                         report.record(
                                             CheckSeverity::Fail,
                                             "security",
@@ -383,6 +386,25 @@ pub fn audit_user_config(
     report.user_unlocked_extensions = unlocked;
 }
 
+/// Records a personal user configuration that cannot be loaded or applied as a `FAIL`
+/// check in `report`.
+///
+/// The audit does not stop on this error: `vsp doctor` records it and still reports every
+/// other check (compromised extensions, pin drift, provenance). A stale configuration,
+/// for example one that names an extension which the catalog later marked `compromised`,
+/// must never hide those findings.
+pub fn audit_user_config_error(report: &mut DoctorReport, config_path: &Path, error: &VspError) {
+    report.record(
+        CheckSeverity::Fail,
+        "user-config",
+        format!(
+            "user config {} cannot be used (exit {} when a command needs it): {error}",
+            config_path.display(),
+            error.exit_code().as_i32()
+        ),
+    );
+}
+
 fn load_verified_lock_versions(catalog: &WorkspaceCatalog) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     if env::var("ARTAGON_VSCODE_PINS_FILE")
@@ -450,19 +472,17 @@ fn audit_default_profile_settings(settings_path: &Path, report: &mut DoctorRepor
         }
     };
 
-    let obj = match parse_jsonc_value(&raw, &settings_path.display().to_string()) {
-        Ok(Value::Object(m)) => m,
-        _ => {
-            report.record(
-                CheckSeverity::Warn,
-                "default-profile",
-                format!(
-                    "Default profile settings.json could not be parsed as a JSON object: {}",
-                    settings_path.display()
-                ),
-            );
-            return;
-        }
+    let Ok(Value::Object(obj)) = parse_jsonc_value(&raw, &settings_path.display().to_string())
+    else {
+        report.record(
+            CheckSeverity::Warn,
+            "default-profile",
+            format!(
+                "Default profile settings.json could not be parsed as a JSON object: {}",
+                settings_path.display()
+            ),
+        );
+        return;
     };
 
     // telemetry.telemetryLevel == "off"

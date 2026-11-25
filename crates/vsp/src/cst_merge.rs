@@ -116,8 +116,7 @@ pub fn merge_jsonc_object_str(
 
     // Self-verify the values too: each desired leaf must be the effective value in the
     // emitted document. A duplicate key that survived the merge would fail here.
-    if let Err(path) = verify_desired_applied(desired, verified_obj, &opts.union_array_keys, true)
-    {
+    if let Err(path) = verify_desired_applied(desired, verified_obj, &opts.union_array_keys, true) {
         return Err(VspError::Operational(format!(
             "internal CST merge error: desired setting '{path}' is not effective in the merged document"
         )));
@@ -328,18 +327,17 @@ pub fn merge_workspace_tasks_jsonc(existing_text: &str, desired_doc: &Value) -> 
     }
 
     if let Some(desired_tasks) = desired_doc.get("tasks").and_then(Value::as_array) {
-        let tasks_arr = match root_obj.array_value("tasks") {
-            Some(arr) => arr,
-            None => {
-                if let Some(prop) = root_obj.get("tasks") {
-                    set_prop_value_safe(&prop, &Value::Array(Vec::new()))?;
-                } else {
-                    append_prop_safe(&root_obj, "tasks", &Value::Array(Vec::new()))?;
-                }
-                root_obj.array_value("tasks").ok_or_else(|| {
-                    VspError::Operational("failed to create tasks array in CST".to_string())
-                })?
+        let tasks_arr = if let Some(arr) = root_obj.array_value("tasks") {
+            arr
+        } else {
+            if let Some(prop) = root_obj.get("tasks") {
+                set_prop_value_safe(&prop, &Value::Array(Vec::new()))?;
+            } else {
+                append_prop_safe(&root_obj, "tasks", &Value::Array(Vec::new()))?;
             }
+            root_obj.array_value("tasks").ok_or_else(|| {
+                VspError::Operational("failed to create tasks array in CST".to_string())
+            })?
         };
 
         for desired_task in desired_tasks {
@@ -454,13 +452,7 @@ fn sync_cst_string_array_prop(
         return Ok(());
     }
 
-    let val = Value::Array(
-        desired_items
-            .iter()
-            .cloned()
-            .map(Value::String)
-            .collect(),
-    );
+    let val = Value::Array(desired_items.iter().cloned().map(Value::String).collect());
     if let Some(prop) = obj.get(key) {
         set_prop_value_safe(&prop, &val)?;
     } else {
@@ -523,9 +515,7 @@ fn value_to_cst_input(value: &Value) -> CstInputValue {
         Value::Bool(b) => CstInputValue::Bool(*b),
         Value::Number(n) => CstInputValue::Number(n.to_string()),
         Value::String(s) => CstInputValue::String(s.clone()),
-        Value::Array(items) => {
-            CstInputValue::Array(items.iter().map(value_to_cst_input).collect())
-        }
+        Value::Array(items) => CstInputValue::Array(items.iter().map(value_to_cst_input).collect()),
         Value::Object(map) => CstInputValue::Object(
             map.iter()
                 .map(|(k, v)| (k.clone(), value_to_cst_input(v)))
@@ -571,9 +561,8 @@ fn fix_cst_strings(node: &CstNode, value: &Value) -> VspResult<()> {
 
 fn fix_prop_name(prop: &CstObjectProp, key: &str) -> VspResult<()> {
     if let Some(str_lit) = prop.name().and_then(|n| n.as_string_lit()) {
-        let escaped = serde_json::to_string(key).map_err(|err| {
-            VspError::Operational(format!("JSON key escaping error: {err}"))
-        })?;
+        let escaped = serde_json::to_string(key)
+            .map_err(|err| VspError::Operational(format!("JSON key escaping error: {err}")))?;
         str_lit.set_raw_value(escaped);
     }
     Ok(())
@@ -626,9 +615,7 @@ fn replace_cst_node_safe(node: CstNode, value: &Value) -> VspResult<()> {
             jsonc_parser::cst::CstLeafNode::NullKeyword(n) => {
                 n.replace_with(value_to_cst_input(value))
             }
-            jsonc_parser::cst::CstLeafNode::WordLit(w) => {
-                w.replace_with(value_to_cst_input(value))
-            }
+            jsonc_parser::cst::CstLeafNode::WordLit(w) => w.replace_with(value_to_cst_input(value)),
             _ => None,
         },
     };
@@ -696,7 +683,10 @@ mod tests {
         assert_eq!(parsed["user.customKey"], "keep-me");
         assert_eq!(parsed["editor.fontSize"], 14);
         assert_eq!(parsed["[typescript]"]["editor.tabSize"], 4);
-        assert_eq!(parsed["[typescript]"]["editor.defaultFormatter"], "biomejs.biome");
+        assert_eq!(
+            parsed["[typescript]"]["editor.defaultFormatter"],
+            "biomejs.biome"
+        );
         assert_eq!(
             parsed["[typescript]"]["editor.codeActionsOnSave"]["source.fixAll.biome"],
             "explicit"
@@ -746,11 +736,17 @@ mod tests {
         .expect("merge");
 
         assert_eq!(
-            merged.matches("security.workspace.trust.untrustedFiles").count(),
+            merged
+                .matches("security.workspace.trust.untrustedFiles")
+                .count(),
             1,
             "{merged}"
         );
-        assert_eq!(merged.matches("\"editor.quickSuggestions\"").count(), 1, "{merged}");
+        assert_eq!(
+            merged.matches("\"editor.quickSuggestions\"").count(),
+            1,
+            "{merged}"
+        );
         assert_eq!(merged.matches("\"other\"").count(), 1, "{merged}");
         assert!(!merged.contains("stale.key"), "{merged}");
         assert!(!merged.contains("\"open\""), "{merged}");

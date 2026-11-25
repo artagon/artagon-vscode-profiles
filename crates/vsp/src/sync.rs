@@ -23,20 +23,18 @@ use crate::cst_merge::{
 use crate::detect::detect_workspace;
 use crate::exit_codes::{VspError, VspResult};
 use crate::legacy_loader::parse_jsonc_value;
-use crate::model::{
-    AiMode, ExtensionStatus, UxPreset, WorkspaceCatalog,
-};
+use crate::model::{AiMode, ExtensionStatus, UxPreset, WorkspaceCatalog};
 use crate::plan::{
     apply_ai_overrides, apply_ux_to_map, compute_formatter_delete_paths, resolve_preset_name,
     retired_ai_off_keys, validate_selector_combination, SelectorKinds,
 };
 use crate::policy::{check_autonomy_denylist, check_tasks_denylist};
 use crate::provenance::{
-    backup_file_bounded, check_path_contained, compute_workspace_fingerprint,
-    ensure_no_symlink_components,
-    load_profile_provenance, load_workspace_provenance, now_rfc3339_utc, resolve_canonical_path,
-    resolve_xdg_state_home, save_profile_provenance, save_workspace_provenance, write_file_atomic,
-    ProfileProvenance, WorkspaceProvenance, DEFAULT_BACKUP_RETENTION,
+    backup_file_bounded, backup_workspace_file, check_path_contained,
+    compute_workspace_fingerprint, ensure_no_symlink_components, load_profile_provenance,
+    load_workspace_provenance, now_rfc3339_utc, resolve_canonical_path, resolve_xdg_state_home,
+    save_profile_provenance, save_workspace_provenance, write_file_atomic, ProfileProvenance,
+    WorkspaceProvenance, DEFAULT_BACKUP_RETENTION,
 };
 use crate::resolver::{
     apply_ai_mode_to_lists, compile_profile_extensions, compile_settings, compile_tasks,
@@ -55,8 +53,8 @@ use crate::vscode::{
 };
 use crate::vsix::{
     compute_pin_repairs, confirm_pin_downgrades, is_valid_extension_id_syntax,
-    managed_extensions_fully_pinned,
-    resolve_and_verify_batch, resolve_vsix_cache_dir, stage_pin_repairs, VsixVerifyOptions,
+    managed_extensions_fully_pinned, resolve_and_verify_batch, resolve_vsix_cache_dir,
+    stage_pin_repairs, VsixVerifyOptions,
 };
 
 /// Pruning mode for `vsp sync -p <NAME> --prune[=MODE]`.
@@ -113,6 +111,11 @@ pub struct SyncOptions {
     pub vscode_data_dir: Option<PathBuf>,
     /// Resolved user-profile data from the personal user configuration (empty by default).
     pub user_overlay: UserOverlay,
+    /// Extensions-only profile sync (legacy `vspcli reconcile`). When `true`, a profile sync
+    /// runs Step 0 (compromised uninstall), Step 2 (install missing extensions), and Step 3
+    /// (prune and `--repair-pins`). It writes no `storage.json` entry, installs no RTK
+    /// wrappers, and writes no `settings.json`. The profile must exist already.
+    pub extensions_only: bool,
 }
 
 /// Structured execution summary returned by [`run_sync`].
@@ -175,6 +178,17 @@ pub fn run_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult<Syn
         from_bundle: opts.from_bundle.is_some(),
         all: opts.all,
     })?;
+
+    // Extensions-only mode is defined for VS Code profiles only. Refuse it for a target
+    // whose sync is a settings write, so the flag is never ignored without notice.
+    if opts.extensions_only
+        && (opts.workspace_path.is_some() || opts.user || opts.from_bundle.is_some())
+    {
+        return Err(VspError::UsageOrConfig(
+            "--extensions-only applies to a profile target (-p/--profile, --preset) or --all only"
+                .to_string(),
+        ));
+    }
 
     if opts.all {
         return run_all_sweep(catalog, opts);
@@ -288,13 +302,20 @@ fn run_workspace_sync(
     }
 
     // Pre-flight autonomy deny-list check (zero mutation on failure).
-    enforce_autonomy_gate(&desired_settings, ".vscode/settings.json", opts.allow_unsafe_settings)?;
+    enforce_autonomy_gate(
+        &desired_settings,
+        ".vscode/settings.json",
+        opts.allow_unsafe_settings,
+    )?;
 
     let desired_exts = compile_workspace_extensions(catalog, &resolved_modules)?;
     let desired_tasks = compile_tasks(catalog, RtkTaskMode::Plain, &resolved_modules)?;
 
     // Post-emit / pre-write host-path leak lint ($HOME and hardcoded host paths).
-    lint_workspace_no_host_path_leak(&Value::Object(desired_settings.clone()), ".vscode/settings.json")?;
+    lint_workspace_no_host_path_leak(
+        &Value::Object(desired_settings.clone()),
+        ".vscode/settings.json",
+    )?;
     if let Some(ref tasks_doc) = desired_tasks {
         lint_workspace_no_host_path_leak(tasks_doc, ".vscode/tasks.json")?;
         // A managed tasks file must never contain a task that runs when the folder opens.
@@ -350,8 +371,7 @@ fn run_workspace_sync(
     let existing_ext_text = read_optional_file_text(&extensions_file)?;
     let prev_managed_recs = prev_prov
         .as_ref()
-        .map(|p| p.managed_recommendations.as_slice())
-        .unwrap_or(&[]);
+        .map_or(&[][..], |p| p.managed_recommendations.as_slice());
     let (merged_ext_text, new_managed_recs) =
         merge_workspace_extensions_jsonc(&existing_ext_text, &desired_exts, prev_managed_recs)?;
 
@@ -364,17 +384,15 @@ fn run_workspace_sync(
     };
 
     fs::create_dir_all(&vscode_dir).map_err(|err| {
-        VspError::Operational(format!(
-            "failed to create {}: {err}",
-            vscode_dir.display()
-        ))
+        VspError::Operational(format!("failed to create {}: {err}", vscode_dir.display()))
     })?;
 
     let mut files_written = Vec::new();
-    // Keep a bounded `0600` backup of an existing settings file before a real change, the
-    // same as the profile and Default-user paths. An unchanged file needs no backup.
+    // Keep a bounded `0600` backup of an existing settings file before a real change. The
+    // backup goes to the private XDG state directory, never into the team `.vscode/`
+    // directory (which is usually tracked by git). An unchanged file needs no backup.
     if settings_file.is_file() && existing_settings_text != merged_settings {
-        backup_file_bounded(&settings_file, DEFAULT_BACKUP_RETENTION)?;
+        backup_workspace_file(&ws_canon, &settings_file, DEFAULT_BACKUP_RETENTION)?;
     }
     write_file_atomic(&settings_file, merged_settings.as_bytes(), 0o644, false)?;
     files_written.push(settings_file.display().to_string());
@@ -415,10 +433,7 @@ fn run_workspace_sync(
     })
 }
 
-fn run_user_default_sync(
-    catalog: &WorkspaceCatalog,
-    opts: &SyncOptions,
-) -> VspResult<SyncReport> {
+fn run_user_default_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult<SyncReport> {
     let store = resolve_vscode_store(opts.vscode_data_dir.as_deref(), false)?;
     let settings_path = store.user_dir.join("settings.json");
     check_path_contained(&store.user_dir, &settings_path)?;
@@ -562,9 +577,7 @@ fn run_user_default_sync(
         ux: effective_ux,
         ai_mode: opts.ai,
         unlocked_bypass: prev_prov.as_ref().is_some_and(|p| p.unlocked_bypass),
-        publisher_trust_bypass: prev_prov
-            .as_ref()
-            .is_some_and(|p| p.publisher_trust_bypass),
+        publisher_trust_bypass: prev_prov.as_ref().is_some_and(|p| p.publisher_trust_bypass),
         last_sync_at: now_rfc3339_utc(),
     };
     save_profile_provenance(&prov)?;
@@ -709,10 +722,16 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
     // Exact-ID extra extensions from a custom user profile (personal user configuration).
     // Catalog-known IDs join the normal allowlist + VSIX pin path. Catalog-external IDs are
     // Tier 3 "user-unlocked": trusted by exact ID only and installed without a catalog pin.
+    // `effective_extras` checks each entry again before install (blocked publisher, trust
+    // tier, ID syntax; exit 5) and applies the AI mode, so an extra can neither use a blocked
+    // publisher nor override `--ai` / `defaults.ai`.
     let mut user_unlocked_ids: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     if let Some(p_name) = &preset_name {
-        for extra in opts.user_overlay.extras_for(p_name) {
+        for extra in opts
+            .user_overlay
+            .effective_extras(catalog, p_name, opts.ai)?
+        {
             match extra.tier {
                 ExtensionTrustTier::Catalog => {
                     if !desired_ext_ids
@@ -723,15 +742,6 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
                     }
                 }
                 ExtensionTrustTier::UserUnlocked => {
-                    // Fail closed: check the claim again against the active catalog.
-                    if !is_valid_extension_id_syntax(&extra.id)
-                        || catalog.extension_record(&extra.id).is_some()
-                    {
-                        return Err(VspError::SafetyRefusal(format!(
-                            "user-unlocked extension '{}' is not a valid catalog-external exact ID",
-                            extra.id
-                        )));
-                    }
                     if !user_unlocked_ids
                         .iter()
                         .any(|u| u.eq_ignore_ascii_case(&extra.id))
@@ -758,13 +768,24 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
     }
 
     let store = resolve_vscode_store(opts.vscode_data_dir.as_deref(), true)?;
-    check_path_contained(&store.user_dir, &store.user_dir.join("globalStorage/storage.json"))?;
+    check_path_contained(
+        &store.user_dir,
+        &store.user_dir.join("globalStorage/storage.json"),
+    )?;
     check_path_contained(&store.user_dir, &store.user_dir.join("profiles"))?;
 
     // If profile is brand new and VS Code is running without --force, refuse in pre-flight
     // BEFORE running Step 0 or invoking `code`!
     let pre_existing_loc = find_storage_profile_location(&store.user_dir, &profile_name)?;
-    if pre_existing_loc.is_none() && !opts.force && is_vscode_running() {
+    if opts.extensions_only {
+        // Extensions-only mode never creates a profile: not in storage.json, and not
+        // implicitly through `code --profile=<new>`. The profile must exist already.
+        if pre_existing_loc.is_none() && profile_name != "default" {
+            return Err(VspError::TargetMissing(format!(
+                "VS Code profile '{profile_name}' is not registered; extensions-only sync does not create profiles (run 'vsp sync -p {profile_name}' first)"
+            )));
+        }
+    } else if pre_existing_loc.is_none() && !opts.force && is_vscode_running() {
         return Err(VspError::SafetyRefusal(
             "VS Code appears to be running; creating a new profile in storage.json while VS Code is open risks lost updates (close VS Code or pass --force)".to_string(),
         ));
@@ -795,14 +816,21 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
     let mut ext_errors: Vec<String> = Vec::new();
 
     // STEP 1: Ensure storage.json entry (ONLY if new profile!) + write XDG RTK wrappers if enabled.
-    let ensure_outcome = ensure_storage_profile(
-        &store.user_dir,
-        &profile_name,
-        opts.force,
-        effective_lock_timeout(),
-    )?;
+    // Extensions-only mode skips Step 1 and Step 4: no storage.json entry, no RTK wrappers,
+    // and no settings.json write.
+    let ensure_outcome = if opts.extensions_only {
+        None
+    } else {
+        Some(ensure_storage_profile(
+            &store.user_dir,
+            &profile_name,
+            opts.force,
+            effective_lock_timeout(),
+        )?)
+    };
+    let storage_mutated = ensure_outcome.as_ref().is_some_and(|o| o.created);
     let mut files_written = Vec::new();
-    if ensure_outcome.created {
+    if storage_mutated {
         files_written.push(
             store
                 .user_dir
@@ -812,7 +840,8 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
         );
     }
 
-    if !opts.no_rtk && resolved_modules.iter().any(|m| m == "rtk-terminal") {
+    if !opts.extensions_only && !opts.no_rtk && resolved_modules.iter().any(|m| m == "rtk-terminal")
+    {
         let rtk_dir = install_rtk_xdg_wrappers(&catalog.root)?;
         let rtk_settings = build_rtk_terminal_settings(&rtk_dir);
         for (k, v) in rtk_settings {
@@ -908,7 +937,9 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
                 installed_lc.remove(&ext_id);
                 pruned.push(ext_id);
             } else {
-                ext_errors.push(format!("failed to uninstall AI extension {ext_id} (--ai off)"));
+                ext_errors.push(format!(
+                    "failed to uninstall AI extension {ext_id} (--ai off)"
+                ));
             }
         }
     }
@@ -961,49 +992,7 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
         }
     }
 
-    // STEP 4: Theme failure fallback + lossless CST merge of settings.json + save XDG provenance!
-    apply_theme_failure_fallback(
-        catalog,
-        &failed_install_ids,
-        &mut desired_settings,
-        &mut delete_keys,
-    );
-
-    let settings_path = ensure_outcome.profile_dir.join("settings.json");
-    check_path_contained(&store.user_dir, &settings_path)?;
-    let existing_text = read_optional_file_text(&settings_path)?;
-    let existing_map = parse_optional_object(&existing_text);
-
-    if opts.ai == Some(AiMode::Off) {
-        delete_keys.extend(retired_ai_off_keys(catalog, &existing_map));
-        restore_quick_suggestions_if_needed(&existing_map, &mut desired_settings);
-    }
-
     let prev_prov = load_profile_provenance(&store.user_dir, &profile_name);
-    if let Some(prev) = &prev_prov {
-        for old_k in &prev.managed_settings_keys {
-            if !desired_settings.contains_key(old_k) && !delete_keys.contains(old_k) {
-                delete_keys.push(old_k.clone());
-            }
-        }
-    }
-    let delete_paths = compute_formatter_delete_paths(&resolved_modules);
-
-    if settings_path.is_file() {
-        backup_file_bounded(&settings_path, DEFAULT_BACKUP_RETENTION)?;
-    }
-
-    let merged_settings = merge_jsonc_object_str(
-        &existing_text,
-        &desired_settings,
-        &CstMergeOptions {
-            delete_keys,
-            delete_paths,
-            ..Default::default()
-        },
-    )?;
-    write_file_atomic(&settings_path, merged_settings.as_bytes(), 0o600, true)?;
-    files_written.push(settings_path.display().to_string());
 
     // The unlocked-bypass record is sticky. A later sync that finds the extensions already
     // installed verifies nothing, so it must not clear the record. Only a `--repair-pins`
@@ -1011,25 +1000,97 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
     let prev_unlocked = prev_prov.as_ref().is_some_and(|p| p.unlocked_bypass);
     let recorded_unlocked_bypass = unlocked_bypass || (prev_unlocked && !repair_reverified_all);
 
-    let prov = ProfileProvenance {
-        version: 1,
-        profile: profile_name.clone(),
-        user_dir: store.user_dir.display().to_string(),
-        preset: preset_name,
-        resolved_modules,
-        managed_settings_keys: desired_settings.keys().cloned().collect(),
-        managed_extensions: desired_ext_ids,
-        ux: effective_ux,
-        ai_mode: opts.ai,
-        unlocked_bypass: recorded_unlocked_bypass,
-        publisher_trust_bypass,
-        last_sync_at: now_rfc3339_utc(),
-    };
-    save_profile_provenance(&prov)?;
+    if let Some(outcome) = &ensure_outcome {
+        // STEP 4: Theme failure fallback + lossless CST merge of settings.json + save XDG
+        // provenance!
+        apply_theme_failure_fallback(
+            catalog,
+            &failed_install_ids,
+            &mut desired_settings,
+            &mut delete_keys,
+        );
+
+        let settings_path = outcome.profile_dir.join("settings.json");
+        check_path_contained(&store.user_dir, &settings_path)?;
+        let existing_text = read_optional_file_text(&settings_path)?;
+        let existing_map = parse_optional_object(&existing_text);
+
+        if opts.ai == Some(AiMode::Off) {
+            delete_keys.extend(retired_ai_off_keys(catalog, &existing_map));
+            restore_quick_suggestions_if_needed(&existing_map, &mut desired_settings);
+        }
+
+        if let Some(prev) = &prev_prov {
+            for old_k in &prev.managed_settings_keys {
+                if !desired_settings.contains_key(old_k) && !delete_keys.contains(old_k) {
+                    delete_keys.push(old_k.clone());
+                }
+            }
+        }
+        let delete_paths = compute_formatter_delete_paths(&resolved_modules);
+
+        if settings_path.is_file() {
+            backup_file_bounded(&settings_path, DEFAULT_BACKUP_RETENTION)?;
+        }
+
+        let merged_settings = merge_jsonc_object_str(
+            &existing_text,
+            &desired_settings,
+            &CstMergeOptions {
+                delete_keys,
+                delete_paths,
+                ..Default::default()
+            },
+        )?;
+        write_file_atomic(&settings_path, merged_settings.as_bytes(), 0o600, true)?;
+        files_written.push(settings_path.display().to_string());
+
+        let prov = ProfileProvenance {
+            version: 1,
+            profile: profile_name.clone(),
+            user_dir: store.user_dir.display().to_string(),
+            preset: preset_name,
+            resolved_modules,
+            managed_settings_keys: desired_settings.keys().cloned().collect(),
+            managed_extensions: desired_ext_ids,
+            ux: effective_ux,
+            ai_mode: opts.ai,
+            unlocked_bypass: recorded_unlocked_bypass,
+            publisher_trust_bypass,
+            last_sync_at: now_rfc3339_utc(),
+        };
+        save_profile_provenance(&prov)?;
+    } else {
+        // Extensions-only mode wrote no settings, so the managed-settings record of an
+        // earlier full sync stays as it is. Only the extension facts are updated, and a
+        // bypass in this run is always recorded.
+        let bypass_now = recorded_unlocked_bypass || publisher_trust_bypass;
+        if prev_prov.is_some() || bypass_now {
+            let mut prov = prev_prov.unwrap_or_else(|| ProfileProvenance {
+                version: 1,
+                profile: profile_name.clone(),
+                user_dir: store.user_dir.display().to_string(),
+                preset: None,
+                resolved_modules: Vec::new(),
+                managed_settings_keys: Vec::new(),
+                managed_extensions: Vec::new(),
+                ux: None,
+                ai_mode: None,
+                unlocked_bypass: false,
+                publisher_trust_bypass: false,
+                last_sync_at: String::new(),
+            });
+            prov.managed_extensions = desired_ext_ids;
+            prov.unlocked_bypass = recorded_unlocked_bypass;
+            prov.publisher_trust_bypass = publisher_trust_bypass;
+            prov.last_sync_at = now_rfc3339_utc();
+            save_profile_provenance(&prov)?;
+        }
+    }
 
     if !ext_errors.is_empty() {
         let msg = format!(
-            "profile '{}' synced settings with {} extension error(s): {}",
+            "profile '{}' synced with {} extension error(s): {}",
             profile_name,
             ext_errors.len(),
             ext_errors.join("; ")
@@ -1048,7 +1109,7 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
         installed: installed_now,
         pruned,
         repaired_pins,
-        storage_mutated: ensure_outcome.created,
+        storage_mutated,
         unlocked_bypass,
         warnings,
     })
@@ -1060,8 +1121,12 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
 ///
 /// # Errors
 ///
-/// - [`VspError::SafetyRefusal`] (exit `5`): invalid ID syntax, a compromised, removed, or
-///   unrecognized catalog status, a publisher outside the allowlist, or a VSIX pin refusal.
+/// - [`VspError::SafetyRefusal`] (exit `5`): an invalid profile name or ID syntax, a
+///   compromised, removed, or unrecognized catalog status, a blocked publisher, a publisher
+///   outside the allowlist, a VSIX pin refusal, a failed Step 0 removal, or a missing
+///   profile while VS Code runs.
+/// - [`VspError::TargetMissing`] (exit `2`): the profile is not registered in
+///   `storage.json`. This command never creates a profile.
 /// - [`VspError::IncompleteObservation`] (exit `7`): the `code` CLI is not on `PATH`.
 /// - [`VspError::Operational`] (exit `1`): VSIX download failure or `code` install failure.
 pub fn install_single_extension(
@@ -1071,6 +1136,8 @@ pub fn install_single_extension(
     vscode_data_dir: Option<&Path>,
     allow_unlocked: bool,
 ) -> VspResult<()> {
+    // The name goes to the `code` command line and to the lock path: validate it first.
+    validate_profile_name(profile_name)?;
     if !is_valid_extension_id_syntax(ext_id) {
         return Err(VspError::SafetyRefusal(format!(
             "invalid extension id syntax: '{ext_id}'"
@@ -1091,9 +1158,41 @@ pub fn install_single_extension(
     enforce_publisher_allowlist(catalog, &ids)?;
 
     let store = resolve_vscode_store(vscode_data_dir, true)?;
+
+    // `code --profile=<new> --install-extension` creates a profile that is not registered.
+    // This command installs into an existing profile only. For a missing profile, the
+    // running-editor guard of `vsp sync` applies first: VS Code must not be open while a
+    // profile is created.
+    if profile_name != "default"
+        && find_storage_profile_location(&store.user_dir, profile_name)?.is_none()
+    {
+        if is_vscode_running() {
+            return Err(VspError::SafetyRefusal(format!(
+                "VS Code appears to be running and profile '{profile_name}' does not exist; refusing to create a profile while VS Code is open (close VS Code, then run 'vsp sync -p {profile_name}')"
+            )));
+        }
+        return Err(VspError::TargetMissing(format!(
+            "VS Code profile '{profile_name}' is not registered; create it first with 'vsp sync -p {profile_name}'"
+        )));
+    }
+
     let code_bin = require_code_binary()?;
     let lock_path = profile_sync_lock_path(&store.user_dir, profile_name);
     let _lock = acquire_advisory_lock(&lock_path, effective_lock_timeout())?;
+
+    // STEP 0, the same as `vsp sync`: uninstall compromised and removed extensions before
+    // any network call or install. A failed removal stops the command (exit 5).
+    let observed_installed = list_installed_extensions(&code_bin, &store, profile_name)?;
+    let (_step0_uninstalled, step0_failures) = execute_step0_remediation(
+        catalog,
+        &code_bin,
+        &store,
+        profile_name,
+        &observed_installed,
+    );
+    if !step0_failures.is_empty() {
+        return Err(step0_failure(profile_name, &step0_failures));
+    }
 
     let resolved = resolve_and_verify_batch(
         catalog,
@@ -1289,7 +1388,10 @@ pub fn prepare_bundle_import(
         None => (raw_target_name.to_string(), None),
     };
     let stem_legacy = catalog.resolve_alias(bundle_stem);
-    let effective_ux = opts.ux.or(legacy_ux).or_else(|| stem_legacy.map(|(_, u)| u));
+    let effective_ux = opts
+        .ux
+        .or(legacy_ux)
+        .or_else(|| stem_legacy.map(|(_, u)| u));
     let enforce_copilot_only = profile_name == "ai-copilot"
         || bundle_stem.starts_with("ai-profile-")
         || raw_target_name.starts_with("ai-profile-");
@@ -1381,7 +1483,10 @@ fn run_bundle_import_apply(
         ..
     } = plan;
     let store = resolve_vscode_store(opts.vscode_data_dir.as_deref(), true)?;
-    check_path_contained(&store.user_dir, &store.user_dir.join("globalStorage/storage.json"))?;
+    check_path_contained(
+        &store.user_dir,
+        &store.user_dir.join("globalStorage/storage.json"),
+    )?;
     check_path_contained(&store.user_dir, &store.user_dir.join("profiles"))?;
 
     let pre_existing_loc = find_storage_profile_location(&store.user_dir, &profile_name)?;
@@ -1516,8 +1621,8 @@ fn run_bundle_import_apply(
     files_written.push(settings_path.display().to_string());
 
     // Sticky: an import cannot clear an earlier unlocked-bypass record.
-    let prev_unlocked = load_profile_provenance(&store.user_dir, &profile_name)
-        .is_some_and(|p| p.unlocked_bypass);
+    let prev_unlocked =
+        load_profile_provenance(&store.user_dir, &profile_name).is_some_and(|p| p.unlocked_bypass);
     let prov = ProfileProvenance {
         version: 1,
         profile: profile_name.clone(),
@@ -1699,10 +1804,7 @@ fn execute_step3_prune(
     installed_now_lc: &BTreeSet<String>,
     prune_mode: Option<PruneMode>,
 ) -> (Vec<String>, Vec<String>) {
-    let desired_lc: BTreeSet<String> = desired_ids
-        .iter()
-        .map(|s| s.to_ascii_lowercase())
-        .collect();
+    let desired_lc: BTreeSet<String> = desired_ids.iter().map(|s| s.to_ascii_lowercase()).collect();
     let prune_retired = prune_mode.is_some();
     let prune_unmanaged = prune_mode == Some(PruneMode::Unmanaged);
 
@@ -1741,9 +1843,11 @@ fn execute_step3_prune(
         let lc = ext.id.to_ascii_lowercase();
         match catalog.extension_record(&lc) {
             Some(rec) => match rec.status {
-                ExtensionStatus::Compromised | ExtensionStatus::Removed => {
-                    // Already remediated in Step 0.
-                }
+                // Compromised and removed extensions were remediated in Step 0. An
+                // extension with an unrecognized status is never pruned here.
+                ExtensionStatus::Compromised
+                | ExtensionStatus::Removed
+                | ExtensionStatus::Unknown(_) => {}
                 ExtensionStatus::Superseded => {
                     let rep_installed = rec
                         .replaced_by
@@ -1779,7 +1883,6 @@ fn execute_step3_prune(
                         }
                     }
                 }
-                ExtensionStatus::Unknown(_) => {}
             },
             None => {
                 if prune_unmanaged
@@ -1833,10 +1936,7 @@ fn verify_bundle_sha256sums(
     }
 
     let sums_text = fs::read_to_string(&sums_path).map_err(|err| {
-        VspError::SafetyRefusal(format!(
-            "failed to read {}: {err}",
-            sums_path.display()
-        ))
+        VspError::SafetyRefusal(format!("failed to read {}: {err}", sums_path.display()))
     })?;
     let mut matches = Vec::new();
     for line in sums_text.lines() {
@@ -1934,7 +2034,8 @@ fn installed_ai_extensions(
 /// Returns `Ok(true)` when `ARTAGON_VSCODE_TRUST_UNKNOWN_PUBLISHER=1` bypassed the check.
 /// The bypass prints a warning on standard error, and the caller records it in provenance
 /// so that `vsp doctor` reports it. An empty or missing allowlist is a safety refusal: the
-/// check never passes because there is nothing to compare with.
+/// check never passes because there is nothing to compare with. A publisher in
+/// [`WorkspaceCatalog::blocked_publishers`] is always refused; the bypass does not apply.
 fn enforce_publisher_allowlist(catalog: &WorkspaceCatalog, ext_ids: &[String]) -> VspResult<bool> {
     if ext_ids.is_empty() {
         return Ok(false);
@@ -1946,7 +2047,19 @@ fn enforce_publisher_allowlist(catalog: &WorkspaceCatalog, ext_ids: &[String]) -
             )));
         }
     }
-    if env::var("ARTAGON_VSCODE_TRUST_UNKNOWN_PUBLISHER").ok().as_deref() == Some("1") {
+    // A blocked publisher is refused before the bypass below: the bypass is for an unknown
+    // publisher, never for a publisher that the catalog blocks.
+    if let Some(id) = ext_ids.iter().find(|id| catalog.is_blocked_publisher(id)) {
+        return Err(VspError::SafetyRefusal(format!(
+            "extension '{id}' is refused: publisher '{}' is blocked by the catalog",
+            crate::model::extension_publisher(id)
+        )));
+    }
+    if env::var("ARTAGON_VSCODE_TRUST_UNKNOWN_PUBLISHER")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
         eprintln!(
             "vsp: WARNING: ARTAGON_VSCODE_TRUST_UNKNOWN_PUBLISHER=1 bypasses the publisher allowlist for {} extension(s); the bypass is recorded in provenance and reported by 'vsp doctor'",
             ext_ids.len()
@@ -2203,15 +2316,12 @@ fn build_rtk_terminal_settings(xdg_rtk_dir: &Path) -> BTreeMap<String, Value> {
     let zset = if orig_zdotdir.is_some() { "1" } else { "0" };
     let zorig = orig_zdotdir.unwrap_or_default();
 
-    let osx_def = if env::var("SHELL")
-        .ok()
-        .is_some_and(|s| s.ends_with("fish"))
-        && command_exists("fish")
-    {
-        "rtk-fish"
-    } else {
-        "rtk-zsh"
-    };
+    let osx_def =
+        if env::var("SHELL").ok().is_some_and(|s| s.ends_with("fish")) && command_exists("fish") {
+            "rtk-fish"
+        } else {
+            "rtk-zsh"
+        };
     let linux_def = if command_exists("zsh") {
         "rtk-zsh"
     } else if command_exists("fish") {
@@ -2343,7 +2453,10 @@ fn install_extensions_batched_with_fallback(
                 cmd.arg("--install-extension").arg(arg);
             }
             if cmd.output().is_ok_and(|o| o.status.success()) {
-                return (targets.iter().map(|(id, _)| id.clone()).collect(), Vec::new());
+                return (
+                    targets.iter().map(|(id, _)| id.clone()).collect(),
+                    Vec::new(),
+                );
             }
         }
     }
@@ -2365,9 +2478,8 @@ fn read_optional_file_text(path: &Path) -> VspResult<String> {
     if !path.is_file() {
         return Ok(String::new());
     }
-    fs::read_to_string(path).map_err(|err| {
-        VspError::Operational(format!("failed to read {}: {err}", path.display()))
-    })
+    fs::read_to_string(path)
+        .map_err(|err| VspError::Operational(format!("failed to read {}: {err}", path.display())))
 }
 
 fn parse_optional_object(text: &str) -> Map<String, Value> {
@@ -2402,7 +2514,10 @@ mod tests {
         catalog.publishers.publishers.clear();
         let err = enforce_publisher_allowlist(&catalog, &ids).expect_err("empty allowlist");
         assert_eq!(err.exit_code(), ExitCode::SafetyRefusal);
-        assert!(err.to_string().contains("allowlist is empty or missing"), "{err}");
+        assert!(
+            err.to_string().contains("allowlist is empty or missing"),
+            "{err}"
+        );
         // Nothing to install needs no allowlist.
         assert!(!enforce_publisher_allowlist(&catalog, &[]).expect("no extensions"));
         // An invalid ID is refused before any allowlist decision.
@@ -2440,7 +2555,10 @@ mod tests {
         .collect();
         assert_eq!(
             installed_ai_extensions(&catalog, &installed),
-            vec!["anthropic.claude-code".to_string(), "github.copilot-chat".to_string()]
+            vec![
+                "anthropic.claude-code".to_string(),
+                "github.copilot-chat".to_string()
+            ]
         );
     }
 }

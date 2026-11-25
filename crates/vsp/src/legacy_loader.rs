@@ -13,12 +13,12 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 use crate::exit_codes::{VspError, VspResult};
-use crate::provenance::check_path_contained;
 use crate::model::{
     is_valid_module_id, DefaultsManifest, ExtensionCatalog, ExtensionPinsManifest,
     ModuleDefinition, ModuleKind, ModuleManifest, PinsLoadState, ProfileRecipe, PublishersManifest,
     SettingScopesManifest, WorkspaceCatalog,
 };
+use crate::provenance::check_path_contained;
 
 /// Parses a JSONC string strictly as a single JSON value.
 ///
@@ -53,15 +53,11 @@ pub fn parse_jsonc_settings_object(path: &Path) -> VspResult<Map<String, Value>>
     let raw = fs::read_to_string(path).map_err(|err| {
         VspError::Operational(format!("failed to read {}: {err}", path.display()))
     })?;
-    let val = parse_jsonc_value(&raw, &path.display().to_string())?;
-    let mut map = match val {
-        Value::Object(m) => m,
-        _ => {
-            return Err(VspError::Operational(format!(
-                "{}: expected a single JSON object",
-                path.display()
-            )));
-        }
+    let Value::Object(mut map) = parse_jsonc_value(&raw, &path.display().to_string())? else {
+        return Err(VspError::Operational(format!(
+            "{}: expected a single JSON object",
+            path.display()
+        )));
     };
     map.remove("$schema");
     map.remove("@extends");
@@ -78,7 +74,10 @@ pub fn read_strict_json<T: DeserializeOwned>(path: &Path) -> VspResult<T> {
         VspError::Operational(format!("failed to read {}: {err}", path.display()))
     })?;
     serde_json::from_str(&raw).map_err(|err| {
-        VspError::Operational(format!("failed to parse strict JSON {}: {err}", path.display()))
+        VspError::Operational(format!(
+            "failed to parse strict JSON {}: {err}",
+            path.display()
+        ))
     })
 }
 
@@ -93,7 +92,10 @@ pub fn read_strict_json_value(path: &Path, expect_array: bool) -> VspResult<Valu
         VspError::Operational(format!("failed to read {}: {err}", path.display()))
     })?;
     let val: Value = serde_json::from_str(&raw).map_err(|err| {
-        VspError::Operational(format!("failed to parse strict JSON {}: {err}", path.display()))
+        VspError::Operational(format!(
+            "failed to parse strict JSON {}: {err}",
+            path.display()
+        ))
     })?;
     if expect_array && !val.is_array() {
         return Err(VspError::Operational(format!(
@@ -262,8 +264,7 @@ pub fn load_legacy_catalog(root: &Path) -> VspResult<WorkspaceCatalog> {
     let pins_path = std::env::var("ARTAGON_VSCODE_PINS_FILE")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| catalog_dir.join("extension-pins.json"));
+        .map_or_else(|| catalog_dir.join("extension-pins.json"), PathBuf::from);
     let pins = load_pins_state(&pins_path);
 
     let scopes_path = catalog_dir.join("setting-scopes.json");
@@ -279,6 +280,9 @@ pub fn load_legacy_catalog(root: &Path) -> VspResult<WorkspaceCatalog> {
     Ok(WorkspaceCatalog {
         root: canon_root,
         defaults,
+        // The legacy layout has no `blockedPublishers` list. Publishers of compromised and
+        // removed extensions are still blocked.
+        blocked_publishers: crate::model::derive_blocked_publishers(&extensions, &[]),
         extensions,
         publishers,
         pins,
@@ -338,7 +342,11 @@ pub fn load_pins_state(path: &Path) -> PinsLoadState {
 pub fn discover_modules(root: &Path) -> VspResult<BTreeMap<String, ModuleDefinition>> {
     let mut modules = BTreeMap::new();
 
-    for kind in [ModuleKind::Capability, ModuleKind::Toolchain, ModuleKind::Ux] {
+    for kind in [
+        ModuleKind::Capability,
+        ModuleKind::Toolchain,
+        ModuleKind::Ux,
+    ] {
         let kind_dir = root.join("modules").join(kind.dir_name());
         if !kind_dir.is_dir() {
             continue;
@@ -511,8 +519,7 @@ mod tests {
     use std::os::unix::fs::symlink;
     use tempfile::TempDir;
 
-    const MODULE_JSON: &str =
-        r#"{"version":1,"id":"demo","kind":"capability","description":"d"}"#;
+    const MODULE_JSON: &str = r#"{"version":1,"id":"demo","kind":"capability","description":"d"}"#;
 
     /// Builds a minimal legacy catalog root and returns `(tempdir, root, outside)`.
     fn minimal_root() -> (TempDir, PathBuf, PathBuf) {
@@ -528,8 +535,11 @@ mod tests {
             r#"{"version":1,"extensions":{}}"#,
         )
         .expect("write extensions");
-        fs::write(root.join("modules/capabilities/demo/module.json"), MODULE_JSON)
-            .expect("write module");
+        fs::write(
+            root.join("modules/capabilities/demo/module.json"),
+            MODULE_JSON,
+        )
+        .expect("write module");
         (tmp, root, outside)
     }
 
@@ -543,10 +553,16 @@ mod tests {
 
         // Catalog file that is a symbolic link to a file outside the root.
         let (_tmp, root, outside) = minimal_root();
-        fs::write(outside.join("publishers.json"), r#"{"version":1,"publishers":["evil"]}"#)
-            .expect("write outside");
-        symlink(outside.join("publishers.json"), root.join("catalog/publishers.json"))
-            .expect("symlink");
+        fs::write(
+            outside.join("publishers.json"),
+            r#"{"version":1,"publishers":["evil"]}"#,
+        )
+        .expect("write outside");
+        symlink(
+            outside.join("publishers.json"),
+            root.join("catalog/publishers.json"),
+        )
+        .expect("symlink");
         let err = load_legacy_catalog(&root).expect_err("linked catalog file");
         assert_eq!(err.exit_code().as_i32(), 5, "{err}");
 

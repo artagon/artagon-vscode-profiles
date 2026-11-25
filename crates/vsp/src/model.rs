@@ -1,7 +1,7 @@
 //! Typed domain model for `vsp` catalogs, capability/toolchain/UX modules,
 //! profile recipes, extensions, setting scopes, and legacy aliases.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -90,10 +90,7 @@ pub const LEGACY_BUNDLE_ALIASES: &[(&str, &str)] = &[
     ),
     ("java-maven-crisp.code-profile", "java-maven.code-profile"),
     ("java-maven-retina.code-profile", "java-maven.code-profile"),
-    (
-        "java-profile-crisp.code-profile",
-        "java-maven.code-profile",
-    ),
+    ("java-profile-crisp.code-profile", "java-maven.code-profile"),
     (
         "java-profile-retina.code-profile",
         "java-maven.code-profile",
@@ -187,13 +184,12 @@ pub fn resolve_legacy_profile_name(name: &str) -> Option<(&'static str, UxPreset
         "ai-profile" => "ai-copilot",
         "rust-profile" => "rust",
         "web-astro" => "astro",
-        "java-profile" => "java-maven",
+        "java-profile" | "java-maven" => "java-maven",
         "ai-plus" => "ai-plus",
         "cpp-clangd" => "cpp-clangd",
         "cpp-intellisense" => "cpp-intellisense",
         "github-workflows" => "github-workflows",
         "java-gradle" => "java-gradle",
-        "java-maven" => "java-maven",
         "java-spring" => "java-spring",
         _ => return None,
     };
@@ -235,9 +231,82 @@ pub struct WorkspaceCatalog {
     /// Legacy aliases declared in `presets.jsonc` (`alias -> (canonical preset, UX preset)`).
     /// Empty for the legacy repository layout, which uses the built-in alias table only.
     pub legacy_aliases: BTreeMap<String, (String, UxPreset)>,
+    /// Lowercase publishers that are never trusted: the `blockedPublishers` list of
+    /// `catalog/extensions.jsonc`, plus the publishers of `compromised` and `removed`
+    /// catalog extensions. See [`derive_blocked_publishers`] for the exact rule.
+    pub blocked_publishers: BTreeSet<String>,
+}
+
+/// Returns the lowercase publisher part of an extension ID (`publisher.name`).
+#[must_use]
+pub fn extension_publisher(ext_id: &str) -> String {
+    ext_id
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+/// Builds the blocked-publisher set of a catalog. All names are lowercase.
+///
+/// The set holds:
+///
+/// 1. Each name in `explicit` (the `blockedPublishers` list).
+/// 2. Each publisher that owns a `compromised` extension. A publisher that shipped one
+///    compromised extension is not trusted for any other extension ID.
+/// 3. Each publisher that owns a `removed` extension, unless the same publisher also owns
+///    an `active` catalog extension. `removed` is also the status of a deprecated
+///    Marketplace listing (HTTP 404), so a publisher that the catalog still ships
+///    (for example `vscjava`) stays trusted.
+#[must_use]
+pub fn derive_blocked_publishers(
+    extensions: &ExtensionCatalog,
+    explicit: &[String],
+) -> BTreeSet<String> {
+    // The publisher part of the ID is authoritative for `code --install-extension`. The
+    // `publisher` field of the record is included in case the two differ.
+    let publishers_of = |ext_id: &str, rec: &ExtensionRecord| -> BTreeSet<String> {
+        [
+            extension_publisher(ext_id),
+            rec.publisher.trim().to_ascii_lowercase(),
+        ]
+        .into_iter()
+        .filter(|name| !name.is_empty())
+        .collect()
+    };
+    let with_status = |wanted: &ExtensionStatus| -> BTreeSet<String> {
+        extensions
+            .extensions
+            .iter()
+            .filter(|(_, rec)| rec.status == *wanted)
+            .flat_map(|(ext_id, rec)| publishers_of(ext_id, rec))
+            .collect()
+    };
+
+    let active = with_status(&ExtensionStatus::Active);
+    let mut blocked: BTreeSet<String> = explicit
+        .iter()
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect();
+    blocked.extend(with_status(&ExtensionStatus::Compromised));
+    blocked.extend(
+        with_status(&ExtensionStatus::Removed)
+            .into_iter()
+            .filter(|name| !active.contains(name)),
+    );
+    blocked
 }
 
 impl WorkspaceCatalog {
+    /// Returns `true` when the publisher of `ext_id` is in
+    /// [`WorkspaceCatalog::blocked_publishers`].
+    #[must_use]
+    pub fn is_blocked_publisher(&self, ext_id: &str) -> bool {
+        self.blocked_publishers
+            .contains(&extension_publisher(ext_id))
+    }
+
     /// Resolves a legacy alias name to `(canonical preset, UX preset)`.
     ///
     /// Aliases declared in the catalog (`presets.jsonc`) have priority, so a custom alias
@@ -323,8 +392,10 @@ impl WorkspaceCatalog {
         self.modules
             .get("crisp")
             .and_then(|m| m.profile_settings.as_ref())
-            .map(|map| map.keys().cloned().collect())
-            .unwrap_or_else(|| EXPECTED_UX_KEYS.iter().map(|s| (*s).to_string()).collect())
+            .map_or_else(
+                || EXPECTED_UX_KEYS.iter().map(|s| (*s).to_string()).collect(),
+                |map| map.keys().cloned().collect(),
+            )
     }
 
     /// Looks up a pin record case-insensitively when the pins manifest is loaded.
@@ -893,6 +964,48 @@ pub struct BundleExtensions {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Opus R2-H1: the blocked set has the explicit list, the publishers of compromised
+    /// extensions, and the publishers of removed extensions that own no active extension.
+    #[test]
+    fn blocked_publishers_follow_the_three_rules() {
+        let record = |publisher: &str, status: ExtensionStatus| ExtensionRecord {
+            publisher: publisher.to_string(),
+            group: "General".to_string(),
+            status,
+            universal: true,
+            replaced_by: None,
+            pack_members: Vec::new(),
+            theme_labels: Vec::new(),
+            notes: None,
+        };
+        let extensions = ExtensionCatalog {
+            version: 1,
+            extensions: [
+                ("shipped.tool", "shipped", ExtensionStatus::Active),
+                ("shipped.old-tool", "shipped", ExtensionStatus::Removed),
+                ("gone.tool", "gone", ExtensionStatus::Removed),
+                ("Evil.Tool", "evil", ExtensionStatus::Compromised),
+                ("evil.other", "evil", ExtensionStatus::Active),
+                ("retired.tool", "retired", ExtensionStatus::Retired),
+                ("old.tool", "old", ExtensionStatus::Superseded),
+            ]
+            .into_iter()
+            .map(|(id, publisher, status)| (id.to_string(), record(publisher, status)))
+            .collect(),
+        };
+
+        let blocked = derive_blocked_publishers(&extensions, &[" Listed ".to_string()]);
+        let expected: BTreeSet<String> = ["evil", "gone", "listed"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(blocked, expected);
+
+        assert_eq!(extension_publisher("JSCearcy.Rust-Doc"), "jscearcy");
+        assert_eq!(extension_publisher("no-dot"), "no-dot");
+        assert_eq!(extension_publisher(""), "");
+    }
 
     #[test]
     fn module_id_validation_matches_regex() {

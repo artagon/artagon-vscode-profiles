@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -180,29 +181,26 @@ pub fn run_dev_pins(
             .ok()
             .filter(|s| !s.trim().is_empty())
             .map(PathBuf::from);
-        let pins_path = match env_pins {
-            Some(p) => p,
-            None => {
-                if catalog.root == Path::new(crate::schema_loader::EMBEDDED_ROOT_LABEL) {
-                    return Err(VspError::UsageOrConfig(
-                        "vsp dev pins --refresh requires --catalog <REPO_DIR> when using embedded defaults"
-                            .to_string(),
-                    ));
-                }
-                // A v2.2 catalog is locked by `vsp.lock.json`. Refresh that file: the
-                // loader never reads `catalog/extension-pins.json` in this layout.
-                let lock_path = catalog.root.join("vsp.lock.json");
-                if lock_path.is_file() {
-                    return refresh_lockfile(&catalog.root, &lock_path, json, quiet);
-                }
-                catalog.root.join("catalog/extension-pins.json")
+        let pins_path = if let Some(path) = env_pins {
+            path
+        } else {
+            if catalog.root == Path::new(crate::schema_loader::EMBEDDED_ROOT_LABEL) {
+                return Err(VspError::UsageOrConfig(
+                    "vsp dev pins --refresh requires --catalog <REPO_DIR> when using embedded defaults"
+                        .to_string(),
+                ));
             }
+            // A v2.2 catalog is locked by `vsp.lock.json`. Refresh that file: the
+            // loader never reads `catalog/extension-pins.json` in this layout.
+            let lock_path = catalog.root.join("vsp.lock.json");
+            if lock_path.is_file() {
+                return refresh_lockfile(&catalog.root, &lock_path, json, quiet);
+            }
+            catalog.root.join("catalog/extension-pins.json")
         };
 
-        let mut target_ids: BTreeSet<String> = DEFAULT_PIN_IDS
-            .iter()
-            .map(|id| (*id).to_string())
-            .collect();
+        let mut target_ids: BTreeSet<String> =
+            DEFAULT_PIN_IDS.iter().map(|id| (*id).to_string()).collect();
         if let PinsLoadState::Loaded(existing) = &catalog.pins {
             for k in existing.pins.keys() {
                 target_ids.insert(k.to_ascii_lowercase());
@@ -269,7 +267,10 @@ pub fn run_dev_pins(
                     errors.push(format!("invalid vsix_url for pin {k}: {}", pin.vsix_url));
                 }
                 if pin.version.is_empty() || semver::Version::parse(&pin.version).is_err() {
-                    errors.push(format!("invalid semver version for pin {k}: {}", pin.version));
+                    errors.push(format!(
+                        "invalid semver version for pin {k}: {}",
+                        pin.version
+                    ));
                 }
             }
 
@@ -433,8 +434,8 @@ pub fn run_dev_compat(
             continue;
         };
 
-        let Some((mut ver, mut eng, mut pre)) = pick_extension_version(ext_obj)
-            .map_err(|why| incomplete_engine_evidence(id, &why))?
+        let Some((mut ver, mut eng, mut pre)) =
+            pick_extension_version(ext_obj).map_err(|why| incomplete_engine_evidence(id, &why))?
         else {
             not_found += 1;
             entries.push(CompatEntry {
@@ -460,10 +461,7 @@ pub fn run_dev_compat(
                             .pointer("/publisher/publisherName")
                             .and_then(Value::as_str)
                             .unwrap_or("");
-                        let n = e
-                            .get("extensionName")
-                            .and_then(Value::as_str)
-                            .unwrap_or("");
+                        let n = e.get("extensionName").and_then(Value::as_str).unwrap_or("");
                         format!("{p}.{n}").eq_ignore_ascii_case(&id_lc)
                     })
                 })
@@ -472,8 +470,8 @@ pub fn run_dev_compat(
                         "compat: verification unavailable for '{id}' (missing stable history)"
                     ))
                 })?;
-            if let Some((fb_ver, fb_eng, false)) =
-                pick_extension_version(fb_ext).map_err(|why| incomplete_engine_evidence(id, &why))?
+            if let Some((fb_ver, fb_eng, false)) = pick_extension_version(fb_ext)
+                .map_err(|why| incomplete_engine_evidence(id, &why))?
             {
                 ver = fb_ver;
                 eng = fb_eng;
@@ -573,13 +571,18 @@ fn resolve_target_vscode_version(
 }
 
 fn parse_clean_semver(raw: &str) -> VspResult<String> {
-    let base = raw.trim().trim_start_matches('v').split('-').next().unwrap_or("");
-    let parsed = semver::Version::parse(base).map_err(|_| {
-        VspError::UsageOrConfig(format!(
-            "invalid VS Code semver version: '{raw}'"
-        ))
-    })?;
-    Ok(format!("{}.{}.{}", parsed.major, parsed.minor, parsed.patch))
+    let base = raw
+        .trim()
+        .trim_start_matches('v')
+        .split('-')
+        .next()
+        .unwrap_or("");
+    let parsed = semver::Version::parse(base)
+        .map_err(|_| VspError::UsageOrConfig(format!("invalid VS Code semver version: '{raw}'")))?;
+    Ok(format!(
+        "{}.{}.{}",
+        parsed.major, parsed.minor, parsed.patch
+    ))
 }
 
 fn collect_compat_extension_ids(
@@ -624,17 +627,16 @@ fn collect_compat_extension_ids(
         }
     }
 
-    let target_profiles: Vec<String> = if opts.all || (opts.profiles.is_empty() && opts.extensions_file.is_none()) {
-        catalog.profiles.keys().cloned().collect()
-    } else {
-        opts.profiles.clone()
-    };
+    let target_profiles: Vec<String> =
+        if opts.all || (opts.profiles.is_empty() && opts.extensions_file.is_none()) {
+            catalog.profiles.keys().cloned().collect()
+        } else {
+            opts.profiles.clone()
+        };
 
     for prof in &target_profiles {
         if !catalog.profiles.contains_key(prof) {
-            return Err(VspError::TargetMissing(format!(
-                "unknown profile '{prof}'"
-            )));
+            return Err(VspError::TargetMissing(format!("unknown profile '{prof}'")));
         }
         let resolved =
             resolve_profile_recipe(catalog, prof, &[], &[], Some(UxPreset::Default), None)?;
@@ -672,7 +674,9 @@ fn query_marketplace_compat_batch(
         .header("Accept", "application/json;api-version=3.0-preview.1")
         .send_json(&payload)
         .map_err(|err| {
-            VspError::IncompleteObservation(format!("compat: Marketplace API request failed: {err}"))
+            VspError::IncompleteObservation(format!(
+                "compat: Marketplace API request failed: {err}"
+            ))
         })?;
     let val: Value = resp.body_mut().read_json().map_err(|err| {
         VspError::IncompleteObservation(format!(
@@ -736,9 +740,7 @@ fn pick_extension_version(ext_obj: &Value) -> Result<Option<(String, String, boo
         })
         .and_then(|p| p.get("value").and_then(Value::as_str))
         .filter(|range| !range.trim().is_empty())
-        .ok_or_else(|| {
-            format!("version {ver} has no Microsoft.VisualStudio.Code.Engine property")
-        })?
+        .ok_or_else(|| format!("version {ver} has no Microsoft.VisualStudio.Code.Engine property"))?
         .to_string();
     Ok(Some((ver, engine, pre)))
 }
@@ -798,7 +800,11 @@ fn semver_clause_matches(ver: &semver::Version, raw_clause: &str) -> bool {
         ("=", clause)
     };
 
-    let target = target_raw.trim_start_matches('v').split('-').next().unwrap_or("");
+    let target = target_raw
+        .trim_start_matches('v')
+        .split('-')
+        .next()
+        .unwrap_or("");
     let parts: Vec<&str> = target.split('.').collect();
     if parts.is_empty() || parts.len() > 3 {
         return false;
@@ -889,7 +895,10 @@ pub fn run_dev_docs(
     // with nothing verified.
     let rust_doc_path = docs_root.join("docs/rust.md");
     let readme_path = docs_root.join("README.md");
-    for (label, path) in [("docs/rust.md", &rust_doc_path), ("README.md", &readme_path)] {
+    for (label, path) in [
+        ("docs/rust.md", &rust_doc_path),
+        ("README.md", &readme_path),
+    ] {
         if !path.is_file() {
             return Err(VspError::Operational(format!(
                 "vsp dev docs: required source {label} is missing in {}",
@@ -1069,7 +1078,10 @@ pub fn extract_rust_policy_block(rust_md_path: &Path) -> VspResult<String> {
             }
             continue;
         }
-        if line.starts_with("```") && line.len() > 3 && line[3..].bytes().all(|b| b.is_ascii_lowercase()) {
+        if line.starts_with("```")
+            && line.len() > 3
+            && line[3..].bytes().all(|b| b.is_ascii_lowercase())
+        {
             inner_fence = true;
             lines.push(line);
             continue;
@@ -1114,11 +1126,13 @@ pub fn render_readme_matrix_block(catalog: &WorkspaceCatalog) -> VspResult<Strin
         let exts = compile_profile_extensions(catalog, &resolved)?;
         let mods_str = resolved.join(", ");
         let bundle_cell = format!("[`{prof_name}.code-profile`](exports/{prof_name}.code-profile)");
-        out.push_str(&format!(
-            "| `{prof_name}` | {} | `{mods_str}` | {} | {bundle_cell} |\n",
+        // A write to a `String` cannot fail.
+        let _ = writeln!(
+            out,
+            "| `{prof_name}` | {} | `{mods_str}` | {} | {bundle_cell} |",
             recipe.description,
             exts.len()
-        ));
+        );
     }
 
     out.push_str("\n### Modules (`modules/`)\n\n");
@@ -1145,12 +1159,13 @@ pub fn render_readme_matrix_block(catalog: &WorkspaceCatalog) -> VspResult<Strin
             } else {
                 def.manifest.conflicts.join(", ")
             };
-            out.push_str(&format!(
-                "| `{}` | `{}` | {} | {reqs} | {confs} |\n",
+            let _ = writeln!(
+                out,
+                "| `{}` | `{}` | {} | {reqs} | {confs} |",
                 def.manifest.kind.as_str(),
                 def.manifest.id,
                 def.manifest.description
-            ));
+            );
         }
     }
 
@@ -1435,7 +1450,10 @@ mod tests {
         );
         let explicit_star = serde_json::json!({"versions": [{"version": "1.0.0", "properties": [
             {"key": "Microsoft.VisualStudio.Code.Engine", "value": "*"}]}]});
-        assert!(matches!(pick_extension_version(&explicit_star), Ok(Some(_))));
+        assert!(matches!(
+            pick_extension_version(&explicit_star),
+            Ok(Some(_))
+        ));
 
         for missing in [
             serde_json::json!({"versions": [{"version": "1.2.3"}]}),
@@ -1446,7 +1464,10 @@ mod tests {
         ] {
             assert!(pick_extension_version(&missing).is_err(), "{missing}");
         }
-        assert_eq!(pick_extension_version(&serde_json::json!({"versions": []})), Ok(None));
+        assert_eq!(
+            pick_extension_version(&serde_json::json!({"versions": []})),
+            Ok(None)
+        );
         assert_eq!(
             incomplete_engine_evidence("a.b", "x").exit_code(),
             ExitCode::IncompleteObservation
@@ -1479,7 +1500,9 @@ mod tests {
 
         // No hooks directory.
         assert_eq!(
-            run_dev_hooks(repo, false, true).expect_err("missing dir").exit_code(),
+            run_dev_hooks(repo, false, true)
+                .expect_err("missing dir")
+                .exit_code(),
             ExitCode::Operational
         );
         // Directory without pre-commit.
@@ -1491,13 +1514,23 @@ mod tests {
         fs::write(&pre_commit, "#!/bin/sh\nexit 0\n").expect("write hook");
         fs::set_permissions(&pre_commit, fs::Permissions::from_mode(0o644)).expect("chmod");
         assert!(run_dev_hooks(repo, false, true).is_err());
-        assert_eq!(hooks_path(), "", "core.hooksPath must not be set by a refused run");
+        assert_eq!(
+            hooks_path(),
+            "",
+            "core.hooksPath must not be set by a refused run"
+        );
 
         // A usable hook installs, and a second run is idempotent.
         fs::set_permissions(&pre_commit, fs::Permissions::from_mode(0o755)).expect("chmod");
-        assert_eq!(run_dev_hooks(repo, false, true).expect("install"), ExitCode::Ok);
+        assert_eq!(
+            run_dev_hooks(repo, false, true).expect("install"),
+            ExitCode::Ok
+        );
         assert_eq!(hooks_path(), "scripts/git-hooks");
-        assert_eq!(run_dev_hooks(repo, false, true).expect("again"), ExitCode::Ok);
+        assert_eq!(
+            run_dev_hooks(repo, false, true).expect("again"),
+            ExitCode::Ok
+        );
 
         // A hook that later loses its execute bit is reported on reinstall.
         fs::set_permissions(&pre_commit, fs::Permissions::from_mode(0o644)).expect("chmod");
@@ -1515,8 +1548,11 @@ mod tests {
         assert!(err.to_string().contains("docs/rust.md"));
 
         fs::create_dir_all(tmp.path().join("docs")).expect("mkdir docs");
-        fs::copy(repo_root().join("docs/rust.md"), tmp.path().join("docs/rust.md"))
-            .expect("copy rust.md");
+        fs::copy(
+            repo_root().join("docs/rust.md"),
+            tmp.path().join("docs/rust.md"),
+        )
+        .expect("copy rust.md");
         let err = run_dev_docs(&catalog, true, false, false, true).expect_err("no README");
         assert!(err.to_string().contains("README.md"));
     }

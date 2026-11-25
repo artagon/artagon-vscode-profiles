@@ -211,7 +211,10 @@ fn eval_rule(ws_root: &Path, rule: &DetectRule) -> VspResult<Option<String>> {
                 return Ok(None);
             }
             if !any_extra.is_empty() {
-                match any_extra.iter().find(|p| !p.is_empty() && ws_root.join(p).is_file()) {
+                match any_extra
+                    .iter()
+                    .find(|p| !p.is_empty() && ws_root.join(p).is_file())
+                {
                     Some(extra) => matched.push(extra.clone()),
                     None => return Ok(None),
                 }
@@ -315,7 +318,10 @@ fn scan_incomplete(path: &Path, err: &std::io::Error) -> VspError {
 
 /// Returns `true` when `haystack` contains the byte sequence `needle` (not empty).
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-    !needle.is_empty() && haystack.windows(needle.len()).any(|window| window == needle)
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 fn find_first_matching_file(

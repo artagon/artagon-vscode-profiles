@@ -40,7 +40,9 @@
 //! the Default user profile). Team-shareable workspace files are never changed by them.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -49,15 +51,14 @@ use serde_json::{Map, Value};
 use crate::exit_codes::{VspError, VspResult};
 use crate::legacy_loader::parse_jsonc_value;
 use crate::model::{
-    is_valid_module_id, AiMode, ExtensionStatus, ProfileRecipe,
-    UxPreset, WorkspaceCatalog,
+    is_valid_module_id, AiMode, ExtensionStatus, ProfileRecipe, UxPreset, WorkspaceCatalog,
 };
 use crate::policy::check_autonomy_denylist;
-use crate::provenance::write_file_atomic;
+use crate::provenance::{ensure_no_symlink_components, write_file_atomic};
 use crate::resolver::{
     merge_json_object_into, recursive_object_multiply, resolve_profile_recipe, BundleAdditions,
 };
-use crate::vscode::resolve_xdg_config_home;
+use crate::vscode::{resolve_xdg_config_home, trusted_xdg_config_home};
 use crate::vsix::is_valid_extension_id_syntax;
 
 /// Supported user configuration schema version (`"version": 1`).
@@ -215,6 +216,70 @@ impl UserOverlay {
             .get(name)
             .map_or(&[], |p| p.extra_extensions.as_slice())
     }
+
+    /// Returns the extra extensions of user profile `name` that apply under `ai`, after a
+    /// fail-closed re-check of each entry against `catalog`.
+    ///
+    /// The planner and the sync engine call this immediately before they use the extras, so
+    /// the checks do not depend on the config-load step alone.
+    ///
+    /// Re-check (each failure is exit `5`): the ID syntax is valid, the publisher is not in
+    /// [`WorkspaceCatalog::blocked_publishers`], a `user-unlocked` entry is still unknown to
+    /// the catalog, and a `catalog` entry is still `active`.
+    ///
+    /// AI mode: with [`AiMode::Off`], catalog `AI`-group extensions are dropped. With
+    /// [`AiMode::Copilot`], only `github.copilot-chat` stays from that group. This is the
+    /// same rule as bundle import, so an extra can never override `--ai` or `defaults.ai`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VspError::SafetyRefusal`] (exit `5`) when the re-check fails.
+    pub fn effective_extras(
+        &self,
+        catalog: &WorkspaceCatalog,
+        name: &str,
+        ai: Option<AiMode>,
+    ) -> VspResult<Vec<ExtraExtension>> {
+        let mut out = Vec::new();
+        for extra in self.extras_for(name) {
+            let context = format!("user profile '{name}'");
+            if !is_exact_extension_id(&extra.id) {
+                return Err(VspError::SafetyRefusal(format!(
+                    "{context}: '{}' is not an exact extension ID",
+                    extra.id
+                )));
+            }
+            if catalog.is_blocked_publisher(&extra.id) {
+                return Err(blocked_publisher_error(&extra.id, &context));
+            }
+            let record = catalog.extension_record(&extra.id);
+            let tier_still_valid = match extra.tier {
+                ExtensionTrustTier::UserUnlocked => record.is_none(),
+                ExtensionTrustTier::Catalog => {
+                    record.is_some_and(|rec| rec.status == ExtensionStatus::Active)
+                }
+            };
+            if !tier_still_valid {
+                return Err(VspError::SafetyRefusal(format!(
+                    "{context}: extension '{}' no longer matches its '{}' trust tier in the catalog",
+                    extra.id,
+                    extra.tier.as_str()
+                )));
+            }
+
+            let is_ai_group = record.is_some_and(|rec| rec.group.eq_ignore_ascii_case("AI"));
+            let dropped_by_ai_mode = is_ai_group
+                && match ai {
+                    Some(AiMode::Off) => true,
+                    Some(AiMode::Copilot) => !extra.id.eq_ignore_ascii_case("github.copilot-chat"),
+                    Some(AiMode::Full) | None => false,
+                };
+            if !dropped_by_ai_mode {
+                out.push(extra.clone());
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// Values that [`render_starter_config`] writes as active (uncommented) entries.
@@ -232,9 +297,23 @@ pub struct StarterSeed {
 
 /// Returns the default user configuration path
 /// (`${XDG_CONFIG_HOME:-~/.config}/vsp/config.jsonc`).
+///
+/// This function always gives a path, for use in messages. To read or write the default
+/// file, use [`trusted_default_user_config_path`].
 #[must_use]
 pub fn default_user_config_path() -> PathBuf {
     resolve_xdg_config_home().join("vsp/config.jsonc")
+}
+
+/// Returns the default user configuration path only when it does not depend on the
+/// working directory.
+///
+/// `None` means that `XDG_CONFIG_HOME` is absent or relative and `HOME` is absent, empty,
+/// or relative. In that case there is no default user configuration: `vsp` never resolves
+/// it against the working directory or the filesystem root.
+#[must_use]
+pub fn trusted_default_user_config_path() -> Option<PathBuf> {
+    trusted_xdg_config_home().map(|dir| dir.join("vsp/config.jsonc"))
 }
 
 /// Returns the explicit `--config <PATH>` value, or the default path when it is absent.
@@ -247,16 +326,22 @@ pub fn resolve_user_config_path(cli_config: Option<&Path>) -> PathBuf {
 ///
 /// - With `cli_config`, only that file is read. A missing file is an error.
 /// - Without `cli_config`, the XDG default file is read when it exists. `Ok(None)` is
-///   returned when it does not exist.
+///   returned when it does not exist, and when the default path cannot be trusted
+///   (see [`trusted_default_user_config_path`]).
 ///
 /// Files in the current working directory (`.vsp.toml`, `.vsp.jsonc`) are never read.
+///
+/// On Unix, the file must be owned by the effective user and must not be writable by its
+/// group or by others. The file can add unpinned extensions and settings overrides, so a
+/// file that another account can change is not trusted.
 ///
 /// # Errors
 ///
 /// - [`VspError::TargetMissing`] (exit `2`): the explicit `--config` file does not exist.
 /// - [`VspError::UsageOrConfig`] (exit `4`): unreadable, oversized, malformed, or
 ///   schema-invalid configuration, including wildcard trust keys and bare override keys.
-/// - [`VspError::SafetyRefusal`] (exit `5`): an override matches the autonomy deny-list.
+/// - [`VspError::SafetyRefusal`] (exit `5`): an override matches the autonomy deny-list, or
+///   (Unix) the file has a different owner or is writable by group or others.
 pub fn load_user_config(cli_config: Option<&Path>) -> VspResult<Option<UserConfig>> {
     let path = match cli_config {
         Some(explicit) => {
@@ -268,28 +353,71 @@ pub fn load_user_config(cli_config: Option<&Path>) -> VspResult<Option<UserConfi
             }
             explicit.to_path_buf()
         }
-        None => {
-            let default_path = default_user_config_path();
-            if !default_path.is_file() {
-                return Ok(None);
-            }
-            default_path
-        }
+        None => match trusted_default_user_config_path() {
+            Some(default_path) if default_path.is_file() => default_path,
+            _ => return Ok(None),
+        },
     };
 
-    let meta = fs::metadata(&path).map_err(|err| {
+    let unreadable = |err: std::io::Error| {
         VspError::UsageOrConfig(format!("cannot read user config {}: {err}", path.display()))
-    })?;
+    };
+    // One open handle for the checks and the read: the checked file is the file that is read.
+    let file = fs::File::open(&path).map_err(unreadable)?;
+    let meta = file.metadata().map_err(unreadable)?;
+    check_user_config_permissions(&path, &meta)?;
     if meta.len() > MAX_USER_CONFIG_BYTES {
         return Err(VspError::UsageOrConfig(format!(
             "user config {} is larger than {MAX_USER_CONFIG_BYTES} bytes",
             path.display()
         )));
     }
-    let text = fs::read_to_string(&path).map_err(|err| {
-        VspError::UsageOrConfig(format!("cannot read user config {}: {err}", path.display()))
-    })?;
+    let mut text = String::new();
+    file.take(MAX_USER_CONFIG_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(unreadable)?;
+    if text.len() as u64 > MAX_USER_CONFIG_BYTES {
+        return Err(VspError::UsageOrConfig(format!(
+            "user config {} is larger than {MAX_USER_CONFIG_BYTES} bytes",
+            path.display()
+        )));
+    }
     parse_user_config(&text, &path).map(Some)
+}
+
+/// Refuses a user configuration file that another account can change (Unix).
+///
+/// # Errors
+///
+/// Returns [`VspError::SafetyRefusal`] (exit `5`) when the file owner is not the effective
+/// user, or when the mode has a group-write or other-write bit (`mode & 0o022 != 0`).
+#[cfg(unix)]
+fn check_user_config_permissions(path: &Path, meta: &fs::Metadata) -> VspResult<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let euid = rustix::process::geteuid().as_raw();
+    if meta.uid() != euid {
+        return Err(VspError::SafetyRefusal(format!(
+            "refusing user config {}: it is owned by uid {}, not by the current user (uid {euid})",
+            path.display(),
+            meta.uid()
+        )));
+    }
+    let mode = meta.mode() & 0o7777;
+    if mode & 0o022 != 0 {
+        return Err(VspError::SafetyRefusal(format!(
+            "refusing user config {}: mode {mode:04o} lets group or others write it (run: chmod 600 {})",
+            path.display(),
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Platforms without Unix permissions have no owner or mode check.
+#[cfg(not(unix))]
+fn check_user_config_permissions(_path: &Path, _meta: &fs::Metadata) -> VspResult<()> {
+    Ok(())
 }
 
 /// Parses and schema-validates user configuration text.
@@ -486,9 +614,10 @@ pub fn render_starter_config(seed: &StarterSeed) -> String {
         if *active {
             active_seen += 1;
             let comma = if active_seen < active_count { "," } else { "" };
-            out.push_str(&format!("    {text}{comma} // {hint}\n"));
+            // A write to a `String` cannot fail.
+            let _ = writeln!(out, "    {text}{comma} // {hint}");
         } else {
-            out.push_str(&format!("    // {text}, // {hint}\n"));
+            let _ = writeln!(out, "    // {text}, // {hint}");
         }
     }
     out.push_str("  },\n\n");
@@ -524,16 +653,121 @@ pub fn render_starter_config(seed: &StarterSeed) -> String {
     out
 }
 
-/// Writes user configuration text to `path` atomically with mode `0600`.
+/// Writes user configuration text to `path` with mode `0600`.
+///
+/// This is [`write_user_config_with_backup`] without the backup path in the result.
 ///
 /// # Errors
 ///
-/// - [`VspError::SafetyRefusal`] (exit `5`): `path` exists and `force` is `false`, or
-///   `path` is a directory or a symbolic link.
-/// - [`VspError::Operational`] (exit `1`): the file cannot be examined or written.
+/// See [`write_user_config_with_backup`].
 pub fn write_user_config(path: &Path, content: &str, force: bool) -> VspResult<()> {
-    check_user_config_target(path, force)?;
-    write_file_atomic(path, content.as_bytes(), 0o600, true)
+    write_user_config_with_backup(path, content, force).map(|_| ())
+}
+
+/// Writes user configuration text to `path` with mode `0600`, and returns the path of the
+/// backup when an existing file was replaced.
+///
+/// - Without `force`, the file is created with an exclusive create (`O_CREAT | O_EXCL`).
+///   The check and the creation are one operation, so a file that appears at the same
+///   moment is never replaced.
+/// - With `force`, an existing regular file is first copied to `<path>.bak` (mode `0600`),
+///   then replaced atomically.
+/// - A path beneath the XDG config home must not have a symbolic link component (for
+///   example a linked `~/.config/vsp`). The final component is never a symbolic link.
+///
+/// # Errors
+///
+/// - [`VspError::SafetyRefusal`] (exit `5`): `path` exists and `force` is `false`, `path`
+///   is a directory or a symbolic link, or a path component is a symbolic link.
+/// - [`VspError::Operational`] (exit `1`): the file cannot be examined or written.
+pub fn write_user_config_with_backup(
+    path: &Path,
+    content: &str,
+    force: bool,
+) -> VspResult<Option<PathBuf>> {
+    let config_home = resolve_xdg_config_home();
+    if path.starts_with(&config_home) {
+        ensure_no_symlink_components(&config_home, path)?;
+    }
+
+    if force {
+        check_user_config_target(path, true)?;
+        let backup = backup_user_config(path)?;
+        write_file_atomic(path, content.as_bytes(), 0o600, true)?;
+        return Ok(backup);
+    }
+
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        fs::create_dir_all(dir).map_err(|err| {
+            VspError::Operational(format!(
+                "failed to create directory {}: {err}",
+                dir.display()
+            ))
+        })?;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    // `create_new` never follows a symbolic link at `path`, and it fails when any entry
+    // exists there.
+    let mut file = options.open(path).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::AlreadyExists {
+            VspError::SafetyRefusal(format!(
+                "refusing to overwrite existing user config {} (pass --force to replace it)",
+                path.display()
+            ))
+        } else {
+            VspError::Operational(format!(
+                "failed to create user config {}: {err}",
+                path.display()
+            ))
+        }
+    })?;
+    let written = file
+        .write_all(content.as_bytes())
+        .and_then(|()| file.sync_all());
+    if let Err(err) = written {
+        // This call created the file, so the incomplete file is removed.
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(VspError::Operational(format!(
+            "failed to write user config {}: {err}",
+            path.display()
+        )));
+    }
+    Ok(None)
+}
+
+/// Copies an existing user configuration to `<path>.bak` (mode `0600`, atomic). Returns
+/// `None` when `path` does not exist.
+fn backup_user_config(path: &Path) -> VspResult<Option<PathBuf>> {
+    let previous = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(VspError::Operational(format!(
+                "failed to read {} for backup: {err}",
+                path.display()
+            )));
+        }
+    };
+    let mut name = path
+        .file_name()
+        .map(std::ffi::OsStr::to_os_string)
+        .ok_or_else(|| {
+            VspError::Operational(format!(
+                "user config path has no filename: {}",
+                path.display()
+            ))
+        })?;
+    name.push(".bak");
+    let backup = path.with_file_name(name);
+    write_file_atomic(&backup, &previous, 0o600, true)?;
+    Ok(Some(backup))
 }
 
 /// Checks that `vsp init` is allowed to write `path`. This function changes nothing.
@@ -594,7 +828,7 @@ fn render_profile_entry(profile: &UserProfile) -> String {
     let last = fields.len().saturating_sub(1);
     for (idx, field) in fields.iter().enumerate() {
         let comma = if idx < last { "," } else { "" };
-        out.push_str(&format!("      {field}{comma}\n"));
+        let _ = writeln!(out, "      {field}{comma}");
     }
     out.push_str("    }\n");
     out
@@ -1068,9 +1302,26 @@ fn resolve_extra_extensions(
                 }
             },
         };
+        // A blocked publisher is never trusted, also for an ID that the catalog does not
+        // list. "Allowed by exact ID" does not override the publisher block.
+        if catalog.is_blocked_publisher(id) {
+            return Err(blocked_publisher_error(
+                id,
+                &format!("user config {label}: {field}"),
+            ));
+        }
         out.push(entry);
     }
     Ok(out)
+}
+
+/// Builds the exit `5` error for an extra extension from a blocked publisher.
+fn blocked_publisher_error(ext_id: &str, context: &str) -> VspError {
+    VspError::SafetyRefusal(format!(
+        "{context}: extension '{ext_id}' is refused: publisher '{}' is blocked by the catalog \
+         (blockedPublishers, or the publisher of a compromised or removed extension)",
+        crate::model::extension_publisher(ext_id)
+    ))
 }
 
 #[cfg(test)]
@@ -1110,7 +1361,7 @@ mod tests {
 
     #[test]
     fn rejects_version_unknown_keys_and_trust_with_exit_4() {
-        assert_eq!(exit_of(parse(r#"{}"#)), ExitCode::UsageOrConfig);
+        assert_eq!(exit_of(parse("{}")), ExitCode::UsageOrConfig);
         assert_eq!(exit_of(parse(r#"{"version": 2}"#)), ExitCode::UsageOrConfig);
         assert_eq!(
             exit_of(parse(r#"{"version": 1, "extra": true}"#)),
@@ -1223,6 +1474,113 @@ mod tests {
         assert!(resolved.iter().any(|m| m == "git-pro"));
         let (_, prof) = catalog.profiles["my-rust"].split_overrides();
         assert_eq!(prof["editor.fontSize"], Value::from(14));
+    }
+
+    /// Opus R2-H1 and R2-M1: `effective_extras` checks each entry again and applies the AI
+    /// mode.
+    #[test]
+    fn effective_extras_recheck_trust_and_apply_the_ai_mode() {
+        let mut catalog = load_embedded().expect("embedded catalog");
+        let cfg = parse(
+            r#"{"version": 1, "profiles": {"p": {"extends": "rust", "extraExtensions": [
+                "zz-external.sample-tool", "anthropic.claude-code", "github.copilot-chat",
+                "rust-lang.rust-analyzer"]}}}"#,
+        )
+        .expect("valid config");
+        let overlay = apply_user_config(&mut catalog, &cfg).expect("overlay");
+        let ids = |ai: Option<AiMode>| -> Vec<String> {
+            overlay
+                .effective_extras(&catalog, "p", ai)
+                .expect("extras")
+                .into_iter()
+                .map(|extra| extra.id)
+                .collect()
+        };
+
+        let all = [
+            "zz-external.sample-tool",
+            "anthropic.claude-code",
+            "github.copilot-chat",
+            "rust-lang.rust-analyzer",
+        ];
+        assert_eq!(ids(None), all);
+        assert_eq!(ids(Some(AiMode::Full)), all);
+        assert_eq!(
+            ids(Some(AiMode::Copilot)),
+            [
+                "zz-external.sample-tool",
+                "github.copilot-chat",
+                "rust-lang.rust-analyzer"
+            ]
+        );
+        assert_eq!(
+            ids(Some(AiMode::Off)),
+            ["zz-external.sample-tool", "rust-lang.rust-analyzer"]
+        );
+        assert!(overlay
+            .effective_extras(&catalog, "unknown", None)
+            .expect("no extras")
+            .is_empty());
+
+        // A publisher that the catalog blocks after the overlay was built is refused.
+        let mut blocked = catalog.clone();
+        blocked.blocked_publishers.insert("zz-external".to_string());
+        let err = overlay
+            .effective_extras(&blocked, "p", None)
+            .expect_err("blocked publisher");
+        assert_eq!(err.exit_code(), ExitCode::SafetyRefusal);
+        assert!(err
+            .to_string()
+            .contains("publisher 'zz-external' is blocked"));
+
+        // A trust tier that no longer matches the catalog is refused: a `catalog` extra
+        // must still be active, and a `user-unlocked` extra must still be catalog-external.
+        let mut retired = catalog.clone();
+        retired
+            .extensions
+            .extensions
+            .get_mut("rust-lang.rust-analyzer")
+            .expect("record")
+            .status = ExtensionStatus::Compromised;
+        retired.blocked_publishers.clear();
+        let err = overlay
+            .effective_extras(&retired, "p", None)
+            .expect_err("status changed");
+        assert_eq!(err.exit_code(), ExitCode::SafetyRefusal);
+
+        let mut now_known = catalog.clone();
+        let record = now_known.extensions.extensions["rust-lang.rust-analyzer"].clone();
+        now_known
+            .extensions
+            .extensions
+            .insert("zz-external.sample-tool".to_string(), record);
+        let err = overlay
+            .effective_extras(&now_known, "p", None)
+            .expect_err("tier changed");
+        assert_eq!(err.exit_code(), ExitCode::SafetyRefusal);
+    }
+
+    /// Opus R2-H1: the config-load check refuses an extra from a blocked publisher.
+    #[test]
+    fn overlay_rejects_extras_from_blocked_publishers() {
+        let catalog = load_embedded().expect("embedded catalog");
+        for (id, publisher) in [
+            ("jscearcy.rust-doc-viewer-v2", "jscearcy"),
+            ("JSCearcy.Other", "jscearcy"),
+            ("pmd.some-other-tool", "pmd"),
+        ] {
+            let cfg = parse(&format!(
+                r#"{{"version": 1, "profiles": {{"p": {{"extraExtensions": ["{id}"]}}}}}}"#
+            ))
+            .expect("the syntax is valid");
+            let err = apply_user_config(&mut catalog.clone(), &cfg).expect_err("blocked");
+            assert_eq!(err.exit_code(), ExitCode::SafetyRefusal, "{id}");
+            assert!(
+                err.to_string()
+                    .contains(&format!("publisher '{publisher}' is blocked")),
+                "{err}"
+            );
+        }
     }
 
     #[test]

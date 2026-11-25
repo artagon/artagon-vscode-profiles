@@ -63,7 +63,10 @@ fn vsp_cmd() -> Command {
         .env("XDG_CONFIG_HOME", sandbox.join("config"))
         .env("XDG_STATE_HOME", sandbox.join("state"))
         .env("XDG_CACHE_HOME", sandbox.join("cache"))
-        .env("PATH", format!("{}:{host_path}", sandbox.join("bin").display()))
+        .env(
+            "PATH",
+            format!("{}:{host_path}", sandbox.join("bin").display()),
+        )
         .env_remove("VSP_COMPAT_VSPCLI")
         .env_remove("XDG_BIN_HOME");
     cmd
@@ -117,7 +120,12 @@ fn cst_workspace_preserves_all_comments_across_repeated_sync_and_biome_eslint_sw
 
     let run_ws_sync = |extra_args: &[&str]| {
         let mut cmd = vsp_cmd();
-        cmd.args(["--catalog", catalog_arg, "sync", ws.path().to_str().expect("utf8")]);
+        cmd.args([
+            "--catalog",
+            catalog_arg,
+            "sync",
+            ws.path().to_str().expect("utf8"),
+        ]);
         cmd.args(extra_args);
         cmd.env("XDG_STATE_HOME", xdg_state.path());
         cmd.output().expect("run vsp sync workspace")
@@ -748,8 +756,11 @@ fn offline_from_bundle_verifies_sha256sums_blocks_n1_payloads_and_preserves_ai_c
     // 3. Tampered bundle failing SHA256SUMS MUST exit 5!
     let bad_sum_dir = TempDir::new().expect("bad sum");
     let bad_bundle = bad_sum_dir.path().join("tampered.code-profile");
-    fs::write(&bad_bundle, r#"{"name":"tampered","settings":{},"extensions":{"enabled":[]}}"#)
-        .expect("write");
+    fs::write(
+        &bad_bundle,
+        r#"{"name":"tampered","settings":{},"extensions":{"enabled":[]}}"#,
+    )
+    .expect("write");
     fs::write(
         bad_sum_dir.path().join("SHA256SUMS"),
         format!("{}  tampered.code-profile\n", "0".repeat(64)),
@@ -833,13 +844,18 @@ fn exit_codes_lock_contention_6_missing_2_drift_3_invalid_4_list_fail_7_and_guar
     // Exit 6: Lock contention on workspace target lock!
     let ws_canon = fs::canonicalize(ws.path()).expect("canon");
     // Point lock to the same XDG_STATE_HOME lock path via env override.
-    let ws_lock_path = xdg_state
-        .path()
-        .join("vsp/locks")
-        .join(format!("ws-{}.lock", sha256_hex(ws_canon.to_string_lossy().as_bytes())));
-    let _ws_guard = acquire_advisory_lock(&ws_lock_path, Duration::from_secs(1)).expect("lock");
+    let ws_lock_path = xdg_state.path().join("vsp/locks").join(format!(
+        "ws-{}.lock",
+        sha256_hex(ws_canon.to_string_lossy().as_bytes())
+    ));
+    let ws_guard = acquire_advisory_lock(&ws_lock_path, Duration::from_secs(1)).expect("lock");
     let lock_busy = vsp_cmd()
-        .args(["--catalog", catalog_arg, "sync", ws.path().to_str().expect("utf8")])
+        .args([
+            "--catalog",
+            catalog_arg,
+            "sync",
+            ws.path().to_str().expect("utf8"),
+        ])
         .env("XDG_STATE_HOME", xdg_state.path())
         .env("VSP_LOCK_TIMEOUT_MS", "60")
         .output()
@@ -850,19 +866,24 @@ fn exit_codes_lock_contention_6_missing_2_drift_3_invalid_4_list_fail_7_and_guar
         "expected exit 6 on lock contention, stderr={}",
         String::from_utf8_lossy(&lock_busy.stderr)
     );
-    drop(_ws_guard);
+    drop(ws_guard);
 
     // Silence unused helper warning by checking path helper parity.
-    assert!(workspace_sync_lock_path(&ws_canon)
-        .file_name()
-        .is_some());
-    assert!(profile_sync_lock_path(&fake_data.path().join("User"), "rust")
-        .file_name()
-        .is_some());
+    assert!(workspace_sync_lock_path(&ws_canon).file_name().is_some());
+    assert!(
+        profile_sync_lock_path(&fake_data.path().join("User"), "rust")
+            .file_name()
+            .is_some()
+    );
 
     // Exit 2: missing workspace target.
     let missing_out = vsp_cmd()
-        .args(["--catalog", catalog_arg, "sync", "/nonexistent/vsp/workspace"])
+        .args([
+            "--catalog",
+            catalog_arg,
+            "sync",
+            "/nonexistent/vsp/workspace",
+        ])
         .output()
         .expect("missing ws");
     assert_eq!(missing_out.status.code(), Some(2));
@@ -952,7 +973,11 @@ fn exit_codes_lock_contention_6_missing_2_drift_3_invalid_4_list_fail_7_and_guar
     // Exit 5: symlink escape in workspace `.vscode`.
     let outside = TempDir::new().expect("outside");
     let escape_ws = TempDir::new().expect("escape ws");
-    fs::write(escape_ws.path().join("Cargo.toml"), "[package]\nname=\"x\"\n").expect("cargo");
+    fs::write(
+        escape_ws.path().join("Cargo.toml"),
+        "[package]\nname=\"x\"\n",
+    )
+    .expect("cargo");
     std::os::unix::fs::symlink(outside.path(), escape_ws.path().join(".vscode")).expect("symlink");
     let escape_res = vsp_cmd()
         .args([
@@ -1066,7 +1091,9 @@ fn repair_pins_downgrade_requires_yes_and_open_sync_aborts_on_failure() {
     assert!(log_text.contains("--force"));
     assert!(xdg_cache
         .path()
-        .join(format!("vsp/vsix/editorconfig.editorconfig-{vsix_sha}.vsix"))
+        .join(format!(
+            "vsp/vsix/editorconfig.editorconfig-{vsix_sha}.vsix"
+        ))
         .is_file());
 
     // 3. `vsp open` (and alias `use`) with `--sync` aborts launch when sync fails!
@@ -1094,7 +1121,11 @@ fn repair_pins_downgrade_requires_yes_and_open_sync_aborts_on_failure() {
 
     // 4. `vsp open` on a valid Rust workspace with `-p general-minimal --sync` converges and launches!
     let rust_ws = TempDir::new().expect("rust ws");
-    fs::write(rust_ws.path().join("Cargo.toml"), "[package]\nname=\"demo\"\n").expect("cargo");
+    fs::write(
+        rust_ws.path().join("Cargo.toml"),
+        "[package]\nname=\"demo\"\n",
+    )
+    .expect("cargo");
     let open_ok = vsp_cmd()
         .args([
             "--catalog",
@@ -1518,7 +1549,10 @@ fn dev_hooks_compat_unreachable_exit_7_ps_fail_closed_and_data_dir_symlink_escap
             "--vscode-version",
             "1.147.0",
         ])
-        .env("VSP_MARKETPLACE_API_URL", format!("http://{dead_addr}/query"))
+        .env(
+            "VSP_MARKETPLACE_API_URL",
+            format!("http://{dead_addr}/query"),
+        )
         .output()
         .expect("compat dead");
     assert_eq!(compat_down.status.code(), Some(7));

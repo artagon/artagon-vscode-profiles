@@ -107,8 +107,14 @@ fn parity_all_15_profiles_settings_extensions_and_bundles_byte_identical() {
             None,
         )
         .expect("emb resolve");
-        assert_eq!(dir_mods, leg_mods, "resolved modules mismatch for '{profile_name}'");
-        assert_eq!(emb_mods, leg_mods, "embedded resolved modules mismatch for '{profile_name}'");
+        assert_eq!(
+            dir_mods, leg_mods,
+            "resolved modules mismatch for '{profile_name}'"
+        );
+        assert_eq!(
+            emb_mods, leg_mods,
+            "embedded resolved modules mismatch for '{profile_name}'"
+        );
 
         let leg_exts = to_canonical_json_string(
             &compile_profile_extensions(&legacy, &leg_mods).expect("legacy exts"),
@@ -122,13 +128,18 @@ fn parity_all_15_profiles_settings_extensions_and_bundles_byte_identical() {
             &compile_profile_extensions(&embedded, &emb_mods).expect("emb exts"),
         )
         .expect("ser emb exts");
-        assert_eq!(dir_exts, leg_exts, "dir extensions mismatch for '{profile_name}'");
-        assert_eq!(emb_exts, leg_exts, "embedded extensions mismatch for '{profile_name}'");
+        assert_eq!(
+            dir_exts, leg_exts,
+            "dir extensions mismatch for '{profile_name}'"
+        );
+        assert_eq!(
+            emb_exts, leg_exts,
+            "embedded extensions mismatch for '{profile_name}'"
+        );
 
         // 3. Workspace settings, workspace extensions, and tasks parity.
         let leg_ws = to_canonical_json_string(
-            &compile_settings(&legacy, SettingsScope::Workspace, &leg_mods, None)
-                .expect("leg ws"),
+            &compile_settings(&legacy, SettingsScope::Workspace, &leg_mods, None).expect("leg ws"),
         )
         .expect("ser leg ws");
         let dir_ws = to_canonical_json_string(
@@ -141,20 +152,38 @@ fn parity_all_15_profiles_settings_extensions_and_bundles_byte_identical() {
                 .expect("emb ws"),
         )
         .expect("ser emb ws");
-        assert_eq!(dir_ws, leg_ws, "dir workspace settings mismatch for '{profile_name}'");
-        assert_eq!(emb_ws, leg_ws, "emb workspace settings mismatch for '{profile_name}'");
+        assert_eq!(
+            dir_ws, leg_ws,
+            "dir workspace settings mismatch for '{profile_name}'"
+        );
+        assert_eq!(
+            emb_ws, leg_ws,
+            "emb workspace settings mismatch for '{profile_name}'"
+        );
 
         let leg_wext = compile_workspace_extensions(&legacy, &leg_mods).expect("leg wext");
         let dir_wext = compile_workspace_extensions(&from_dir, &dir_mods).expect("dir wext");
         let emb_wext = compile_workspace_extensions(&embedded, &emb_mods).expect("emb wext");
-        assert_eq!(dir_wext, leg_wext, "dir workspace extensions mismatch for '{profile_name}'");
-        assert_eq!(emb_wext, leg_wext, "emb workspace extensions mismatch for '{profile_name}'");
+        assert_eq!(
+            dir_wext, leg_wext,
+            "dir workspace extensions mismatch for '{profile_name}'"
+        );
+        assert_eq!(
+            emb_wext, leg_wext,
+            "emb workspace extensions mismatch for '{profile_name}'"
+        );
 
         let leg_tasks = compile_tasks(&legacy, RtkTaskMode::Plain, &leg_mods).expect("leg tasks");
         let dir_tasks = compile_tasks(&from_dir, RtkTaskMode::Plain, &dir_mods).expect("dir tasks");
         let emb_tasks = compile_tasks(&embedded, RtkTaskMode::Plain, &emb_mods).expect("emb tasks");
-        assert_eq!(dir_tasks, leg_tasks, "dir tasks mismatch for '{profile_name}'");
-        assert_eq!(emb_tasks, leg_tasks, "emb tasks mismatch for '{profile_name}'");
+        assert_eq!(
+            dir_tasks, leg_tasks,
+            "dir tasks mismatch for '{profile_name}'"
+        );
+        assert_eq!(
+            emb_tasks, leg_tasks,
+            "emb tasks mismatch for '{profile_name}'"
+        );
 
         // 4. Exported `.code-profile` bundle byte-for-byte parity.
         let leg_bundle = to_canonical_json_string(
@@ -169,8 +198,14 @@ fn parity_all_15_profiles_settings_extensions_and_bundles_byte_identical() {
             &compile_code_profile_bundle(&embedded, profile_name).expect("emb bundle"),
         )
         .expect("ser emb bundle");
-        assert_eq!(dir_bundle, leg_bundle, "dir bundle mismatch for '{profile_name}'");
-        assert_eq!(emb_bundle, leg_bundle, "emb bundle mismatch for '{profile_name}'");
+        assert_eq!(
+            dir_bundle, leg_bundle,
+            "dir bundle mismatch for '{profile_name}'"
+        );
+        assert_eq!(
+            emb_bundle, leg_bundle,
+            "emb bundle mismatch for '{profile_name}'"
+        );
     }
 
     // Decision D5 & shell == general SHA-256 verification.
@@ -219,8 +254,14 @@ fn parity_37_entry_dev_dist_sha256sums_and_22_legacy_aliases_identical() {
     let sums_dir = fs::read(&r_dir.sha256sums_path).expect("read sums dir");
     let sums_emb = fs::read(&r_emb.sha256sums_path).expect("read sums emb");
 
-    assert_eq!(sums_dir, sums_leg, "load_from_dir SHA256SUMS drifted from legacy_loader");
-    assert_eq!(sums_emb, sums_leg, "load_embedded SHA256SUMS drifted from legacy_loader");
+    assert_eq!(
+        sums_dir, sums_leg,
+        "load_from_dir SHA256SUMS drifted from legacy_loader"
+    );
+    assert_eq!(
+        sums_emb, sums_leg,
+        "load_embedded SHA256SUMS drifted from legacy_loader"
+    );
 
     // Anchor embedded + dir SHA256SUMS against the snapshotted v2.1 golden oracle fixture!
     let oracle_raw = fs::read_to_string(
@@ -242,7 +283,9 @@ fn parity_37_entry_dev_dist_sha256sums_and_22_legacy_aliases_identical() {
     assert_eq!(schema.legacy_aliases.len(), 22);
     for &(alias_file, canonical_file) in LEGACY_BUNDLE_ALIASES {
         let alias_key = alias_file.strip_suffix(".code-profile").expect("suffix");
-        let canonical_name = canonical_file.strip_suffix(".code-profile").expect("suffix");
+        let canonical_name = canonical_file
+            .strip_suffix(".code-profile")
+            .expect("suffix");
         let entry = schema
             .legacy_aliases
             .get(alias_key)
@@ -290,8 +333,7 @@ fn derived_publishers_match_catalog_publishers_json_100_percent() {
 
     assert_eq!(dir_schema.blocked_publishers, vec!["jscearcy".to_string()]);
     assert_eq!(
-        dir_schema.catalog.publishers.publishers,
-        legacy.publishers.publishers,
+        dir_schema.catalog.publishers.publishers, legacy.publishers.publishers,
         "derived publishers from catalog/extensions.jsonc must match catalog/publishers.json 100%"
     );
     assert_eq!(
@@ -315,7 +357,11 @@ fn four_tier_lockfile_covers_all_103_active_and_preserves_8_universal_pins_verba
         .filter(|(_, r)| r.status == ExtensionStatus::Active)
         .map(|(k, _)| k.clone())
         .collect();
-    assert_eq!(active_ids.len(), 103, "expected exactly 103 active catalog extensions");
+    assert_eq!(
+        active_ids.len(),
+        103,
+        "expected exactly 103 active catalog extensions"
+    );
     assert_eq!(schema.lockfile.extensions.len(), 103);
 
     let mut t1 = 0usize;
@@ -346,8 +392,14 @@ fn four_tier_lockfile_covers_all_103_active_and_preserves_8_universal_pins_verba
     }
 
     assert_eq!(t1, 28, "Tier 1 must cover exact 28 hash-locked IDs");
-    assert_eq!(t1_verified, 8, "all 8 existing universal pins must be verified");
-    assert_eq!(t1_pending, 20, "remaining 20 Tier 1 IDs must be pending_refresh");
+    assert_eq!(
+        t1_verified, 8,
+        "all 8 existing universal pins must be verified"
+    );
+    assert_eq!(
+        t1_pending, 20,
+        "remaining 20 Tier 1 IDs must be pending_refresh"
+    );
     assert!(t2 <= 51, "Tier 2 count ({t2}) must be <= 51");
     assert!(t3 >= 24, "Tier 3 count ({t3}) must be >= 24");
     assert_eq!(t1 + t2 + t3, 103);
@@ -374,9 +426,15 @@ fn four_tier_lockfile_covers_all_103_active_and_preserves_8_universal_pins_verba
             .pins
             .get(id)
             .unwrap_or_else(|| panic!("missing mapped pin '{id}'"));
-        assert_eq!(new_pin.version, old_pin.version, "version mismatch for {id}");
+        assert_eq!(
+            new_pin.version, old_pin.version,
+            "version mismatch for {id}"
+        );
         assert_eq!(new_pin.sha256, old_pin.sha256, "sha256 mismatch for {id}");
-        assert_eq!(new_pin.vsix_url, old_pin.vsix_url, "vsix_url mismatch for {id}");
+        assert_eq!(
+            new_pin.vsix_url, old_pin.vsix_url,
+            "vsix_url mismatch for {id}"
+        );
         assert_eq!(
             new_pin.verified_at, old_pin.verified_at,
             "verified_at mismatch for {id}"
@@ -385,7 +443,10 @@ fn four_tier_lockfile_covers_all_103_active_and_preserves_8_universal_pins_verba
         let lock_entry = schema.lockfile.extensions.get(id).expect("lock entry");
         assert_eq!(lock_entry.universal, Some(true));
         assert_eq!(lock_entry.status, Some(LockEntryStatus::Verified));
-        assert_eq!(lock_entry.version.as_deref(), Some(old_pin.version.as_str()));
+        assert_eq!(
+            lock_entry.version.as_deref(),
+            Some(old_pin.version.as_str())
+        );
         assert_eq!(lock_entry.sha256.as_deref(), Some(old_pin.sha256.as_str()));
         assert_eq!(
             lock_entry.vsix_url.as_deref(),
@@ -411,7 +472,10 @@ fn v2_catalog_passes_policy_validate_repository_and_has_no_default_pack_file() {
     // Virtual default UX resolves cleanly to empty `{}` profile settings.
     let default_ux = catalog.modules.get("default").expect("virtual default UX");
     assert_eq!(
-        default_ux.profile_settings.as_ref().map(serde_json::Map::len),
+        default_ux
+            .profile_settings
+            .as_ref()
+            .map(serde_json::Map::len),
         Some(0)
     );
 
@@ -445,6 +509,15 @@ fn v2_catalog_passes_policy_validate_repository_and_has_no_default_pack_file() {
         .contains(&"biomejs.biome".to_string()));
 }
 
+/// Restores the working directory when it goes out of scope.
+struct CwdGuard(PathBuf);
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+    }
+}
+
 #[test]
 fn embedded_snapshot_loads_cleanly_from_empty_temp_cwd_and_includes_7_rtk_scripts() {
     let root = repo_root();
@@ -469,15 +542,8 @@ fn embedded_snapshot_loads_cleanly_from_empty_temp_cwd_and_includes_7_rtk_script
     }
 
     // Verify embedded snapshot loads cleanly even when CWD is a completely empty temp directory.
-    struct CwdGuard(PathBuf);
-    impl Drop for CwdGuard {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.0);
-        }
-    }
-
     let original_cwd = std::env::current_dir().expect("get cwd");
-    let _guard = CwdGuard(original_cwd);
+    let cwd_guard = CwdGuard(original_cwd);
     let empty_dir = TempDir::new().expect("empty cwd");
     std::env::set_current_dir(empty_dir.path()).expect("chdir empty");
     assert_eq!(
@@ -488,7 +554,7 @@ fn embedded_snapshot_loads_cleanly_from_empty_temp_cwd_and_includes_7_rtk_script
 
     let schema = load_embedded_schema().expect("embedded snapshot must load from empty temp cwd");
     let catalog = load_embedded().expect("load_embedded must succeed from empty temp cwd");
-    drop(_guard);
+    drop(cwd_guard);
 
     assert_eq!(schema.catalog.profiles.len(), 15);
     assert_eq!(catalog.profiles.len(), 15);
@@ -639,8 +705,7 @@ fn strict_validator_rejects_incomplete_bad_version_duplicate_id_and_escape_witho
         "presets.jsonc".to_string(),
         serde_json::to_vec(&cyc_presets).expect("ser presets"),
     );
-    let err_cyc =
-        load_from_snapshot(PathBuf::from("<test>"), &cyclic).expect_err("cyclic presets");
+    let err_cyc = load_from_snapshot(PathBuf::from("<test>"), &cyclic).expect_err("cyclic presets");
     assert_eq!(err_cyc.exit_code().as_i32(), 4);
 
     // 12. Active extension from blocked publisher -> SafetyRefusal (exit 5).
@@ -666,7 +731,11 @@ fn load_from_dir_rejects_symlink_escaping_catalog_root() {
     let tmp = TempDir::new().expect("tmp");
     let cat_root = tmp.path().join("cat");
     let outside = tmp.path().join("outside-secret.jsonc");
-    fs::write(&outside, r#"{"version":2,"id":"escape","kind":"capability"}"#).expect("write");
+    fs::write(
+        &outside,
+        r#"{"version":2,"id":"escape","kind":"capability"}"#,
+    )
+    .expect("write");
 
     fs::create_dir_all(cat_root.join("catalog")).expect("mkdir catalog");
     fs::create_dir_all(cat_root.join("packs")).expect("mkdir packs");

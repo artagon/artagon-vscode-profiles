@@ -7,6 +7,13 @@
 //! 2. The environment variable `VSP_COMPAT_VSPCLI` is exactly `1`.
 //! 3. The hidden subcommand `vsp compat-vspcli ...` is used.
 //!
+//! `VSP_COMPAT_VSPCLI=1` applies to each `vsp` process that inherits it, also when
+//! `argv[0]` is `vsp`. The repository shim `scripts/vspcli` (with `VSP_USE_RUST_SHIM=1`) and
+//! the test suite depend on this behavior. Set the variable for one command only, and do
+//! not export it in a shell profile: with the variable set, a native command line such as
+//! `vsp sync -p rust` is read as a legacy command and exits `4`. For that case,
+//! [`env_forced_mode_hint`] gives the message that `vsp` prints after the usage error.
+//!
 //! # Translation
 //!
 //! | Legacy command | `vsp` command |
@@ -15,7 +22,7 @@
 //! | `detect [--json] [path]` | `vsp detect` |
 //! | `--detect [options] [path]` | same as `apply`, with a deprecation warning |
 //! | `apply [options] [path]` | `vsp sync <path>`, `vsp sync -p <name>`, or `vsp sync --user` |
-//! | `reconcile (--profile <n> [--as <r>] \| --all) ...` | `vsp sync -p <n> [--preset <r>]` or `vsp sync --all` |
+//! | `reconcile (--profile <n> [--as <r>] \| --all) ...` | `vsp sync -p <n> [--preset <r>]` or `vsp sync --all`, extensions only (no settings, `storage.json`, or RTK wrapper write) |
 //! | `doctor [--strict]` | `vsp doctor` |
 //! | `validate`, `--validate` | `vsp dev validate` |
 //! | `open <profile> [path]`, `--open` | `vsp open -p <profile> <path>` |
@@ -173,22 +180,40 @@ pub fn legacy_args_from_argv(argv: &[OsString]) -> Option<Vec<OsString>> {
     None
 }
 
+/// Returns a hint for the case where only the environment variable selected compatibility
+/// mode: `VSP_COMPAT_VSPCLI=1` is set, `argv[0]` is not `vspcli`, and the hidden subcommand
+/// is not used.
+///
+/// In that case a native command such as `vsp sync -p rust` is read as a legacy command
+/// and exits `4`. The caller prints this hint after a usage error, so the cause is clear.
+#[must_use]
+pub fn env_forced_mode_hint(argv: &[OsString]) -> Option<String> {
+    let argv0_is_vspcli = argv.first().is_some_and(|a| is_vspcli_invocation(a));
+    let explicit_subcommand = argv
+        .get(1)
+        .is_some_and(|a| a.as_os_str() == OsStr::new(COMPAT_SUBCOMMAND));
+    let env_forces = env::var(COMPAT_ENV_VAR).ok().as_deref() == Some("1");
+    (env_forces && !argv0_is_vspcli && !explicit_subcommand).then(|| {
+        format!(
+            "{COMPAT_ENV_VAR}=1 is set, so this command ran in legacy vspcli mode; unset {COMPAT_ENV_VAR} to use the native vsp command line"
+        )
+    })
+}
+
 /// Runs one legacy `vspcli` command line and returns the legacy exit code.
 ///
 /// `args` does not include the program name. Messages go to standard error with the
 /// `vspcli:` prefix.
 #[must_use]
 pub fn run(args: &[OsString]) -> ExitCode {
-    let mut utf8: Vec<String> = Vec::with_capacity(args.len());
-    for arg in args {
-        match arg.to_str() {
-            Some(s) => utf8.push(s.to_string()),
-            None => {
-                eprintln!("vspcli: arguments must be valid UTF-8");
-                return ExitCode::UsageOrConfig;
-            }
-        }
-    }
+    let Some(utf8) = args
+        .iter()
+        .map(|arg| arg.to_str().map(str::to_string))
+        .collect::<Option<Vec<String>>>()
+    else {
+        eprintln!("vspcli: arguments must be valid UTF-8");
+        return ExitCode::UsageOrConfig;
+    };
 
     match translate(&utf8) {
         Translation::Help => {
@@ -910,6 +935,9 @@ fn translate_reconcile(rest: &[String]) -> Translation {
         }
     }
     argv.extend(flags.into_iter().map(str::to_string));
+    // Legacy `reconcile` changed extensions only. It never wrote settings.json,
+    // storage.json, or the RTK wrappers, so the same limit applies here.
+    argv.push("--extensions-only".to_string());
 
     Translation::Vsp {
         argv,
@@ -1044,11 +1072,25 @@ mod tests {
                 "--as=rust",
                 "--prune-retired"
             ]),
-            args(&["sync", "-p", "rust", "--preset", "rust", "--prune-retired"])
+            args(&[
+                "sync",
+                "-p",
+                "rust",
+                "--preset",
+                "rust",
+                "--prune-retired",
+                "--extensions-only"
+            ])
         );
         assert_eq!(
             vsp_argv(&["reconcile", "--all", "--dry-run", "--compromised-only"]),
-            args(&["--dry-run", "sync", "--all", "--compromised-only"])
+            args(&[
+                "--dry-run",
+                "sync",
+                "--all",
+                "--compromised-only",
+                "--extensions-only"
+            ])
         );
         assert_reject(&["reconcile"]);
         assert_reject(&["reconcile", "--profile"]);

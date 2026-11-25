@@ -34,14 +34,33 @@ pub fn resolve_xdg_config_home() -> PathBuf {
     home_dir().join(".config")
 }
 
+/// Returns the XDG config home only when it does not depend on the working directory:
+/// an absolute `XDG_CONFIG_HOME`, or `$HOME/.config` for an absolute `HOME`.
+///
+/// `None` means that `XDG_CONFIG_HOME` is absent or relative and `HOME` is absent, empty,
+/// or relative. [`resolve_xdg_config_home`] would then give a path beneath `/` or beneath
+/// the working directory, which a security-relevant file must never use.
+#[must_use]
+pub fn trusted_xdg_config_home() -> Option<PathBuf> {
+    if let Ok(val) = env::var("XDG_CONFIG_HOME") {
+        let trimmed = val.trim_end_matches('/');
+        if trimmed.starts_with('/') {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .map(|home| home.join(".config"))
+}
+
 /// Resolves the user's home directory from `HOME`.
 #[must_use]
 pub fn home_dir() -> PathBuf {
     env::var("HOME")
         .ok()
         .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"))
+        .map_or_else(|| PathBuf::from("/"), PathBuf::from)
 }
 
 /// Resolves the default OS-specific VS Code `User` directory.
@@ -377,7 +396,13 @@ mod tests {
     /// Opus H2: a profile name can never become a separate `code` option.
     #[test]
     fn profile_name_validation_rejects_argv_injection_and_path_forms() {
-        for ok in ["rust", "My Profile", "java-spring", "rust-profile-crisp", "a.b_c"] {
+        for ok in [
+            "rust",
+            "My Profile",
+            "java-spring",
+            "rust-profile-crisp",
+            "a.b_c",
+        ] {
             assert!(validate_profile_name(ok).is_ok(), "{ok}");
         }
         let too_long = "a".repeat(MAX_PROFILE_NAME_LEN + 1);

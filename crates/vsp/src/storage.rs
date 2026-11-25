@@ -306,6 +306,10 @@ pub fn ensure_storage_profile(
 }
 
 /// Internal testable entrypoint allowing deterministic pre-publish CAS fault injection.
+///
+/// # Errors
+///
+/// The same as [`ensure_storage_profile`].
 pub fn ensure_storage_profile_with_cas_hook(
     user_dir: &Path,
     profile_name: &str,
@@ -345,10 +349,7 @@ pub fn ensure_storage_profile_with_cas_hook(
     }
 
     fs::create_dir_all(&storage_dir).map_err(|err| {
-        VspError::Operational(format!(
-            "failed to create {}: {err}",
-            storage_dir.display()
-        ))
+        VspError::Operational(format!("failed to create {}: {err}", storage_dir.display()))
     })?;
 
     let lock_path = storage_dir.join(".storage.json.lock");
@@ -449,7 +450,10 @@ pub fn ensure_storage_profile_with_cas_hook(
 
 fn ensure_private_dir(dir: &Path) -> VspResult<()> {
     fs::create_dir_all(dir).map_err(|err| {
-        VspError::Operational(format!("failed to create directory {}: {err}", dir.display()))
+        VspError::Operational(format!(
+            "failed to create directory {}: {err}",
+            dir.display()
+        ))
     })?;
     #[cfg(unix)]
     {
@@ -464,7 +468,10 @@ fn file_sha256_opt(path: &Path) -> VspResult<Option<String>> {
         return Ok(None);
     }
     let bytes = fs::read(path).map_err(|err| {
-        VspError::Operational(format!("failed to read {} for CAS hash: {err}", path.display()))
+        VspError::Operational(format!(
+            "failed to read {} for CAS hash: {err}",
+            path.display()
+        ))
     })?;
     Ok(Some(sha256_hex(&bytes)))
 }
@@ -492,17 +499,13 @@ fn generate_hex_8(attempt: u32) -> String {
         if let Ok(mut f) = File::open("/dev/urandom") {
             let mut buf = [0u8; 4];
             if f.read_exact(&mut buf).is_ok() {
-                return format!(
-                    "{:02x}{:02x}{:02x}{:02x}",
-                    buf[0], buf[1], buf[2], buf[3]
-                );
+                return format!("{:02x}{:02x}{:02x}{:02x}", buf[0], buf[1], buf[2], buf[3]);
             }
         }
     }
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     let seq = ID_NONCE.fetch_add(1, Ordering::Relaxed);
     let seed = format!("{}:{}:{}:{attempt}", std::process::id(), nanos, seq);
     sha256_hex(seed.as_bytes())[..8].to_string()
@@ -551,7 +554,10 @@ mod tests {
             "/Applications/Visual Studio Code - Insiders.app/Contents/MacOS/Electron --x",
             "/Users/Jane Doe/Applications/VSCodium.app/Contents/MacOS/VSCodium",
         ] {
-            assert!(ps_output_indicates_vscode_running(product, true), "{product}");
+            assert!(
+                ps_output_indicates_vscode_running(product, true),
+                "{product}"
+            );
         }
         // A mixed process list is "running" when one line is a VS Code product.
         let mixed = "/Applications/Slack.app/Contents/MacOS/Electron\n/Applications/Visual Studio Code.app/Contents/MacOS/Code\n";
@@ -567,7 +573,10 @@ mod tests {
             "/usr/share/code-insiders/code-insiders --new-window",
             "/usr/share/code/code",
         ] {
-            assert!(ps_output_indicates_vscode_running(running, false), "{running}");
+            assert!(
+                ps_output_indicates_vscode_running(running, false),
+                "{running}"
+            );
         }
         for not_running in [
             "/usr/bin/cat /usr/share/code/code",
@@ -577,7 +586,10 @@ mod tests {
             "/home/u/.vscode-server/bin/abc/bin/remote-cli/code file.rs",
             "/usr/bin/node /usr/share/code/resources/app/out/cli.js --list-extensions",
         ] {
-            assert!(!ps_output_indicates_vscode_running(not_running, false), "{not_running}");
+            assert!(
+                !ps_output_indicates_vscode_running(not_running, false),
+                "{not_running}"
+            );
         }
     }
 

@@ -2,8 +2,23 @@
 //!
 //! `install` and `uninstall` change symbolic links only. They never replace or delete a
 //! regular file or a directory, and `update` never uses the network.
+//!
+//! # Link ownership
+//!
+//! A link is owned by this installation when it resolves to the running executable, or
+//! when its text is the install target. `install` and `uninstall` change an owned link
+//! only. A link that some other tool made (for example a Homebrew link, or a link to a
+//! different binary) and a dangling link are foreign: `install` refuses to replace one
+//! (exit `5`) and `uninstall` keeps it, unless `--force` is given.
+//!
+//! # Stable link target
+//!
+//! A Homebrew executable has the versioned path `<prefix>/Cellar/vsp/<version>/bin/vsp`,
+//! which `brew upgrade` and `brew cleanup` delete. For such an executable the link target
+//! is the stable path `<prefix>/opt/vsp/bin/vsp`, so the links stay valid after an upgrade.
 
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -58,7 +73,9 @@ pub struct SelfLinkReport {
     pub dry_run: bool,
     /// Directory that contains the links.
     pub bin_dir: String,
-    /// Canonical executable that the links point to (install only).
+    /// Executable path that the links point to (install only). This is the canonical path
+    /// of the running executable, or its stable package-manager path when one exists
+    /// (see [`stable_executable_path`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     /// One entry for each examined link.
@@ -113,72 +130,158 @@ pub fn default_bin_dir() -> PathBuf {
     home_dir().join(".local/bin")
 }
 
-/// Creates `<bin_dir>/vsp` (and `<bin_dir>/vspcli` when `with_vspcli` is set) as symbolic
-/// links to the running executable.
+/// Returns the stable path of the executable `canonical_exe`, for use as a link target.
 ///
-/// An existing symbolic link is replaced atomically. With `dry_run`, the function reports
-/// the planned actions and changes nothing.
+/// For a Homebrew executable `<prefix>/Cellar/<formula>/<version>/<tail>`, the result is
+/// `<prefix>/opt/<formula>/<tail>` when that path resolves to `canonical_exe`. Homebrew
+/// moves the `opt/<formula>` link on each upgrade, so the path stays valid. For each other
+/// executable the result is `canonical_exe`.
+#[must_use]
+pub fn stable_executable_path(canonical_exe: &Path) -> PathBuf {
+    homebrew_opt_path(canonical_exe)
+        .filter(|candidate| {
+            fs::canonicalize(candidate).is_ok_and(|resolved| resolved == canonical_exe)
+        })
+        .unwrap_or_else(|| canonical_exe.to_path_buf())
+}
+
+/// Maps `<prefix>/Cellar/<formula>/<version>/<tail>` to `<prefix>/opt/<formula>/<tail>`.
+fn homebrew_opt_path(canonical_exe: &Path) -> Option<PathBuf> {
+    let components: Vec<_> = canonical_exe.components().collect();
+    let cellar = components.iter().rposition(|c| c.as_os_str() == "Cellar")?;
+    // After `Cellar`: the formula, the version, and at least one tail component.
+    let formula = components.get(cellar + 1)?;
+    let tail = components.get(cellar + 3..).filter(|t| !t.is_empty())?;
+    let mut out: PathBuf = components[..cellar].iter().collect();
+    out.push("opt");
+    out.push(formula);
+    out.extend(tail);
+    Some(out)
+}
+
+/// Creates `<bin_dir>/vsp` (and `<bin_dir>/vspcli` when `with_vspcli` is set) as symbolic
+/// links to the running executable (see [`stable_executable_path`] for the link target).
+///
+/// An existing link that this installation owns is replaced atomically. With `dry_run`,
+/// the function reports the planned actions and changes nothing.
 ///
 /// # Errors
 ///
-/// - [`VspError::SafetyRefusal`] (exit `5`): a link path exists and is not a symbolic link.
-///   The function examines all link paths before it changes any of them.
+/// - [`VspError::SafetyRefusal`] (exit `5`): a link path exists and is not a symbolic link,
+///   or it is a symbolic link that this installation does not own and `force` is `false`.
+///   The function examines all link paths before it changes any of them. `force` never
+///   permits the replacement of a regular file or a directory.
 /// - [`VspError::Operational`] (exit `1`): filesystem failure, or a platform without
 ///   symbolic link support.
 pub fn install(
     bin_dir: Option<&Path>,
     with_vspcli: bool,
+    force: bool,
     dry_run: bool,
 ) -> VspResult<SelfLinkReport> {
-    let target = current_executable()?;
-    install_links(&target, &resolve_bin_dir(bin_dir)?, with_vspcli, dry_run)
+    let owner = current_executable()?;
+    let plan = LinkPlan {
+        target: stable_executable_path(&owner),
+        owner,
+        force,
+        dry_run,
+    };
+    install_links(&plan, &resolve_bin_dir(bin_dir)?, with_vspcli)
 }
 
-/// Removes the `<bin_dir>/vsp` symbolic link.
+/// Removes the `<bin_dir>/vsp` and `<bin_dir>/vspcli` symbolic links that this installation
+/// owns.
 ///
-/// A `<bin_dir>/vspcli` symbolic link is also removed when it has the same link target as
-/// the removed `vsp` link. A `vspcli` link with a different target is left in place.
+/// A link that this installation does not own is kept ([`LinkAction::Skipped`]), unless
+/// `force` is `true`. A `vspcli` link with the same link text as the removed `vsp` link is
+/// its companion, and it is removed too.
 ///
 /// # Errors
 ///
 /// - [`VspError::SafetyRefusal`] (exit `5`): `<bin_dir>/vsp` exists and is not a symbolic
-///   link.
+///   link. `force` never permits the removal of a regular file or a directory.
 /// - [`VspError::Operational`] (exit `1`): filesystem failure.
-pub fn uninstall(bin_dir: Option<&Path>, dry_run: bool) -> VspResult<SelfLinkReport> {
-    let dir = resolve_bin_dir(bin_dir)?;
+pub fn uninstall(bin_dir: Option<&Path>, force: bool, dry_run: bool) -> VspResult<SelfLinkReport> {
+    let owner = current_executable()?;
+    let plan = LinkPlan {
+        target: stable_executable_path(&owner),
+        owner,
+        force,
+        dry_run,
+    };
+    uninstall_links(&plan, &resolve_bin_dir(bin_dir)?)
+}
+
+/// Inputs that are common to the link operations.
+struct LinkPlan {
+    /// Canonical path of the running executable. A link that resolves to it is owned.
+    owner: PathBuf,
+    /// Path that new links point to.
+    target: PathBuf,
+    /// Also change links that this installation does not own.
+    force: bool,
+    /// Report only; change nothing.
+    dry_run: bool,
+}
+
+impl LinkPlan {
+    /// Returns `true` when the symbolic link `link` with link text `link_text` belongs to
+    /// this installation. A dangling link resolves to nothing, so it is not owned.
+    fn owns(&self, link: &Path, link_text: &Path) -> bool {
+        link_text == self.target
+            || fs::canonicalize(link).is_ok_and(|resolved| resolved == self.owner)
+    }
+}
+
+fn uninstall_links(plan: &LinkPlan, dir: &Path) -> VspResult<SelfLinkReport> {
     let vsp_link = dir.join(VSP_LINK_NAME);
     let vspcli_link = dir.join(VSPCLI_LINK_NAME);
     let mut links = Vec::new();
 
-    let removed_target = match link_state(&vsp_link)? {
+    let removed_text = match link_state(&vsp_link)? {
         LinkState::Absent => {
             links.push(outcome(&vsp_link, LinkAction::Absent));
             None
         }
         LinkState::Other => return Err(refuse_non_symlink(&vsp_link, "remove")),
-        LinkState::Symlink(link_target) => {
-            if !dry_run {
-                remove_link(&vsp_link)?;
-            }
-            links.push(outcome(&vsp_link, LinkAction::Removed));
-            Some(link_target)
+        LinkState::Symlink(link_text) if plan.force || plan.owns(&vsp_link, &link_text) => {
+            // The companion check below resolves `vspcli` before `vsp` is removed.
+            Some(link_text)
+        }
+        LinkState::Symlink(_) => {
+            links.push(outcome(&vsp_link, LinkAction::Skipped));
+            None
         }
     };
 
-    // Remove the compatibility link only when it is clearly the companion of the `vsp` link.
-    if let LinkState::Symlink(cli_target) = link_state(&vspcli_link)? {
-        if removed_target.as_ref() == Some(&cli_target) {
-            if !dry_run {
-                remove_link(&vspcli_link)?;
-            }
-            links.push(outcome(&vspcli_link, LinkAction::Removed));
-        } else {
-            links.push(outcome(&vspcli_link, LinkAction::Skipped));
+    // Remove the compatibility link when it is ours, or the companion of the `vsp` link.
+    let vspcli_action = match link_state(&vspcli_link)? {
+        LinkState::Symlink(cli_text)
+            if plan.force
+                || removed_text.as_ref() == Some(&cli_text)
+                || plan.owns(&vspcli_link, &cli_text) =>
+        {
+            Some(LinkAction::Removed)
         }
+        LinkState::Symlink(_) => Some(LinkAction::Skipped),
+        LinkState::Absent | LinkState::Other => None,
+    };
+
+    if removed_text.is_some() {
+        if !plan.dry_run {
+            remove_link(&vsp_link)?;
+        }
+        links.push(outcome(&vsp_link, LinkAction::Removed));
+    }
+    if let Some(action) = vspcli_action {
+        if action == LinkAction::Removed && !plan.dry_run {
+            remove_link(&vspcli_link)?;
+        }
+        links.push(outcome(&vspcli_link, action));
     }
 
     Ok(SelfLinkReport {
-        dry_run,
+        dry_run: plan.dry_run,
         bin_dir: dir.display().to_string(),
         target: None,
         links,
@@ -200,17 +303,19 @@ pub fn update_guidance() -> UpdateGuidance {
 /// Formats [`UpdateGuidance`] as human-readable lines.
 #[must_use]
 pub fn format_update_guidance(guidance: &UpdateGuidance) -> String {
+    // A write to a `String` cannot fail.
     let mut out = format!("vsp {}\n", guidance.current_version);
     if let Some(exe) = &guidance.executable {
-        out.push_str(&format!("Installed at: {exe}\n"));
+        let _ = writeln!(out, "Installed at: {exe}");
     }
     out.push_str("vsp does not update itself and this command does not use the network.\n");
     out.push_str("To upgrade:\n");
-    out.push_str(&format!("  Homebrew:        {}\n", guidance.homebrew));
-    out.push_str(&format!(
-        "  GitHub Release:  download the archive for your platform from {}\n",
+    let _ = writeln!(out, "  Homebrew:        {}", guidance.homebrew);
+    let _ = writeln!(
+        out,
+        "  GitHub Release:  download the archive for your platform from {}",
         guidance.releases_url
-    ));
+    );
     out.push_str(
         "                   verify it against the release SHA256SUMS, replace the binary,\n",
     );
@@ -264,6 +369,14 @@ fn refuse_non_symlink(path: &Path, verb: &str) -> VspError {
     ))
 }
 
+fn refuse_foreign_link(path: &Path, link_text: &Path) -> VspError {
+    VspError::SafetyRefusal(format!(
+        "refusing to replace {}: it is a symbolic link to {}, which is not this vsp installation (pass --force to replace it)",
+        path.display(),
+        link_text.display()
+    ))
+}
+
 fn outcome(path: &Path, action: LinkAction) -> LinkOutcome {
     LinkOutcome {
         link: path.display().to_string(),
@@ -277,12 +390,8 @@ fn remove_link(path: &Path) -> VspResult<()> {
     })
 }
 
-fn install_links(
-    target: &Path,
-    dir: &Path,
-    with_vspcli: bool,
-    dry_run: bool,
-) -> VspResult<SelfLinkReport> {
+fn install_links(plan: &LinkPlan, dir: &Path, with_vspcli: bool) -> VspResult<SelfLinkReport> {
+    let target = plan.target.as_path();
     let mut names = vec![VSP_LINK_NAME];
     if with_vspcli {
         names.push(VSPCLI_LINK_NAME);
@@ -295,13 +404,16 @@ fn install_links(
         let action = match link_state(&link)? {
             LinkState::Absent => LinkAction::Created,
             LinkState::Symlink(existing) if existing == target => LinkAction::Unchanged,
-            LinkState::Symlink(_) => LinkAction::Replaced,
+            LinkState::Symlink(existing) if plan.force || plan.owns(&link, &existing) => {
+                LinkAction::Replaced
+            }
+            LinkState::Symlink(existing) => return Err(refuse_foreign_link(&link, &existing)),
             LinkState::Other => return Err(refuse_non_symlink(&link, "replace")),
         };
         planned.push((link, action));
     }
 
-    if !dry_run {
+    if !plan.dry_run {
         fs::create_dir_all(dir).map_err(|err| {
             VspError::Operational(format!(
                 "failed to create directory {}: {err}",
@@ -316,7 +428,7 @@ fn install_links(
     }
 
     Ok(SelfLinkReport {
-        dry_run,
+        dry_run: plan.dry_run,
         bin_dir: dir.display().to_string(),
         target: Some(target.display().to_string()),
         links: planned
@@ -388,96 +500,251 @@ mod tests {
     use super::*;
     use crate::exit_codes::ExitCode;
 
+    use std::os::unix::fs::symlink;
+
+    /// A canonical temporary directory (on macOS, `/var` is a link to `/private/var`).
+    fn canonical_tmp() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::TempDir::new().expect("tmp");
+        let root = fs::canonicalize(tmp.path()).expect("canonical tmp");
+        (tmp, root)
+    }
+
     fn fake_target(dir: &Path) -> PathBuf {
         let target = dir.join("real-vsp");
         fs::write(&target, b"#!/bin/sh\n").expect("write target");
         target
     }
 
-    #[test]
-    fn install_creates_replaces_and_keeps_links() {
-        let tmp = tempfile::TempDir::new().expect("tmp");
-        let target = fake_target(tmp.path());
-        let bin = tmp.path().join("bin");
+    /// A plan for an installation whose executable (and link target) is `target`.
+    fn plan_for(target: &Path, force: bool, dry_run: bool) -> LinkPlan {
+        LinkPlan {
+            owner: fs::canonicalize(target).expect("canonical target"),
+            target: target.to_path_buf(),
+            force,
+            dry_run,
+        }
+    }
 
-        let first = install_links(&target, &bin, true, false).expect("install");
+    #[test]
+    fn install_creates_and_keeps_links() {
+        let (_tmp, root) = canonical_tmp();
+        let target = fake_target(&root);
+        let bin = root.join("bin");
+        let plan = plan_for(&target, false, false);
+
+        let first = install_links(&plan, &bin, true).expect("install");
         assert_eq!(first.links.len(), 2);
         assert!(first.links.iter().all(|l| l.action == LinkAction::Created));
         assert_eq!(fs::read_link(bin.join("vsp")).expect("link"), target);
         assert_eq!(fs::read_link(bin.join("vspcli")).expect("link"), target);
 
-        let second = install_links(&target, &bin, true, false).expect("reinstall");
+        let second = install_links(&plan, &bin, true).expect("reinstall");
         assert!(second
             .links
             .iter()
             .all(|l| l.action == LinkAction::Unchanged));
+    }
 
-        let other = tmp.path().join("other-vsp");
-        fs::write(&other, b"x").expect("write other");
-        let third = install_links(&other, &bin, false, false).expect("replace");
-        assert_eq!(third.links[0].action, LinkAction::Replaced);
-        assert_eq!(fs::read_link(bin.join("vsp")).expect("link"), other);
+    /// R2-L1: `install` replaces a link that resolves to this executable, and refuses a
+    /// foreign or dangling link unless `force` is set.
+    #[test]
+    fn install_replaces_owned_link_and_refuses_foreign_link_without_force() {
+        let (_tmp, root) = canonical_tmp();
+        let target = fake_target(&root);
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).expect("mkdir");
+
+        // Owned: a different link text that resolves to the same executable.
+        let alias = root.join("alias-vsp");
+        symlink(&target, &alias).expect("alias");
+        symlink(&alias, bin.join("vsp")).expect("owned link");
+        let owned = install_links(&plan_for(&target, false, false), &bin, false).expect("owned");
+        assert_eq!(owned.links[0].action, LinkAction::Replaced);
+        assert_eq!(fs::read_link(bin.join("vsp")).expect("link"), target);
+
+        // Foreign: the link of another tool (for example a Homebrew link).
+        let foreign = root.join("other-tool-vsp");
+        fs::write(&foreign, b"x").expect("write foreign");
+        fs::remove_file(bin.join("vsp")).expect("rm");
+        symlink(&foreign, bin.join("vsp")).expect("foreign link");
+        let err = install_links(&plan_for(&target, false, false), &bin, true)
+            .expect_err("foreign link must be refused");
+        assert_eq!(err.exit_code(), ExitCode::SafetyRefusal);
+        assert!(err.to_string().contains("--force"), "{err}");
+        assert_eq!(fs::read_link(bin.join("vsp")).expect("link"), foreign);
+        assert!(
+            fs::symlink_metadata(bin.join("vspcli")).is_err(),
+            "no partial install"
+        );
+
+        // Dangling: ownership cannot be shown, so it is foreign too.
+        fs::remove_file(bin.join("vsp")).expect("rm");
+        symlink(root.join("gone"), bin.join("vsp")).expect("dangling link");
+        let err = install_links(&plan_for(&target, false, false), &bin, false)
+            .expect_err("dangling link must be refused");
+        assert_eq!(err.exit_code(), ExitCode::SafetyRefusal);
+
+        // `force` replaces a foreign link, and a dry run with `force` changes nothing.
+        let preview = install_links(&plan_for(&target, true, true), &bin, false).expect("preview");
+        assert_eq!(preview.links[0].action, LinkAction::Replaced);
+        assert_eq!(
+            fs::read_link(bin.join("vsp")).expect("link"),
+            root.join("gone")
+        );
+        let forced = install_links(&plan_for(&target, true, false), &bin, false).expect("forced");
+        assert_eq!(forced.links[0].action, LinkAction::Replaced);
+        assert_eq!(fs::read_link(bin.join("vsp")).expect("link"), target);
     }
 
     #[test]
     fn install_dry_run_changes_nothing() {
-        let tmp = tempfile::TempDir::new().expect("tmp");
-        let target = fake_target(tmp.path());
-        let bin = tmp.path().join("bin");
-        let report = install_links(&target, &bin, true, true).expect("dry run");
+        let (_tmp, root) = canonical_tmp();
+        let target = fake_target(&root);
+        let bin = root.join("bin");
+        let report = install_links(&plan_for(&target, false, true), &bin, true).expect("dry run");
         assert!(report.dry_run);
         assert!(!bin.exists());
     }
 
     #[test]
     fn install_refuses_regular_file_and_leaves_directory_unchanged() {
-        let tmp = tempfile::TempDir::new().expect("tmp");
-        let target = fake_target(tmp.path());
-        let bin = tmp.path().join("bin");
+        let (_tmp, root) = canonical_tmp();
+        let target = fake_target(&root);
+        let bin = root.join("bin");
         fs::create_dir_all(&bin).expect("mkdir");
         fs::write(bin.join("vspcli"), b"user file").expect("write");
 
-        let err = install_links(&target, &bin, true, false).expect_err("must refuse");
-        assert_eq!(err.exit_code(), ExitCode::SafetyRefusal);
-        assert!(!bin.join("vsp").exists(), "no partial install");
-        assert_eq!(fs::read(bin.join("vspcli")).expect("read"), b"user file");
+        // `force` never permits the replacement of a regular file.
+        for force in [false, true] {
+            let err = install_links(&plan_for(&target, force, false), &bin, true)
+                .expect_err("must refuse");
+            assert_eq!(err.exit_code(), ExitCode::SafetyRefusal);
+            assert!(!bin.join("vsp").exists(), "no partial install");
+            assert_eq!(fs::read(bin.join("vspcli")).expect("read"), b"user file");
+        }
     }
 
     #[test]
     fn uninstall_removes_links_and_refuses_regular_file() {
-        let tmp = tempfile::TempDir::new().expect("tmp");
-        let target = fake_target(tmp.path());
-        let bin = tmp.path().join("bin");
-        install_links(&target, &bin, true, false).expect("install");
+        let (_tmp, root) = canonical_tmp();
+        let target = fake_target(&root);
+        let bin = root.join("bin");
+        let plan = plan_for(&target, false, false);
+        install_links(&plan, &bin, true).expect("install");
 
-        let report = uninstall(Some(&bin), false).expect("uninstall");
+        let report = uninstall_links(&plan, &bin).expect("uninstall");
         assert_eq!(report.links.len(), 2);
         assert!(report.links.iter().all(|l| l.action == LinkAction::Removed));
         assert!(fs::symlink_metadata(bin.join("vsp")).is_err());
         assert!(fs::symlink_metadata(bin.join("vspcli")).is_err());
 
-        let again = uninstall(Some(&bin), false).expect("idempotent uninstall");
+        let again = uninstall_links(&plan, &bin).expect("idempotent uninstall");
         assert_eq!(again.links[0].action, LinkAction::Absent);
 
         fs::write(bin.join("vsp"), b"user file").expect("write");
-        let err = uninstall(Some(&bin), false).expect_err("must refuse");
-        assert_eq!(err.exit_code(), ExitCode::SafetyRefusal);
-        assert_eq!(fs::read(bin.join("vsp")).expect("read"), b"user file");
+        for force in [false, true] {
+            let err =
+                uninstall_links(&plan_for(&target, force, false), &bin).expect_err("must refuse");
+            assert_eq!(err.exit_code(), ExitCode::SafetyRefusal);
+            assert_eq!(fs::read(bin.join("vsp")).expect("read"), b"user file");
+        }
     }
 
     #[test]
     fn uninstall_keeps_foreign_vspcli_link() {
-        let tmp = tempfile::TempDir::new().expect("tmp");
-        let target = fake_target(tmp.path());
-        let bin = tmp.path().join("bin");
-        install_links(&target, &bin, false, false).expect("install");
-        let foreign = tmp.path().join("legacy-vspcli");
+        let (_tmp, root) = canonical_tmp();
+        let target = fake_target(&root);
+        let bin = root.join("bin");
+        let plan = plan_for(&target, false, false);
+        install_links(&plan, &bin, false).expect("install");
+        let foreign = root.join("legacy-vspcli");
         fs::write(&foreign, b"x").expect("write");
-        std::os::unix::fs::symlink(&foreign, bin.join("vspcli")).expect("foreign link");
+        symlink(&foreign, bin.join("vspcli")).expect("foreign link");
 
-        let report = uninstall(Some(&bin), false).expect("uninstall");
+        let report = uninstall_links(&plan, &bin).expect("uninstall");
+        assert_eq!(report.links[0].action, LinkAction::Removed);
         assert_eq!(report.links[1].action, LinkAction::Skipped);
         assert_eq!(fs::read_link(bin.join("vspcli")).expect("link"), foreign);
+    }
+
+    /// R2-L1: `uninstall` keeps a `vsp` link that another tool owns, unless `force` is set.
+    #[test]
+    fn uninstall_keeps_foreign_vsp_link_without_force() {
+        let (_tmp, root) = canonical_tmp();
+        let target = fake_target(&root);
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).expect("mkdir");
+        let foreign = root.join("homebrew-vsp");
+        fs::write(&foreign, b"x").expect("write");
+        symlink(&foreign, bin.join("vsp")).expect("foreign vsp");
+        symlink(&foreign, bin.join("vspcli")).expect("foreign vspcli");
+
+        let kept = uninstall_links(&plan_for(&target, false, false), &bin).expect("uninstall");
+        assert!(kept.links.iter().all(|l| l.action == LinkAction::Skipped));
+        assert_eq!(fs::read_link(bin.join("vsp")).expect("link"), foreign);
+        assert_eq!(fs::read_link(bin.join("vspcli")).expect("link"), foreign);
+
+        let preview = uninstall_links(&plan_for(&target, true, true), &bin).expect("preview");
+        assert!(preview
+            .links
+            .iter()
+            .all(|l| l.action == LinkAction::Removed));
+        assert_eq!(fs::read_link(bin.join("vsp")).expect("link"), foreign);
+
+        let forced = uninstall_links(&plan_for(&target, true, false), &bin).expect("forced");
+        assert!(forced.links.iter().all(|l| l.action == LinkAction::Removed));
+        assert!(fs::symlink_metadata(bin.join("vsp")).is_err());
+        assert!(fs::symlink_metadata(bin.join("vspcli")).is_err());
+    }
+
+    /// R2-L2: a Homebrew Cellar executable is linked through the stable `opt/<formula>`
+    /// path. A path that is not in a Cellar, or has no matching `opt` link, stays as it is.
+    #[test]
+    fn stable_executable_path_prefers_homebrew_opt_link() {
+        let (_tmp, root) = canonical_tmp();
+        let cellar_bin = root.join("Cellar/vsp/3.0.0/bin");
+        fs::create_dir_all(&cellar_bin).expect("mkdir cellar");
+        let exe = cellar_bin.join("vsp");
+        fs::write(&exe, b"#!/bin/sh\n").expect("write exe");
+
+        // No `opt` link yet: the canonical path is the only safe target.
+        assert_eq!(stable_executable_path(&exe), exe);
+
+        fs::create_dir_all(root.join("opt")).expect("mkdir opt");
+        symlink(root.join("Cellar/vsp/3.0.0"), root.join("opt/vsp")).expect("opt link");
+        let stable = root.join("opt/vsp/bin/vsp");
+        assert_eq!(stable_executable_path(&exe), stable);
+
+        // An `opt` link to a different version is not this executable.
+        let other_bin = root.join("Cellar/vsp/3.1.0/bin");
+        fs::create_dir_all(&other_bin).expect("mkdir other");
+        let other_exe = other_bin.join("vsp");
+        fs::write(&other_exe, b"#!/bin/sh\n").expect("write other exe");
+        assert_eq!(stable_executable_path(&other_exe), other_exe);
+
+        // Not a Cellar path.
+        let plain = fake_target(&root);
+        assert_eq!(stable_executable_path(&plain), plain);
+
+        // The links made for a Cellar executable use the stable path, and the installation
+        // owns them after the version directory moves.
+        let bin = root.join("bin");
+        let plan = LinkPlan {
+            owner: exe.clone(),
+            target: stable_executable_path(&exe),
+            force: false,
+            dry_run: false,
+        };
+        install_links(&plan, &bin, false).expect("install");
+        assert_eq!(fs::read_link(bin.join("vsp")).expect("link"), stable);
+        let after_upgrade = LinkPlan {
+            owner: other_exe,
+            target: stable.clone(),
+            force: false,
+            dry_run: false,
+        };
+        let again = install_links(&after_upgrade, &bin, false).expect("reinstall after upgrade");
+        assert_eq!(again.links[0].action, LinkAction::Unchanged);
     }
 
     #[test]

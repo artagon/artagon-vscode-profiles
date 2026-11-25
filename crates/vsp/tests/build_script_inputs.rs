@@ -32,7 +32,12 @@ fn a14_build_script_rejects_symlinked_required_inputs_and_packs_root() {
     fs::write(elsewhere.join("lock-v1.json"), "{}").expect("write lock v1");
 
     // Real files and directories are accepted. A missing input is not this check's error.
-    for rel in ["catalog/extensions.jsonc", "presets.jsonc", "packs", "vsp.lock.json"] {
+    for rel in [
+        "catalog/extensions.jsonc",
+        "presets.jsonc",
+        "packs",
+        "vsp.lock.json",
+    ] {
         assert!(reject_symlink_components(&root, rel).is_ok(), "{rel}");
     }
 

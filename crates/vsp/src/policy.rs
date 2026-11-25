@@ -338,7 +338,10 @@ fn inspect_autonomy_node(
 /// Validates that `digest` is a lowercase 64-character hexadecimal SHA-256 string.
 #[must_use]
 pub fn is_valid_sha256_hex(digest: &str) -> bool {
-    digest.len() == 64 && digest.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Host suffixes of the Visual Studio Marketplace asset CDNs (each needs a non-empty prefix).
@@ -369,7 +372,8 @@ pub fn check_vsix_url(url: &str, allow_test_urls: bool) -> Result<(), String> {
             "rejected URL with whitespace, control character, or backslash: {url:?}"
         ));
     }
-    let parsed = url::Url::parse(url).map_err(|err| format!("rejected unparsable URL {url}: {err}"))?;
+    let parsed =
+        url::Url::parse(url).map_err(|err| format!("rejected unparsable URL {url}: {err}"))?;
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(format!("rejected URL with userinfo: {url}"));
     }
@@ -463,7 +467,9 @@ pub fn validate_repository(catalog: &WorkspaceCatalog) -> ValidationReport {
     if is_embedded {
         checked_files += embedded_snapshot_files().len();
     } else {
-        for dir_name in ["catalog", "packs", "modules", "profiles", "_merged", "exports"] {
+        for dir_name in [
+            "catalog", "packs", "modules", "profiles", "_merged", "exports",
+        ] {
             let dir = catalog.root.join(dir_name);
             if dir.is_dir() {
                 validate_tree_syntax(&catalog.root, &dir, &mut checked_files, &mut violations);
@@ -594,14 +600,7 @@ pub fn validate_repository(catalog: &WorkspaceCatalog) -> ValidationReport {
         if let Some(rel) = &def.manifest.settings.workspace {
             if let Some(ws_map) = &def.workspace_settings {
                 let src = def.dir.join(rel).display().to_string();
-                validate_settings_fragment(
-                    catalog,
-                    &src,
-                    ws_map,
-                    true,
-                    &ux_keys,
-                    &mut violations,
-                );
+                validate_settings_fragment(catalog, &src, ws_map, true, &ux_keys, &mut violations);
             }
         }
         if let Some(rel) = &def.manifest.settings.profile {
@@ -805,7 +804,9 @@ fn validate_catalog_and_publishers(
     if actual_pubs != &normalized_actual {
         violations.push(PolicyViolation {
             source: "catalog/publishers.json".to_string(),
-            message: "catalog/publishers.json is not strictly lowercase, unique, and LC_ALL=C sorted".to_string(),
+            message:
+                "catalog/publishers.json is not strictly lowercase, unique, and LC_ALL=C sorted"
+                    .to_string(),
         });
     }
     if normalized_actual != expected_pubs {
@@ -857,10 +858,7 @@ fn validate_pins(catalog: &WorkspaceCatalog, violations: &mut Vec<PolicyViolatio
                 if !pin.version.is_empty() && semver::Version::parse(&pin.version).is_err() {
                     violations.push(PolicyViolation {
                         source: src.to_string(),
-                        message: format!(
-                            "invalid semver version for pin {k}: {}",
-                            pin.version
-                        ),
+                        message: format!("invalid semver version for pin {k}: {}", pin.version),
                     });
                 }
             }
@@ -872,10 +870,7 @@ fn validate_pins(catalog: &WorkspaceCatalog, violations: &mut Vec<PolicyViolatio
         {
             violations.push(PolicyViolation {
                 source: "catalog/setting-scopes.json".to_string(),
-                message: format!(
-                    "invalid semver vscodeVersion: {}",
-                    scopes.vscode_version
-                ),
+                message: format!("invalid semver vscodeVersion: {}", scopes.vscode_version),
             });
         }
     }
@@ -946,7 +941,10 @@ fn validate_settings_fragment(
         if scopes.forbidden_keys.iter().any(|fk| fk == key) {
             violations.push(PolicyViolation {
                 source: source.to_string(),
-                message: format!("forbidden/deprecated VS Code {} key: {key}", scopes.vscode_version),
+                message: format!(
+                    "forbidden/deprecated VS Code {} key: {key}",
+                    scopes.vscode_version
+                ),
             });
         }
         let Some(spec) = scopes.settings.get(key) else {
@@ -1018,10 +1016,7 @@ fn validate_settings_fragment(
     }
 }
 
-fn validate_module_collisions(
-    catalog: &WorkspaceCatalog,
-    violations: &mut Vec<PolicyViolation>,
-) {
+fn validate_module_collisions(catalog: &WorkspaceCatalog, violations: &mut Vec<PolicyViolation>) {
     // Precompute transitive requires[] ancestors for each module.
     let mut ancestors: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for id in catalog.modules.keys() {
@@ -1123,10 +1118,22 @@ fn validate_module_collisions(
 
 fn validate_ux_symmetry(catalog: &WorkspaceCatalog, violations: &mut Vec<PolicyViolation>) {
     let (Some(crisp), Some(retina), Some(default_ux), Some(core)) = (
-        catalog.modules.get("crisp").and_then(|m| m.profile_settings.as_ref()),
-        catalog.modules.get("retina").and_then(|m| m.profile_settings.as_ref()),
-        catalog.modules.get("default").and_then(|m| m.profile_settings.as_ref()),
-        catalog.modules.get("core-editor").and_then(|m| m.profile_settings.as_ref()),
+        catalog
+            .modules
+            .get("crisp")
+            .and_then(|m| m.profile_settings.as_ref()),
+        catalog
+            .modules
+            .get("retina")
+            .and_then(|m| m.profile_settings.as_ref()),
+        catalog
+            .modules
+            .get("default")
+            .and_then(|m| m.profile_settings.as_ref()),
+        catalog
+            .modules
+            .get("core-editor")
+            .and_then(|m| m.profile_settings.as_ref()),
     ) else {
         violations.push(PolicyViolation {
             source: "modules/ux".to_string(),
@@ -1161,18 +1168,25 @@ fn validate_ux_symmetry(catalog: &WorkspaceCatalog, violations: &mut Vec<PolicyV
             message: "retina workbench.iconTheme must be 'catppuccin-mocha'".to_string(),
         });
     }
-    if retina.get("workbench.productIconTheme").and_then(Value::as_str) != Some("fluent-icons") {
+    if retina
+        .get("workbench.productIconTheme")
+        .and_then(Value::as_str)
+        != Some("fluent-icons")
+    {
         violations.push(PolicyViolation {
             source: "modules/ux/retina/settings.profile.jsonc".to_string(),
             message: "retina workbench.productIconTheme must be 'fluent-icons'".to_string(),
         });
     }
-    if crisp.get("workbench.productIconTheme").and_then(Value::as_str)
+    if crisp
+        .get("workbench.productIconTheme")
+        .and_then(Value::as_str)
         != Some("material-product-icons")
     {
         violations.push(PolicyViolation {
             source: "modules/ux/crisp/settings.profile.jsonc".to_string(),
-            message: "crisp workbench.productIconTheme must be 'material-product-icons'".to_string(),
+            message: "crisp workbench.productIconTheme must be 'material-product-icons'"
+                .to_string(),
         });
     }
     for k in &crisp_keys {
@@ -1213,7 +1227,9 @@ fn validate_profiles_and_artifacts(
             Err(err) => {
                 violations.push(PolicyViolation {
                     source: src,
-                    message: format!("profile '{name}' canonical settings compilation failed: {err}"),
+                    message: format!(
+                        "profile '{name}' canonical settings compilation failed: {err}"
+                    ),
                 });
             }
         }
@@ -1341,7 +1357,11 @@ fn check_baseline_invariants(
     let Some(obj) = settings.as_object() else {
         return;
     };
-    if obj.get("workbench.sideBar.location").and_then(Value::as_str) != Some("left") {
+    if obj
+        .get("workbench.sideBar.location")
+        .and_then(Value::as_str)
+        != Some("left")
+    {
         violations.push(PolicyViolation {
             source: source.to_string(),
             message: "workbench.sideBar.location != left".to_string(),
@@ -1555,7 +1575,10 @@ mod tests {
             "x",
             "x.y",
         ] {
-            assert!(flat.iter().any(|k| k == expected), "missing {expected}: {flat:?}");
+            assert!(
+                flat.iter().any(|k| k == expected),
+                "missing {expected}: {flat:?}"
+            );
         }
 
         let catalog = load_legacy_catalog(&repo_root()).expect("catalog");
@@ -1589,7 +1612,8 @@ mod tests {
         let telemetry_hits = violations
             .iter()
             .filter(|v| {
-                v.message.contains("key telemetry.telemetryLevel has scope=application")
+                v.message
+                    .contains("key telemetry.telemetryLevel has scope=application")
             })
             .count();
         assert_eq!(telemetry_hits, 2, "{violations:?}");
@@ -1645,7 +1669,8 @@ mod tests {
         assert!(report
             .violations
             .iter()
-            .any(|v| v.message.contains("object-vs-leaf collision") && v.message.contains("test.conflict")));
+            .any(|v| v.message.contains("object-vs-leaf collision")
+                && v.message.contains("test.conflict")));
     }
 
     #[test]

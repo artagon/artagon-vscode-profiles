@@ -7,7 +7,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -24,6 +24,9 @@ use crate::vscode::InstalledExtension;
 
 /// Maximum number of concurrent VSIX download/verification worker threads.
 pub const MAX_VSIX_WORKERS: usize = 4;
+
+/// Result of one VSIX job: the install argument, or `(message, is_safety_refusal)`.
+type WorkerOutcome = Result<String, (String, bool)>;
 
 /// Maximum number of HTTP redirects followed while validating every hop.
 const MAX_REDIRECT_HOPS: usize = 10;
@@ -187,7 +190,10 @@ pub fn resolve_vsix_cache_dir(override_dir: Option<&Path>) -> PathBuf {
 /// Returns `true` when `ARTAGON_VSCODE_ALLOW_TEST_PIN_URL=1` enables local test URLs.
 #[must_use]
 pub fn allow_test_pin_urls() -> bool {
-    env::var("ARTAGON_VSCODE_ALLOW_TEST_PIN_URL").ok().as_deref() == Some("1")
+    env::var("ARTAGON_VSCODE_ALLOW_TEST_PIN_URL")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 /// Returns `true` when explicit unlocked bypass is active via CLI flag or env hook.
@@ -263,12 +269,7 @@ pub fn load_combined_pin_index(
         let lock_doc: VspLockFile = serde_json::from_slice(&raw_bytes).map_err(|err| {
             VspError::SafetyRefusal(format!("vsix: malformed vsp.lock.json {lock_label}: {err}"))
         })?;
-        if lock_doc.pin_required
-            || lock_doc
-                .tier2
-                .as_ref()
-                .is_some_and(|t2| t2.pin_required)
-        {
+        if lock_doc.pin_required || lock_doc.tier2.as_ref().is_some_and(|t2| t2.pin_required) {
             pin_required = true;
         }
         let host_platform = current_lock_platform();
@@ -467,13 +468,8 @@ pub fn fetch_and_verify_vsix(
 
     // Stream download into a private 0600 staging file while validating every redirect hop.
     let stage = make_staging_path(cache_dir, "dl");
-    let download_result = stream_verified_download(
-        &pin.vsix_url,
-        &expected,
-        &stage,
-        allow_test_urls,
-        &pin.id,
-    );
+    let download_result =
+        stream_verified_download(&pin.vsix_url, &expected, &stage, allow_test_urls, &pin.id);
     if let Err(err) = download_result {
         let _ = fs::remove_file(&stage);
         return Err(err);
@@ -589,9 +585,7 @@ fn stream_verified_download(
             ))
         })?;
         let actual = copy_and_sha256(&mut reader, &mut dst, MAX_VSIX_BYTES).map_err(|err| {
-            VspError::Operational(format!(
-                "vsix: stream read failed for '{ext_id}': {err}"
-            ))
+            VspError::Operational(format!("vsix: stream read failed for '{ext_id}': {err}"))
         })?;
         dst.sync_all().map_err(|err| {
             VspError::Operational(format!("vsix: failed syncing staging file: {err}"))
@@ -660,7 +654,6 @@ pub fn resolve_and_verify_batch(
     let allow_test = allow_test_pin_urls();
 
     // Partition into jobs (pinned downloads) vs pass-through or missing-required errors.
-    type WorkerOutcome = Result<String, (String, bool)>;
     let mut slots: Vec<Option<WorkerOutcome>> = vec![None; ext_ids.len()];
     let mut jobs: VecDeque<(usize, LockPinEntry)> = VecDeque::new();
 
@@ -709,33 +702,42 @@ pub fn resolve_and_verify_batch(
         let queue = Mutex::new(jobs);
         let results: Mutex<Vec<(usize, WorkerOutcome)>> = Mutex::new(Vec::new());
 
+        // A poisoned lock means that another worker panicked. The queue and the result list
+        // are still valid, so the other workers continue. A job without a result is
+        // reported as a failure below: a worker panic never installs an extension.
         thread::scope(|scope| {
-            for _ in 0..worker_count {
-                scope.spawn(|| loop {
-                    let next = {
-                        let mut q = queue.lock().expect("vsix queue lock");
-                        q.pop_front()
-                    };
-                    let Some((idx, pin)) = next else {
-                        break;
-                    };
-                    let outcome = match fetch_and_verify_vsix(&pin, &cache_dir, allow_test) {
-                        Ok(path) => Ok(path.display().to_string()),
-                        Err(err) => Err((
-                            err.to_string(),
-                            matches!(err, VspError::SafetyRefusal(_)),
-                        )),
-                    };
-                    results
-                        .lock()
-                        .expect("vsix results lock")
-                        .push((idx, outcome));
-                });
+            let workers: Vec<_> = (0..worker_count)
+                .map(|_| {
+                    scope.spawn(|| loop {
+                        let next = queue
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .pop_front();
+                        let Some((idx, pin)) = next else {
+                            break;
+                        };
+                        let outcome = fetch_and_verify_vsix(&pin, &cache_dir, allow_test)
+                            .map(|path| path.display().to_string())
+                            .map_err(|err| {
+                                (err.to_string(), matches!(err, VspError::SafetyRefusal(_)))
+                            });
+                        results
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .push((idx, outcome));
+                    })
+                })
+                .collect();
+            // An explicit join keeps a worker panic out of this thread.
+            for worker in workers {
+                let _ = worker.join();
             }
         });
 
-        for (idx, outcome) in results.into_inner().expect("vsix results") {
-            slots[idx] = Some(outcome);
+        for (idx, outcome) in results.into_inner().unwrap_or_else(PoisonError::into_inner) {
+            if let Some(slot) = slots.get_mut(idx) {
+                *slot = Some(outcome);
+            }
         }
     }
 
@@ -814,14 +816,45 @@ pub fn compute_pin_repairs(
 ///
 /// Returns [`VspError::SafetyRefusal`] (exit `5`) when downgrades are not confirmed.
 pub fn confirm_pin_downgrades(repairs: &[PinRepairItem], assume_yes: bool) -> VspResult<()> {
+    let stdin = io::stdin();
+    let stdin_is_tty = stdin.is_terminal();
+    confirm_pin_downgrades_with_io(
+        repairs,
+        assume_yes,
+        stdin_is_tty,
+        &mut stdin.lock(),
+        &mut io::stderr(),
+    )
+}
+
+/// [`confirm_pin_downgrades`] with explicit input and output streams.
+///
+/// The caller states whether standard input is a terminal (`stdin_is_tty`) and supplies the
+/// answer `reader` and the message writer `err_writer`. The function never touches the
+/// process standard streams, so a unit test cannot block on an interactive terminal: with
+/// `stdin_is_tty = false` the `reader` is never read.
+///
+/// # Errors
+///
+/// Returns [`VspError::SafetyRefusal`] (exit `5`) when a downgrade is not confirmed: no
+/// `assume_yes` and no terminal, an answer other than `y`/`yes`, or an unreadable answer.
+pub fn confirm_pin_downgrades_with_io(
+    repairs: &[PinRepairItem],
+    assume_yes: bool,
+    stdin_is_tty: bool,
+    reader: &mut dyn io::BufRead,
+    err_writer: &mut dyn Write,
+) -> VspResult<()> {
     let downgrades: Vec<&PinRepairItem> = repairs.iter().filter(|r| r.is_downgrade).collect();
     if downgrades.is_empty() {
         return Ok(());
     }
 
-    eprintln!("--repair-pins downgrade preview:");
+    // Messages are best-effort: a closed stderr must not change the decision.
+    let _ = writeln!(err_writer, "--repair-pins downgrade preview:");
     for item in &downgrades {
-        eprintln!(
+        let _ = writeln!(
+            err_writer,
             "  downgrade {}: {} -> {}",
             item.id, item.installed_version, item.pinned_version
         );
@@ -831,16 +864,16 @@ pub fn confirm_pin_downgrades(repairs: &[PinRepairItem], assume_yes: bool) -> Vs
         return Ok(());
     }
 
-    if !io::stdin().is_terminal() {
+    if !stdin_is_tty {
         return Err(VspError::SafetyRefusal(
             "--repair-pins would downgrade pinned extension(s) in non-interactive mode; re-run with --yes to confirm".to_string(),
         ));
     }
 
-    eprint!("Proceed with pin downgrade(s)? [y/N]: ");
-    let _ = io::stderr().flush();
+    let _ = write!(err_writer, "Proceed with pin downgrade(s)? [y/N]: ");
+    let _ = err_writer.flush();
     let mut line = String::new();
-    io::stdin().read_line(&mut line).map_err(|err| {
+    reader.read_line(&mut line).map_err(|err| {
         VspError::SafetyRefusal(format!("failed reading downgrade confirmation: {err}"))
     })?;
     let ans = line.trim().to_ascii_lowercase();
@@ -914,9 +947,9 @@ pub fn managed_extensions_fully_pinned(
         if !pin.has_verified_artifact() || pin.version.is_empty() {
             return Ok(false);
         }
-        let matches_lock = installed
-            .iter()
-            .any(|ext| ext.id.eq_ignore_ascii_case(&lc) && ext.version.as_deref() == Some(&pin.version));
+        let matches_lock = installed.iter().any(|ext| {
+            ext.id.eq_ignore_ascii_case(&lc) && ext.version.as_deref() == Some(&pin.version)
+        });
         if !matches_lock {
             return Ok(false);
         }
@@ -956,10 +989,7 @@ pub fn is_valid_extension_id_syntax(id: &str) -> bool {
 ///
 /// Returns [`VspError::IncompleteObservation`] (exit `7`) if the Marketplace API cannot be
 /// reached or returns a malformed response.
-pub fn query_marketplace_universal_pin(
-    ext_id: &str,
-    api_url: &str,
-) -> VspResult<ExtensionPin> {
+pub fn query_marketplace_universal_pin(ext_id: &str, api_url: &str) -> VspResult<ExtensionPin> {
     let payload = serde_json::json!({
         "filters": [{
             "criteria": [{ "filterType": 7, "value": ext_id }],
@@ -987,9 +1017,7 @@ pub fn query_marketplace_universal_pin(
         })?;
 
     let body: Value = resp.body_mut().read_json().map_err(|err| {
-        VspError::IncompleteObservation(format!(
-            "malformed Marketplace JSON for '{ext_id}': {err}"
-        ))
+        VspError::IncompleteObservation(format!("malformed Marketplace JSON for '{ext_id}': {err}"))
     })?;
 
     let versions = body
@@ -1137,7 +1165,8 @@ fn copy_and_sha256<R: Read, W: Write>(
     max_bytes: u64,
 ) -> io::Result<String> {
     let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
+    // A heap buffer: several worker threads run this function, each on its own stack.
+    let mut buf = vec![0u8; 64 * 1024];
     let mut total: u64 = 0;
 
     loop {
@@ -1202,10 +1231,13 @@ mod tests {
             5
         );
         assert_eq!(
-            validate_vsix_url("https://marketplace.visualstudio.com@evil.example/pkg", false)
-                .unwrap_err()
-                .exit_code()
-                .as_i32(),
+            validate_vsix_url(
+                "https://marketplace.visualstudio.com@evil.example/pkg",
+                false
+            )
+            .unwrap_err()
+            .exit_code()
+            .as_i32(),
             5
         );
     }
@@ -1249,7 +1281,10 @@ mod tests {
             .filter_map(Result::ok)
             .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
             .collect();
-        assert!(leftover.is_empty(), "temp staging files leaked: {leftover:?}");
+        assert!(
+            leftover.is_empty(),
+            "temp staging files leaked: {leftover:?}"
+        );
     }
 
     #[test]
@@ -1278,11 +1313,64 @@ mod tests {
                 tier: Some(1),
             },
         };
-        // The test harness stdin is not a terminal, so an unconfirmed downgrade is refused.
-        let err = confirm_pin_downgrades(std::slice::from_ref(&item), false)
-            .expect_err("unconfirmed downgrade must be refused");
-        assert_eq!(err.exit_code().as_i32(), 5);
-        assert!(confirm_pin_downgrades(&[item], true).is_ok());
+        // The test supplies the streams, so it never reads the process stdin and cannot
+        // block when `cargo test` runs in an interactive terminal.
+        let repairs = std::slice::from_ref(&item);
+        let run = |assume_yes: bool, is_tty: bool, answer: &str| {
+            let mut reader = io::Cursor::new(answer.as_bytes().to_vec());
+            let mut messages: Vec<u8> = Vec::new();
+            let result = confirm_pin_downgrades_with_io(
+                repairs,
+                assume_yes,
+                is_tty,
+                &mut reader,
+                &mut messages,
+            );
+            (result, String::from_utf8_lossy(&messages).into_owned())
+        };
+
+        // Not a terminal and no --yes: refused, and the answer stream is never consulted.
+        let (refused, messages) = run(false, false, "y\n");
+        assert_eq!(
+            refused.expect_err("non-interactive").exit_code().as_i32(),
+            5
+        );
+        assert!(
+            messages.contains("downgrade a.b: 2024.11 -> 1.0.0"),
+            "{messages}"
+        );
+        assert!(
+            !messages.contains("Proceed"),
+            "no prompt without a terminal"
+        );
+
+        // --yes confirms without a prompt.
+        assert!(run(true, false, "").0.is_ok());
+
+        // A terminal: only `y` or `yes` confirms. Empty input (EOF) refuses.
+        let (confirmed, prompt) = run(false, true, "YES\n");
+        assert!(confirmed.is_ok());
+        assert!(prompt.contains("Proceed with pin downgrade(s)? [y/N]: "));
+        assert!(run(false, true, "y\n").0.is_ok());
+        for answer in ["n\n", "\n", "", "maybe\n"] {
+            let err = run(false, true, answer).0.expect_err(answer);
+            assert_eq!(err.exit_code().as_i32(), 5, "{answer:?}");
+        }
+
+        // No downgrade in the list: nothing to confirm and nothing printed.
+        let mut not_downgrade = item.clone();
+        not_downgrade.is_downgrade = false;
+        let mut reader = io::Cursor::new(Vec::new());
+        let mut messages: Vec<u8> = Vec::new();
+        assert!(confirm_pin_downgrades_with_io(
+            std::slice::from_ref(&not_downgrade),
+            false,
+            false,
+            &mut reader,
+            &mut messages
+        )
+        .is_ok());
+        assert!(messages.is_empty());
     }
 
     /// Opus L3: test URLs need an exact loopback host. A prefix match is not enough.
@@ -1295,7 +1383,10 @@ mod tests {
             "file:///tmp/sample.vsix",
         ] {
             assert!(validate_vsix_url(ok, true).is_ok(), "{ok}");
-            assert!(validate_vsix_url(ok, false).is_err(), "{ok} needs the test flag");
+            assert!(
+                validate_vsix_url(ok, false).is_err(),
+                "{ok} needs the test flag"
+            );
         }
         for bad in [
             "http://localhost.evil.com/pkg",
@@ -1383,7 +1474,10 @@ mod tests {
             .expect("resolve");
         assert!(!strict.unlocked_bypass);
         let failed: Vec<&str> = strict.failures.iter().map(|f| f.id.as_str()).collect();
-        assert_eq!(failed, vec!["a.pending", "a.stale", "b.native", "c.badversion"]);
+        assert_eq!(
+            failed,
+            vec!["a.pending", "a.stale", "b.native", "c.badversion"]
+        );
         assert!(strict.failures.iter().all(|f| f.is_safety_refusal));
         assert!(strict.failures[0].message.contains("Tier 1 hash lock"));
         assert_eq!(
@@ -1449,10 +1543,19 @@ mod tests {
         let (host_index, _, _) = load_combined_pin_index(&host_catalog, false).expect("host index");
         let native = &host_index["g.hostnative"];
         assert_eq!(native.tier, Some(1));
-        assert!(native.has_verified_artifact(), "this platform has a verified target");
+        assert!(
+            native.has_verified_artifact(),
+            "this platform has a verified target"
+        );
         let (index, _, _) = load_combined_pin_index(&catalog, false).expect("index");
-        assert!(!index["b.native"].has_verified_artifact(), "another platform only");
-        assert!(!index["a.stale"].has_verified_artifact(), "pending digests are ignored");
+        assert!(
+            !index["b.native"].has_verified_artifact(),
+            "another platform only"
+        );
+        assert!(
+            !index["a.stale"].has_verified_artifact(),
+            "pending digests are ignored"
+        );
         assert!(!index.contains_key("e.tier3"), "Tier 3 is not a lock entry");
     }
 

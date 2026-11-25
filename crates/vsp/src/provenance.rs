@@ -158,7 +158,7 @@ pub fn compute_workspace_fingerprint(ws_canon: &Path) -> String {
 #[cfg(unix)]
 fn directory_inode(path: &Path) -> u64 {
     use std::os::unix::fs::MetadataExt;
-    fs::metadata(path).map(|m| m.ino()).unwrap_or(0)
+    fs::metadata(path).map_or(0, |m| m.ino())
 }
 
 #[cfg(not(unix))]
@@ -220,8 +220,7 @@ pub fn save_workspace_provenance(prov: &WorkspaceProvenance) -> VspResult<PathBu
 pub fn now_rfc3339_utc() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     format_unix_secs_rfc3339(secs)
 }
 
@@ -247,24 +246,30 @@ pub fn format_unix_secs_rfc3339(secs: u64) -> String {
 }
 
 /// Howard Hinnant's proleptic Gregorian civil-from-days algorithm (zero external deps).
-fn civil_from_unix_secs(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
-    let days = (secs / 86_400) as i64;
+///
+/// The input is unsigned (no time before 1970), so each step is exact in `u64` and the
+/// algorithm needs no signed arithmetic.
+fn civil_from_unix_secs(secs: u64) -> (u64, u32, u32, u32, u32, u32) {
+    // Each narrowed value is less than 60, 24, 32, or 13.
+    let narrow = |value: u64| u32::try_from(value).unwrap_or(u32::MAX);
+
+    let days = secs / 86_400;
     let rem = secs % 86_400;
-    let hh = (rem / 3600) as u32;
-    let mm = ((rem % 3600) / 60) as u32;
-    let ss = (rem % 60) as u32;
+    let hh = narrow(rem / 3600);
+    let mm = narrow((rem % 3600) / 60);
+    let ss = narrow(rem % 60);
 
     let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = (yoe as i64) + era * 400;
+    let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if m <= 2 { y + 1 } else { y };
-    (year, m as u32, d as u32, hh, mm, ss)
+    (year, narrow(m), narrow(d), hh, mm, ss)
 }
 
 /// Creates a bounded timestamped `0600` backup of `target` (if it exists as a regular file)
@@ -274,25 +279,39 @@ fn civil_from_unix_secs(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
 ///
 /// Returns [`VspError::Operational`] if copying or setting permissions fails.
 pub fn backup_file_bounded(target: &Path, keep: usize) -> VspResult<Option<PathBuf>> {
-    if !target.is_file() {
-        return Ok(None);
-    }
     let parent = target.parent().ok_or_else(|| {
         VspError::Operational(format!(
             "cannot determine parent directory for backup of {}",
             target.display()
         ))
     })?;
-    let base = target
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| {
-            VspError::Operational(format!("non-UTF-8 filename: {}", target.display()))
-        })?;
+    backup_file_bounded_in(target, parent, keep)
+}
+
+/// Same as [`backup_file_bounded`], but the backup is written to `backup_dir` and not next
+/// to `target`.
+///
+/// Use this for a file in a directory that the user shares or tracks (for example a
+/// workspace `.vscode/` directory), so no `*.bak.*` file appears there.
+///
+/// # Errors
+///
+/// Returns [`VspError::Operational`] if copying or setting permissions fails.
+pub fn backup_file_bounded_in(
+    target: &Path,
+    backup_dir: &Path,
+    keep: usize,
+) -> VspResult<Option<PathBuf>> {
+    if !target.is_file() {
+        return Ok(None);
+    }
+    let base = target.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+        VspError::Operational(format!("non-UTF-8 filename: {}", target.display()))
+    })?;
 
     let stamp = now_compact_utc();
     let pid = std::process::id();
-    let backup_path = parent.join(format!("{base}.bak.{stamp}.{pid}"));
+    let backup_path = backup_dir.join(format!("{base}.bak.{stamp}.{pid}"));
 
     let data = fs::read(target).map_err(|err| {
         VspError::Operational(format!(
@@ -301,8 +320,54 @@ pub fn backup_file_bounded(target: &Path, keep: usize) -> VspResult<Option<PathB
         ))
     })?;
     write_file_atomic(&backup_path, &data, 0o600, true)?;
-    prune_backups(target, keep)?;
+    prune_backups_in(backup_dir, base, keep)?;
     Ok(Some(backup_path))
+}
+
+/// Returns the private backup directory for workspace `ws_canon`:
+/// `${XDG_STATE_HOME:-~/.local/state}/vsp/backups/workspaces/<sha256 of the canonical path>`.
+///
+/// Workspace backups live here, not in the workspace `.vscode/` directory, so they never
+/// appear in a team repository.
+#[must_use]
+pub fn workspace_backup_dir(ws_canon: &Path) -> PathBuf {
+    let hash = crate::resolver::sha256_hex(ws_canon.to_string_lossy().as_bytes());
+    resolve_xdg_state_home()
+        .join("vsp/backups/workspaces")
+        .join(hash)
+}
+
+/// Backs up a workspace file under [`workspace_backup_dir`] (mode `0600`, newest `keep`
+/// files, directory mode `0700`). No path component beneath the XDG state root may be a
+/// symbolic link.
+///
+/// # Errors
+///
+/// Returns [`VspError::SafetyRefusal`] (exit `5`) for a symlinked backup directory
+/// component, or [`VspError::Operational`] if the backup cannot be written.
+pub fn backup_workspace_file(
+    ws_canon: &Path,
+    target: &Path,
+    keep: usize,
+) -> VspResult<Option<PathBuf>> {
+    if !target.is_file() {
+        return Ok(None);
+    }
+    let state_home = resolve_xdg_state_home();
+    let backup_dir = workspace_backup_dir(ws_canon);
+    ensure_no_symlink_components(&state_home, &backup_dir)?;
+    fs::create_dir_all(&backup_dir).map_err(|err| {
+        VspError::Operational(format!(
+            "failed to create backup directory {}: {err}",
+            backup_dir.display()
+        ))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&backup_dir, fs::Permissions::from_mode(0o700));
+    }
+    backup_file_bounded_in(target, &backup_dir, keep)
 }
 
 /// Removes older `<name>.bak.*` backups alongside `target`, retaining the newest `keep` files.
@@ -317,13 +382,21 @@ pub fn prune_backups(target: &Path, keep: usize) -> VspResult<()> {
     let Some(base) = target.file_name().and_then(|n| n.to_str()) else {
         return Ok(());
     };
+    prune_backups_in(parent, base, keep)
+}
+
+/// Removes older `<base>.bak.*` files in `parent`, retaining the newest `keep` files.
+fn prune_backups_in(parent: &Path, base: &str, keep: usize) -> VspResult<()> {
     if !parent.is_dir() {
         return Ok(());
     }
     let prefix = format!("{base}.bak.");
     let mut backups: Vec<PathBuf> = fs::read_dir(parent)
         .map_err(|err| {
-            VspError::Operational(format!("failed to scan backups in {}: {err}", parent.display()))
+            VspError::Operational(format!(
+                "failed to scan backups in {}: {err}",
+                parent.display()
+            ))
         })?
         .filter_map(Result::ok)
         .map(|e| e.path())
@@ -376,7 +449,10 @@ pub fn write_file_atomic(dest: &Path, bytes: &[u8], mode: u32, no_follow: bool) 
         ))
     })?;
     fs::create_dir_all(dir).map_err(|err| {
-        VspError::Operational(format!("failed to create directory {}: {err}", dir.display()))
+        VspError::Operational(format!(
+            "failed to create directory {}: {err}",
+            dir.display()
+        ))
     })?;
 
     let seq = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);

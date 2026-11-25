@@ -13,9 +13,7 @@ use serde_json::{Map, Value};
 use crate::detect::detect_workspace;
 use crate::exit_codes::{VspError, VspResult};
 use crate::legacy_loader::parse_jsonc_value;
-use crate::model::{
-    AiMode, ExtensionStatus, UxPreset, WorkspaceCatalog, COMPILER_UNION_KEYS,
-};
+use crate::model::{AiMode, ExtensionStatus, UxPreset, WorkspaceCatalog, COMPILER_UNION_KEYS};
 use crate::provenance::{load_profile_provenance, load_workspace_provenance};
 use crate::resolver::{
     apply_ai_mode_to_lists, compile_profile_extensions, compile_settings, compile_tasks,
@@ -381,8 +379,7 @@ fn compute_workspace_plan(
     let tasks_file = ws_canon.join(".vscode/tasks.json");
     let task_changes = match desired_tasks {
         Some(dt) => {
-            let cur_tasks =
-                read_optional_jsonc_object(&tasks_file, &mut warnings, &mut incomplete);
+            let cur_tasks = read_optional_jsonc_object(&tasks_file, &mut warnings, &mut incomplete);
             diff_tasks(&cur_tasks, &dt)
         }
         None => Vec::new(),
@@ -474,7 +471,12 @@ fn compute_profile_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspRe
     }
 
     let mut delete_keys = Vec::new();
-    apply_ai_overrides(opts.ai, &resolved_modules, &mut desired_settings, &mut delete_keys);
+    apply_ai_overrides(
+        opts.ai,
+        &resolved_modules,
+        &mut desired_settings,
+        &mut delete_keys,
+    );
     if let Some(ux) = effective_ux {
         apply_ux_to_map(catalog, ux, &mut desired_settings, &mut delete_keys);
     }
@@ -489,21 +491,17 @@ fn compute_profile_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspRe
     let mut warnings = Vec::new();
     let mut incomplete = false;
     let store = resolve_vscode_store(opts.vscode_data_dir.as_deref(), false)?;
+    let profiles_dir = store.user_dir.join("profiles");
     let (settings_path, current_settings) =
-        match find_storage_profile_location(&store.user_dir, &profile_name)? {
-            Some(loc) => {
-                let p = store.user_dir.join("profiles").join(loc).join("settings.json");
-                let cur = read_optional_jsonc_object(&p, &mut warnings, &mut incomplete);
-                (p, cur)
-            }
-            None => {
-                let p = store
-                    .user_dir
-                    .join("profiles")
-                    .join(format!("<new:{profile_name}>"))
-                    .join("settings.json");
-                (p, Map::new())
-            }
+        if let Some(loc) = find_storage_profile_location(&store.user_dir, &profile_name)? {
+            let path = profiles_dir.join(loc).join("settings.json");
+            let current = read_optional_jsonc_object(&path, &mut warnings, &mut incomplete);
+            (path, current)
+        } else {
+            let path = profiles_dir
+                .join(format!("<new:{profile_name}>"))
+                .join("settings.json");
+            (path, Map::new())
         };
 
     if opts.ai == Some(AiMode::Off) {
@@ -536,8 +534,13 @@ fn compute_profile_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspRe
         .collect();
 
     // Exact-ID extra extensions from a custom user profile (personal user configuration).
+    // `effective_extras` checks each entry again (blocked publisher, trust tier) and applies
+    // the AI mode, so an extra can neither use a blocked publisher nor override `--ai`.
     if let Some(p_name) = &preset_name {
-        for extra in opts.user_overlay.extras_for(p_name) {
+        for extra in opts
+            .user_overlay
+            .effective_extras(catalog, p_name, opts.ai)?
+        {
             if !desired_ext_ids
                 .iter()
                 .any(|id| id.eq_ignore_ascii_case(&extra.id))
@@ -649,7 +652,12 @@ fn compute_user_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspResul
     }
 
     let mut delete_keys = Vec::new();
-    apply_ai_overrides(opts.ai, &resolved_modules, &mut desired_settings, &mut delete_keys);
+    apply_ai_overrides(
+        opts.ai,
+        &resolved_modules,
+        &mut desired_settings,
+        &mut delete_keys,
+    );
     if let Some(ux) = effective_ux {
         apply_ux_to_map(catalog, ux, &mut desired_settings, &mut delete_keys);
     }
@@ -931,9 +939,8 @@ fn finish_plan(
             warnings,
         };
     }
-    let has_drift = !settings_changes.is_empty()
-        || !extension_changes.is_empty()
-        || !task_changes.is_empty();
+    let has_drift =
+        !settings_changes.is_empty() || !extension_changes.is_empty() || !task_changes.is_empty();
     Plan {
         schema: PLAN_SCHEMA_V1.to_string(),
         target,
@@ -960,10 +967,14 @@ fn diff_profile_extensions(
     installed: &[crate::vscode::InstalledExtension],
     ai_off: bool,
 ) -> Vec<ExtensionChange> {
-    let installed_lc: BTreeSet<String> =
-        installed.iter().map(|e| e.id.to_ascii_lowercase()).collect();
-    let desired_lc: BTreeSet<String> =
-        desired_ids.iter().map(|id| id.to_ascii_lowercase()).collect();
+    let installed_lc: BTreeSet<String> = installed
+        .iter()
+        .map(|e| e.id.to_ascii_lowercase())
+        .collect();
+    let desired_lc: BTreeSet<String> = desired_ids
+        .iter()
+        .map(|id| id.to_ascii_lowercase())
+        .collect();
 
     let mut changes = Vec::new();
     for ext in installed {
@@ -1025,7 +1036,8 @@ fn diff_settings_maps(
                     path.first().map(String::as_str) == Some(k.as_str())
                         && path_exists_in_map(current, path)
                 });
-                let converged = !has_retired_subpath && setting_value_converged(k, cur_val, desired_val, true);
+                let converged =
+                    !has_retired_subpath && setting_value_converged(k, cur_val, desired_val, true);
                 if !converged {
                     changes.push(SettingChange {
                         file: file_label.to_string(),
@@ -1059,7 +1071,12 @@ fn diff_settings_maps(
     changes
 }
 
-fn setting_value_converged(key: &str, current: &Value, desired: &Value, is_top_level: bool) -> bool {
+fn setting_value_converged(
+    key: &str,
+    current: &Value,
+    desired: &Value,
+    is_top_level: bool,
+) -> bool {
     match (current, desired) {
         (Value::Object(cur_obj), Value::Object(des_obj)) => des_obj.iter().all(|(sk, sv)| {
             cur_obj
@@ -1113,7 +1130,7 @@ fn diff_workspace_extensions(
         .map(|arr| {
             arr.iter()
                 .filter_map(Value::as_str)
-                .map(|s| s.to_ascii_lowercase())
+                .map(str::to_ascii_lowercase)
                 .collect()
         })
         .unwrap_or_default();

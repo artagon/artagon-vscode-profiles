@@ -159,18 +159,14 @@ pub fn run_open(catalog: &WorkspaceCatalog, opts: &OpenOptions) -> VspResult<Exi
         }
     }
 
-    let code_bin = find_code_binary().ok_or_else(|| {
-        VspError::Operational("VS Code 'code' CLI not found on PATH".to_string())
-    })?;
+    let code_bin = find_code_binary()
+        .ok_or_else(|| VspError::Operational("VS Code 'code' CLI not found on PATH".to_string()))?;
 
     let status = Command::new(&code_bin)
         .args(&launch_args)
         .status()
         .map_err(|err| {
-            VspError::Operational(format!(
-                "failed to launch {}: {err}",
-                code_bin.display()
-            ))
+            VspError::Operational(format!("failed to launch {}: {err}", code_bin.display()))
         })?;
 
     if !status.success() {

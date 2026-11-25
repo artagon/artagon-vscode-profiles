@@ -3,6 +3,7 @@
 //! deterministically into `OUT_DIR/embedded_snapshot.rs`.
 
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,8 +27,12 @@ fn main() {
         .and_then(Path::parent)
         .expect("crates/vsp must reside two levels below the repository root")
         .to_path_buf();
-    let canon_root = fs::canonicalize(&repo_root)
-        .unwrap_or_else(|e| panic!("failed to canonicalize repo root {}: {e}", repo_root.display()));
+    let canon_root = fs::canonicalize(&repo_root).unwrap_or_else(|e| {
+        panic!(
+            "failed to canonicalize repo root {}: {e}",
+            repo_root.display()
+        )
+    });
 
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
     let mut watched_dirs: Vec<PathBuf> = Vec::new();
@@ -74,7 +79,11 @@ fn main() {
     collect_packs_tree(&canon_root, &canon_packs, &mut watched_dirs, &mut entries);
 
     // Deterministic LC_ALL=C byte-order sort for reproducible builds.
-    watched_dirs.sort_by(|a, b| a.as_os_str().as_encoded_bytes().cmp(b.as_os_str().as_encoded_bytes()));
+    watched_dirs.sort_by(|a, b| {
+        a.as_os_str()
+            .as_encoded_bytes()
+            .cmp(b.as_os_str().as_encoded_bytes())
+    });
     entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
 
     for dir in &watched_dirs {
@@ -95,9 +104,8 @@ fn main() {
         let abs_str = abs
             .to_str()
             .unwrap_or_else(|| panic!("non-UTF-8 path in snapshot: {}", abs.display()));
-        out.push_str(&format!(
-            "    ({rel:?}, include_bytes!({abs_str:?})),\n"
-        ));
+        // A write to a `String` cannot fail.
+        let _ = writeln!(out, "    ({rel:?}, include_bytes!({abs_str:?})),");
     }
     out.push_str("];\n");
 
@@ -194,7 +202,10 @@ fn collect_packs_tree(
                 .join("/");
             entries.push((rel_str, canon));
         } else {
-            panic!("unsupported non-regular file in packs/: {}", child.display());
+            panic!(
+                "unsupported non-regular file in packs/: {}",
+                child.display()
+            );
         }
     }
 }

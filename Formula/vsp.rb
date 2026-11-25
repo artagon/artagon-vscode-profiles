@@ -8,6 +8,9 @@ class Vsp < Formula
   homepage "https://github.com/trumpyla/artagon-vscode-profiles"
   url "https://github.com/trumpyla/artagon-vscode-profiles/archive/refs/tags/v3.0.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  # This value mirrors `license` in the `[workspace.package]` table of `Cargo.toml`, which
+  # is the only license statement in the repository. The source tree has no `LICENSE`
+  # file, so this formula installs none. Keep the two values the same.
   license "MIT"
   head "https://github.com/trumpyla/artagon-vscode-profiles.git", branch: "main"
 
@@ -21,6 +24,8 @@ class Vsp < Formula
     bin.install_symlink "vsp" => "vspcli"
 
     generate_completions_from_executable(bin/"vsp", "completions")
+    # The legacy command has its own completion script (`vspcli completions <shell>`).
+    generate_completions_from_executable(bin/"vspcli", "completions", base_name: "vspcli")
   end
 
   test do
@@ -32,5 +37,12 @@ class Vsp < Formula
 
     assert_match "vspcli #{version}", shell_output("#{bin}/vspcli --version")
     assert_match "rust", shell_output("#{bin}/vspcli list")
+
+    # The compatibility mode parses a mutating verb and rejects it before any change:
+    # `reconcile` without a target is a usage error (exit 4).
+    assert_match "specify --profile <name> or --all",
+                 shell_output("#{bin}/vspcli reconcile 2>&1", 4)
+
+    assert_match "reconcile", shell_output("#{bin}/vspcli completions bash")
   end
 end

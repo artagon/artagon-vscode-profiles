@@ -433,13 +433,6 @@ fn user_config_security_rejections_use_exit_4_and_5() {
                 "rust",
             ],
             vec!["--config", cfg.as_str(), "export", "rust", "--out", "out"],
-            vec![
-                "--config",
-                cfg.as_str(),
-                "--vscode-data-dir",
-                &data,
-                "doctor",
-            ],
         ] {
             let out = sb.vsp(&args);
             assert_exit(&out, *expected, &format!("{name}: vsp {}", args.join(" ")));
@@ -449,6 +442,27 @@ fn user_config_security_rejections_use_exit_4_and_5() {
                 stderr(&out)
             );
         }
+
+        // `vsp doctor` is the exception (Opus R2-M2): it records the rejected config as a
+        // FAIL check and still runs every other check. This sandbox has no `code` CLI, so
+        // the audit is also incomplete (exit 7).
+        let doctor = sb.vsp(&[
+            "--config",
+            cfg.as_str(),
+            "--vscode-data-dir",
+            &data,
+            "doctor",
+        ]);
+        assert_exit(&doctor, 7, &format!("{name}: vsp doctor"));
+        let doctor_out = stdout(&doctor);
+        assert!(
+            doctor_out.contains("FAIL: user config") && doctor_out.contains(needle),
+            "{name}: doctor must record the rejected config: {doctor_out}"
+        );
+        assert!(
+            doctor_out.contains("PASS: catalog") && doctor_out.contains("Summary:"),
+            "{name}: doctor must still run the other checks: {doctor_out}"
+        );
     }
     assert!(
         !sb.path("cwd/out").exists(),

@@ -20,7 +20,13 @@ use vsp::exit_codes::ExitCode;
 fn main() {
     let argv: Vec<OsString> = std::env::args_os().collect();
     if let Some(legacy_args) = compat_vspcli::legacy_args_from_argv(&argv) {
-        process::exit(compat_vspcli::run(&legacy_args).as_i32());
+        let code = compat_vspcli::run(&legacy_args);
+        if code == ExitCode::UsageOrConfig {
+            if let Some(hint) = compat_vspcli::env_forced_mode_hint(&argv) {
+                eprintln!("vspcli: note: {hint}");
+            }
+        }
+        process::exit(code.as_i32());
     }
 
     let cli = match Cli::try_parse_from(&argv) {

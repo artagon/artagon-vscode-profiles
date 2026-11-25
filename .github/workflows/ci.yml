@@ -87,6 +87,7 @@ jobs:
 
       - name: Run Rust test, clippy, rustdoc, validate, and deterministic double-run dev dist
         run: |
+          cargo fmt --all -- --check
           cargo test --workspace
           cargo clippy --workspace --all-targets -- -D warnings
           RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
@@ -221,6 +222,7 @@ jobs:
 
       - name: Run Rust test, clippy, rustdoc, validate, and deterministic double-run dev dist
         run: |
+          cargo fmt --all -- --check
           cargo test --workspace
           cargo clippy --workspace --all-targets -- -D warnings
           RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps

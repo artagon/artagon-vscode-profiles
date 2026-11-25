@@ -11,19 +11,12 @@ use serde::Serialize;
 use serde_json::Map;
 
 use crate::detect::detect_workspace;
-use crate::dev_ops::{
-    run_dev_compat, run_dev_docs, run_dev_hooks, run_dev_pins, CompatOptions,
-};
-use crate::doctor::{audit_user_config, run_doctor, CheckSeverity};
+use crate::dev_ops::{run_dev_compat, run_dev_docs, run_dev_hooks, run_dev_pins, CompatOptions};
+use crate::doctor::{audit_user_config, audit_user_config_error, run_doctor, CheckSeverity};
 use crate::exit_codes::{ExitCode, VspError, VspResult};
-use crate::model::{
-    AiMode, ModuleKind, UxPreset, WorkspaceCatalog,
-    LEGACY_BUNDLE_ALIASES,
-};
+use crate::model::{AiMode, ModuleKind, UxPreset, WorkspaceCatalog, LEGACY_BUNDLE_ALIASES};
 use crate::open::{run_open, OpenOptions};
-use crate::plan::{
-    compute_plan, validate_selector_combination, Plan, PlanOptions, SelectorKinds,
-};
+use crate::plan::{compute_plan, validate_selector_combination, Plan, PlanOptions, SelectorKinds};
 use crate::policy::validate_repository;
 use crate::resolver::{
     build_dist, compile_canonical_profile_settings, compile_profile_extensions,
@@ -34,8 +27,8 @@ use crate::self_ops::{self, LinkAction, SelfLinkReport};
 use crate::sync::{prepare_bundle_import, run_sync, PruneMode, SyncOptions, SyncReport};
 use crate::user_config::{
     apply_user_config, check_user_config_target, load_user_config, parse_user_config,
-    render_starter_config, resolve_user_config_path, write_user_config, StarterSeed, UserConfig,
-    UserDefaults, UserOverlay, UserProfile,
+    render_starter_config, resolve_user_config_path, trusted_default_user_config_path,
+    write_user_config_with_backup, StarterSeed, UserConfig, UserDefaults, UserOverlay, UserProfile,
 };
 use crate::vscode::{list_storage_profiles, resolve_vscode_store};
 
@@ -201,7 +194,7 @@ pub enum CompletionShell {
 pub enum UxArg {
     /// Crisp 1x QHD preset.
     Crisp,
-    /// Retina 2x HiDPI preset.
+    /// Retina 2x `HiDPI` preset.
     Retina,
     /// UX-agnostic default preset.
     Default,
@@ -428,6 +421,12 @@ pub struct SyncArgs {
     /// Skip XDG RTK shell wrapper installation.
     #[arg(long = "no-rtk")]
     pub no_rtk: bool,
+
+    /// Change extensions only: no settings.json, storage.json, or RTK wrapper write
+    /// (profile targets and `--all`; the profile must exist). Hidden: this is the engine
+    /// mode of the legacy `vspcli reconcile` command.
+    #[arg(long = "extensions-only", hide = true)]
+    pub extensions_only: bool,
 }
 
 impl SyncArgs {
@@ -600,6 +599,10 @@ pub enum SelfCommand {
         /// Also create a `vspcli` link that runs the legacy compatibility mode.
         #[arg(long = "with-vspcli")]
         with_vspcli: bool,
+
+        /// Also replace a symbolic link that this installation does not own.
+        #[arg(long)]
+        force: bool,
     },
 
     /// Remove the `vsp` symbolic link from the user bin directory.
@@ -607,6 +610,10 @@ pub enum SelfCommand {
         /// Directory that contains the link (default `${XDG_BIN_HOME:-~/.local/bin}`).
         #[arg(long = "bin-dir", alias = "dir", value_name = "DIR")]
         bin_dir: Option<PathBuf>,
+
+        /// Also remove a symbolic link that this installation does not own.
+        #[arg(long)]
+        force: bool,
     },
 
     /// Print the current version and upgrade guidance (no network access).
@@ -694,18 +701,23 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
             // Repository validation must see the unchanged catalog, so the user profiles
             // are resolved against a copy.
             let catalog = load_catalog(catalog_override.as_deref())?;
-            let user_config = load_user_config(config_override.as_deref())?;
-            let overlay = match &user_config {
-                Some(cfg) => apply_user_config(&mut catalog.clone(), cfg)?,
-                None => UserOverlay::default(),
-            };
+            // A broken or stale user config must not stop the security audit. The error is
+            // recorded as a FAIL check and every other check still runs.
+            let user_state = load_user_config(config_override.as_deref()).and_then(|config| {
+                let overlay = match &config {
+                    Some(cfg) => apply_user_config(&mut catalog.clone(), cfg)?,
+                    None => UserOverlay::default(),
+                };
+                Ok((config, overlay))
+            });
             let mut report = run_doctor(&catalog, vscode_data_dir.as_deref(), strict);
-            audit_user_config(
-                &mut report,
-                &resolve_user_config_path(config_override.as_deref()),
-                user_config.as_ref(),
-                &overlay,
-            );
+            let config_path = resolve_user_config_path(config_override.as_deref());
+            match &user_state {
+                Ok((config, overlay)) => {
+                    audit_user_config(&mut report, &config_path, config.as_ref(), overlay);
+                }
+                Err(err) => audit_user_config_error(&mut report, &config_path, err),
+            }
             if json {
                 print!("{}", to_canonical_json_string(&report)?);
             } else if !quiet {
@@ -774,16 +786,36 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
                 }
             }
 
-            let (mut catalog, user) =
-                load_catalog_with_user(catalog_override.as_deref(), config_override.as_deref())?;
+            // Emergency remediation (`--compromised-only`, with or without `--all`) and bundle
+            // import (`--from`) must work when the personal user config is broken or stale
+            // after a catalog update. They warn and continue without it. Neither path uses
+            // personal defaults or custom profiles. Every other sync needs a valid config.
+            let tolerate_user_config_error = args.compromised_only || args.from.is_some();
+            let (mut catalog, user) = load_catalog_with_user_mode(
+                catalog_override.as_deref(),
+                config_override.as_deref(),
+                tolerate_user_config_error,
+            )?;
             materialize_selector_presets(&mut catalog, &args.selector);
 
             // Unified read-only planner path: `vsp sync --dry-run` emits the EXACT same
             // `vsp-plan/v1` JSON and text output as `vsp diff`!
-            if dry_run && has_std_selector && args.from.is_none() && !args.all && !args.compromised_only {
+            if dry_run
+                && has_std_selector
+                && args.from.is_none()
+                && !args.all
+                && !args.compromised_only
+            {
                 let mut opts = args.selector.to_plan_options(vscode_data_dir)?;
                 apply_user_context_to_plan(&catalog, &mut opts, &args.selector, &user, args.no_rtk);
-                let plan = compute_plan(&catalog, &opts)?;
+                let mut plan = compute_plan(&catalog, &opts)?;
+                if args.extensions_only {
+                    // An extensions-only sync writes no settings, so the preview shows none.
+                    plan.settings_changes.clear();
+                    plan.task_changes.clear();
+                    plan.has_drift =
+                        plan.observation_complete && !plan.extension_changes.is_empty();
+                }
                 print_plan(&plan, json, quiet)?;
                 return Ok(plan_exit_code(&plan, false));
             }
@@ -834,6 +866,7 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
                 no_rtk: personal.no_rtk,
                 vscode_data_dir,
                 user_overlay: user.overlay,
+                extensions_only: args.extensions_only,
             };
 
             if dry_run {
@@ -964,13 +997,55 @@ fn load_catalog_with_user(
     catalog_override: Option<&Path>,
     config_override: Option<&Path>,
 ) -> VspResult<(WorkspaceCatalog, UserContext)> {
-    let mut catalog = load_catalog(catalog_override)?;
-    let config = load_user_config(config_override)?;
-    let overlay = match &config {
-        Some(cfg) => apply_user_config(&mut catalog, cfg)?,
-        None => UserOverlay::default(),
+    load_catalog_with_user_mode(catalog_override, config_override, false)
+}
+
+/// [`load_catalog_with_user`] with a choice for a user-config failure.
+///
+/// With `tolerate_user_config_error`, a config that cannot be loaded or applied prints a
+/// warning on standard error and the command continues with the unchanged catalog and no
+/// user profiles. Emergency remediation (`--compromised-only`) and bundle import (`--from`)
+/// use this, so a stale personal config can never block the removal of a compromised
+/// extension. A catalog error is never tolerated.
+fn load_catalog_with_user_mode(
+    catalog_override: Option<&Path>,
+    config_override: Option<&Path>,
+    tolerate_user_config_error: bool,
+) -> VspResult<(WorkspaceCatalog, UserContext)> {
+    let catalog = load_catalog(catalog_override)?;
+    let no_user_config = || UserContext {
+        config: None,
+        overlay: UserOverlay::default(),
     };
-    Ok((catalog, UserContext { config, overlay }))
+    let applied = load_user_config(config_override).and_then(|config| {
+        let Some(cfg) = config else {
+            return Ok(None);
+        };
+        // The profiles are added to a copy: a failure part-way leaves `catalog` unchanged.
+        let mut with_user = catalog.clone();
+        let overlay = apply_user_config(&mut with_user, &cfg)?;
+        Ok(Some((with_user, cfg, overlay)))
+    });
+    match applied {
+        Ok(Some((with_user, cfg, overlay))) => Ok((
+            with_user,
+            UserContext {
+                config: Some(cfg),
+                overlay,
+            },
+        )),
+        Ok(None) => Ok((catalog, no_user_config())),
+        Err(err) if tolerate_user_config_error => {
+            eprintln!(
+                "vsp: WARNING: the personal user config is ignored for this command because it cannot be used: {err}"
+            );
+            eprintln!(
+                "vsp: WARNING: custom profiles, defaults, and extraExtensions are not applied; fix the config (see 'vsp doctor')"
+            );
+            Ok((catalog, no_user_config()))
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /// Effective composition values after personal defaults are applied.
@@ -1091,13 +1166,10 @@ fn plan_exit_code(plan: &Plan, check: bool) -> ExitCode {
 ///
 /// Use the result for completion generation only. Argument parsing stays unrestricted.
 fn command_with_live_values(catalog: &WorkspaceCatalog) -> clap::Command {
-    // `clap` possible values need `'static` strings. This runs once in a short-lived
-    // `vsp completions` process, so the leaked names are released at process exit.
-    fn leak_all(names: impl IntoIterator<Item = String>) -> Vec<&'static str> {
-        names
-            .into_iter()
-            .map(|name| &*Box::leak(name.into_boxed_str()))
-            .collect()
+    // The `string` feature of `clap` lets a possible value own its `String`, so the live
+    // names need no `'static` lifetime.
+    fn values(names: &[String]) -> PossibleValuesParser {
+        PossibleValuesParser::new(names.to_vec())
     }
 
     let mut preset_names: Vec<String> = catalog.profiles.keys().cloned().collect();
@@ -1117,44 +1189,23 @@ fn command_with_live_values(catalog: &WorkspaceCatalog) -> clap::Command {
     let mut show_names = preset_names.clone();
     show_names.extend(catalog.modules.keys().cloned());
 
-    let presets = leak_all(preset_names);
-    let packs = leak_all(pack_names);
-    let show = leak_all(show_names);
-
     let mut cmd = Cli::command();
     for sub in ["diff", "sync", "init"] {
-        let (presets, packs) = (presets.clone(), packs.clone());
-        cmd = cmd.mut_subcommand(sub, move |c| {
-            c.mut_arg("preset", |a| {
-                a.value_parser(PossibleValuesParser::new(presets.clone()))
-            })
-            .mut_arg("profile", |a| {
-                a.value_parser(PossibleValuesParser::new(presets.clone()))
-            })
-            .mut_arg("with", |a| {
-                a.value_parser(PossibleValuesParser::new(packs.clone()))
-            })
-            .mut_arg("without", |a| {
-                a.value_parser(PossibleValuesParser::new(packs.clone()))
-            })
+        cmd = cmd.mut_subcommand(sub, |c| {
+            c.mut_arg("preset", |a| a.value_parser(values(&preset_names)))
+                .mut_arg("profile", |a| a.value_parser(values(&preset_names)))
+                .mut_arg("with", |a| a.value_parser(values(&pack_names)))
+                .mut_arg("without", |a| a.value_parser(values(&pack_names)))
         });
     }
-    let open_presets = presets.clone();
-    cmd = cmd.mut_subcommand("open", move |c| {
-        c.mut_arg("profile", |a| {
-            a.value_parser(PossibleValuesParser::new(open_presets.clone()))
-        })
-    });
-    let export_presets = presets;
-    cmd = cmd.mut_subcommand("export", move |c| {
-        c.mut_arg("names", |a| {
-            a.value_parser(PossibleValuesParser::new(export_presets.clone()))
-        })
-    });
-    cmd.mut_subcommand("show", move |c| {
-        c.mut_arg("name", |a| {
-            a.value_parser(PossibleValuesParser::new(show.clone()))
-        })
+    cmd.mut_subcommand("open", |c| {
+        c.mut_arg("profile", |a| a.value_parser(values(&preset_names)))
+    })
+    .mut_subcommand("export", |c| {
+        c.mut_arg("names", |a| a.value_parser(values(&preset_names)))
+    })
+    .mut_subcommand("show", |c| {
+        c.mut_arg("name", |a| a.value_parser(values(&show_names)))
     })
 }
 
@@ -1217,8 +1268,7 @@ fn run_init(
     let catalog = load_catalog(catalog_override)?;
     let custom_profile = match &args.profile {
         Some(name)
-            if !catalog.profiles.contains_key(name)
-                && catalog.resolve_alias(name).is_none() =>
+            if !catalog.profiles.contains_key(name) && catalog.resolve_alias(name).is_none() =>
         {
             Some(UserProfile {
                 name: name.clone(),
@@ -1239,8 +1289,17 @@ fn run_init(
         profile: custom_profile.clone(),
     });
 
-    // 3. Validate the text with the real loader before it is written.
-    let path = resolve_user_config_path(config_override);
+    // 3. Validate the text with the real loader before it is written. The default path is
+    //    used only when it does not depend on the working directory.
+    let path = match config_override {
+        Some(explicit) => explicit.to_path_buf(),
+        None => trusted_default_user_config_path().ok_or_else(|| {
+            VspError::UsageOrConfig(
+                "cannot resolve the default user config path: HOME is not an absolute path and XDG_CONFIG_HOME is not set to one (pass --config <PATH>)"
+                    .to_string(),
+            )
+        })?,
+    };
     let parsed = parse_user_config(&content, &path)?;
     let mut user_catalog = catalog.clone();
     let overlay = apply_user_config(&mut user_catalog, &parsed)?;
@@ -1265,9 +1324,12 @@ fn run_init(
         return Ok(ExitCode::Ok);
     }
 
-    write_user_config(&path, &content, args.force)?;
+    let backup = write_user_config_with_backup(&path, &content, args.force)?;
     if !json && !quiet {
         println!("Wrote user config {}", path.display());
+        if let Some(backup_path) = &backup {
+            println!("Previous config saved as {}", backup_path.display());
+        }
     }
 
     // 5. Optional convergence of the selected personal target.
@@ -1312,6 +1374,7 @@ fn run_init(
             "dry_run": false,
             "path": path.display().to_string(),
             "created": true,
+            "backup": backup.as_ref().map(|p| p.display().to_string()),
             "applied": sync_report.is_some(),
             "sync": sync_report,
         });
@@ -1337,13 +1400,14 @@ fn run_self(command: SelfCommand, dry_run: bool, json: bool, quiet: bool) -> Vsp
         SelfCommand::Install {
             bin_dir,
             with_vspcli,
+            force,
         } => {
-            let report = self_ops::install(bin_dir.as_deref(), with_vspcli, dry_run)?;
+            let report = self_ops::install(bin_dir.as_deref(), with_vspcli, force, dry_run)?;
             print_self_link_report(&report, json, quiet)?;
             Ok(ExitCode::Ok)
         }
-        SelfCommand::Uninstall { bin_dir } => {
-            let report = self_ops::uninstall(bin_dir.as_deref(), dry_run)?;
+        SelfCommand::Uninstall { bin_dir, force } => {
+            let report = self_ops::uninstall(bin_dir.as_deref(), force, dry_run)?;
             print_self_link_report(&report, json, quiet)?;
             Ok(ExitCode::Ok)
         }
@@ -1385,7 +1449,10 @@ fn print_self_link_report(report: &SelfLinkReport, json: bool, quiet: bool) -> V
     Ok(())
 }
 
-fn run_list_installed(vscode_data_dir: Option<&std::path::Path>, json: bool) -> VspResult<ExitCode> {
+fn run_list_installed(
+    vscode_data_dir: Option<&std::path::Path>,
+    json: bool,
+) -> VspResult<ExitCode> {
     let store = resolve_vscode_store(vscode_data_dir, false)?;
     let mut profiles = vec!["default".to_string()];
     profiles.extend(list_storage_profiles(&store.user_dir)?);

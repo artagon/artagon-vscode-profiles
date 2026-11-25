@@ -717,8 +717,10 @@ pub fn load_from_snapshot(
     }
 
     // 3. Parse catalog/extensions.jsonc.
-    let raw_exts: RawExtensionsFile =
-        parse_jsonc_bytes(files["catalog/extensions.jsonc"].as_slice(), "catalog/extensions.jsonc")?;
+    let raw_exts: RawExtensionsFile = parse_jsonc_bytes(
+        files["catalog/extensions.jsonc"].as_slice(),
+        "catalog/extensions.jsonc",
+    )?;
     require_schema_version(raw_exts.version, "catalog/extensions.jsonc")?;
     if raw_exts.group_order.is_empty() {
         return Err(VspError::UsageOrConfig(
@@ -771,8 +773,10 @@ pub fn load_from_snapshot(
     let publishers = derive_allowed_publishers(&extensions_catalog, &raw_exts.blocked_publishers)?;
 
     // 4. Parse catalog/policy.jsonc.
-    let policy: PolicyManifest =
-        parse_jsonc_bytes(files["catalog/policy.jsonc"].as_slice(), "catalog/policy.jsonc")?;
+    let policy: PolicyManifest = parse_jsonc_bytes(
+        files["catalog/policy.jsonc"].as_slice(),
+        "catalog/policy.jsonc",
+    )?;
     require_schema_version(policy.version, "catalog/policy.jsonc")?;
     if policy.vscode_version.is_empty() || semver::Version::parse(&policy.vscode_version).is_err() {
         return Err(VspError::UsageOrConfig(format!(
@@ -797,7 +801,8 @@ pub fn load_from_snapshot(
     };
 
     // 5. Discover and parse packs/** (single-file packs/<id>.jsonc & directory packs/<id>/<id>.jsonc).
-    let (mut modules, retire_on_switch, pack_scripts) = parse_packs_from_snapshot(&root_label, files)?;
+    let (mut modules, retire_on_switch, pack_scripts) =
+        parse_packs_from_snapshot(&root_label, files)?;
 
     // Synthesize virtual `default` UX preset (`{}` profile settings, zero dummy file on disk)
     // and ensure symmetric UX conflict declarations with all loaded UX packs.
@@ -820,7 +825,9 @@ pub fn load_from_snapshot(
                 version: 1,
                 id: "default".to_string(),
                 kind: ModuleKind::Ux,
-                description: "UX-agnostic default preset (removes all 15 managed UX keys on explicit apply)".to_string(),
+                description:
+                    "UX-agnostic default preset (removes all 15 managed UX keys on explicit apply)"
+                        .to_string(),
                 requires: vec!["core-editor".to_string()],
                 default_with: Vec::new(),
                 conflicts: ux_pack_ids,
@@ -864,6 +871,10 @@ pub fn load_from_snapshot(
             capabilities: raw_exts.defaults.capabilities,
             ux: raw_exts.defaults.ux,
         },
+        blocked_publishers: crate::model::derive_blocked_publishers(
+            &extensions_catalog,
+            &raw_exts.blocked_publishers,
+        ),
         extensions: extensions_catalog,
         publishers,
         pins: PinsLoadState::Loaded(pins_manifest),
@@ -1479,7 +1490,10 @@ fn resolve_single_preset(
         .use_defaults
         .unwrap_or_else(|| parent.as_ref().is_none_or(|p| p.use_defaults));
 
-    let mut modules = parent.as_ref().map(|p| p.modules.clone()).unwrap_or_default();
+    let mut modules = parent
+        .as_ref()
+        .map(|p| p.modules.clone())
+        .unwrap_or_default();
     for pack in &entry.packs {
         if !modules.iter().any(|m| m == pack) {
             modules.push(pack.clone());
@@ -1496,10 +1510,11 @@ fn resolve_single_preset(
         }
     }
 
-    let ux = entry
-        .ux
-        .clone()
-        .unwrap_or_else(|| parent.as_ref().map_or_else(|| "default".to_string(), |p| p.ux.clone()));
+    let ux = entry.ux.clone().unwrap_or_else(|| {
+        parent
+            .as_ref()
+            .map_or_else(|| "default".to_string(), |p| p.ux.clone())
+    });
 
     let (parent_ws, parent_prof) = parent
         .as_ref()

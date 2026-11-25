@@ -803,20 +803,53 @@ fn l6_merged_host_path_lint_and_workspace_backup() {
     );
 
     // A clean existing file is merged, and the earlier content is kept in a 0600 backup.
+    // The backup is under the private XDG state directory. The team `.vscode/` directory
+    // (usually tracked by git) never gets a `*.bak.*` file.
     let clean = "{\n  // mine\n  \"my.userKey\": true\n}\n";
     fs::write(&settings, clean).expect("write clean settings");
     assert_exit(&sb.vsp(&["sync", "."]), 0, "sync");
-    let backups: Vec<PathBuf> = fs::read_dir(ws.join(".vscode"))
-        .expect("ls .vscode")
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("settings.json.bak."))
-        })
-        .collect();
+
+    let vscode_entries = || -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(ws.join(".vscode"))
+            .expect("ls .vscode")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(
+        vscode_entries(),
+        vec!["extensions.json", "settings.json", "tasks.json"],
+        ".vscode/ holds the managed files only"
+    );
+
+    let state_backups = || -> Vec<PathBuf> {
+        let root = sb.path("state/vsp/backups/workspaces");
+        let mut found = Vec::new();
+        for ws_dir in fs::read_dir(&root).expect("backup root").flatten() {
+            assert_eq!(
+                fs::metadata(ws_dir.path())
+                    .expect("dir meta")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700,
+                "the per-workspace backup directory is private"
+            );
+            for entry in fs::read_dir(ws_dir.path()).expect("ws backups").flatten() {
+                found.push(entry.path());
+            }
+        }
+        found
+    };
+    let backups = state_backups();
     assert_eq!(backups.len(), 1, "one backup for one changed write");
+    assert!(backups[0]
+        .file_name()
+        .expect("name")
+        .to_string_lossy()
+        .starts_with("settings.json.bak."));
     assert_eq!(fs::read_to_string(&backups[0]).expect("backup"), clean);
     assert_eq!(
         fs::metadata(&backups[0])
@@ -828,16 +861,19 @@ fn l6_merged_host_path_lint_and_workspace_backup() {
     );
     // An unchanged second sync makes no new backup.
     assert_exit(&sb.vsp(&["sync", "."]), 0, "second sync");
-    let count = fs::read_dir(ws.join(".vscode"))
-        .expect("ls .vscode")
-        .flatten()
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with("settings.json.bak.")
-        })
-        .count();
-    assert_eq!(count, 1);
+    assert_eq!(state_backups().len(), 1);
+
+    // Five more changed writes make six backups. Only the newest five are kept.
+    for round in 0..5 {
+        fs::write(&settings, format!("{{\n  \"my.userKey\": {round}\n}}\n"))
+            .expect("rewrite settings");
+        assert_exit(&sb.vsp(&["sync", "."]), 0, "sync after a user edit");
+    }
+    assert_eq!(state_backups().len(), 5, "bounded to the newest five");
+    assert_eq!(
+        vscode_entries(),
+        vec!["extensions.json", "settings.json", "tasks.json"]
+    );
 }
 
 /// Astra A02: a profile diff observes the installed extensions. Missing, compromised, and

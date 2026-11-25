@@ -14,9 +14,7 @@ use vsp::model::{
     AiMode, ExtensionStatus, ModuleDefinition, ModuleExtensions, ModuleKind, ModuleManifest,
     ModuleSettingsRefs, UxPreset, LEGACY_BUNDLE_ALIASES,
 };
-use vsp::policy::{
-    check_autonomy_denylist, is_valid_marketplace_vsix_url, validate_repository,
-};
+use vsp::policy::{check_autonomy_denylist, is_valid_marketplace_vsix_url, validate_repository};
 use vsp::resolver::{
     build_dist, compile_canonical_profile_settings, compile_code_profile_bundle,
     compile_profile_extensions, compile_settings, compile_tasks, compile_workspace_extensions,
@@ -35,8 +33,8 @@ fn repo_root() -> PathBuf {
 }
 
 fn load_golden_oracle() -> Value {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/v2_1_golden_sha256.json");
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2_1_golden_sha256.json");
     let raw = fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read golden oracle {}: {e}", path.display()));
     serde_json::from_str(&raw).expect("parse v2_1_golden_sha256.json")
@@ -72,7 +70,10 @@ fn vsp_cmd() -> Command {
         .env("XDG_CONFIG_HOME", sandbox.join("config"))
         .env("XDG_STATE_HOME", sandbox.join("state"))
         .env("XDG_CACHE_HOME", sandbox.join("cache"))
-        .env("PATH", format!("{}:{host_path}", sandbox.join("bin").display()))
+        .env(
+            "PATH",
+            format!("{}:{host_path}", sandbox.join("bin").display()),
+        )
         .env_remove("VSP_COMPAT_VSPCLI")
         .env_remove("XDG_BIN_HOME");
     cmd
@@ -96,7 +97,11 @@ fn golden_parity_all_15_profile_settings_byte_identical() {
     let expected = oracle["merged_settings"]
         .as_object()
         .expect("oracle merged_settings");
-    assert_eq!(expected.len(), 15, "oracle must contain exactly 15 profiles");
+    assert_eq!(
+        expected.len(),
+        15,
+        "oracle must contain exactly 15 profiles"
+    );
 
     let legacy = load_legacy_catalog(&root).expect("load legacy catalog");
     let embedded = load_embedded().expect("load embedded v2.2 catalog");
@@ -211,7 +216,10 @@ fn golden_parity_all_15_exported_bundles_and_sha256sums() {
             "embedded vs legacy bundle mismatch for exports/{fname}"
         );
         let actual_sha = sha256_hex(emb_str.as_bytes());
-        assert_eq!(actual_sha, exp_sha, "v2.1 golden SHA-256 mismatch for {fname}");
+        assert_eq!(
+            actual_sha, exp_sha,
+            "v2.1 golden SHA-256 mismatch for {fname}"
+        );
         lines_15.push(format!("{actual_sha}  {fname}\n"));
     }
 
@@ -297,7 +305,10 @@ fn dist_22_legacy_aliases_and_copilot_only_security_invariant() {
         "ai-profile-retina.code-profile",
     ] {
         let bytes = fs::read(tmp.path().join(alias)).expect("read ai-profile alias");
-        assert_eq!(bytes, copilot_bytes, "{alias} must equal ai-copilot.code-profile");
+        assert_eq!(
+            bytes, copilot_bytes,
+            "{alias} must equal ai-copilot.code-profile"
+        );
         let parsed: Value = serde_json::from_slice(&bytes).expect("parse bundle");
         let enabled: Vec<&str> = parsed["extensions"]["enabled"]
             .as_array()
@@ -320,7 +331,7 @@ fn dist_22_legacy_aliases_and_copilot_only_security_invariant() {
     // Verify SHA256SUMS is strictly LC_ALL=C sorted by filename.
     let filenames: Vec<&str> = report.checksums.iter().map(|(_, f)| f.as_str()).collect();
     let mut sorted = filenames.clone();
-    sorted.sort();
+    sorted.sort_unstable();
     assert_eq!(filenames, sorted, "SHA256SUMS must be LC_ALL=C sorted");
 }
 
@@ -351,7 +362,10 @@ fn dev_dist_is_100_percent_byte_deterministic_across_two_runs() {
 
     let sums1 = fs::read(dir1.path().join("SHA256SUMS")).expect("sums1");
     let sums2 = fs::read(dir2.path().join("SHA256SUMS")).expect("sums2");
-    assert_eq!(sums1, sums2, "SHA256SUMS must be byte-identical across runs");
+    assert_eq!(
+        sums1, sums2,
+        "SHA256SUMS must be byte-identical across runs"
+    );
 
     let entries1: Vec<String> = fs::read_dir(dir1.path())
         .expect("ls dir1")
@@ -364,7 +378,11 @@ fn dev_dist_is_100_percent_byte_deterministic_across_two_runs() {
     let set1: BTreeSet<_> = entries1.into_iter().collect();
     let set2: BTreeSet<_> = entries2.into_iter().collect();
     assert_eq!(set1, set2);
-    assert_eq!(set1.len(), 38, "15 canonical + 22 aliases + SHA256SUMS = 38 files");
+    assert_eq!(
+        set1.len(),
+        38,
+        "15 canonical + 22 aliases + SHA256SUMS = 38 files"
+    );
 
     for fname in set1 {
         assert_eq!(
@@ -378,7 +396,10 @@ fn dev_dist_is_100_percent_byte_deterministic_across_two_runs() {
 #[test]
 fn n1_security_autonomy_denylist_rejects_all_5_payloads() {
     let payloads = [
-        ("n1_flat_autoapprove", json!({"chat.tools.autoApprove": true})),
+        (
+            "n1_flat_autoapprove",
+            json!({"chat.tools.autoApprove": true}),
+        ),
         (
             "n1_nested_autoapprove",
             json!({"chat": {"tools": {"autoApprove": true}}}),
@@ -498,10 +519,7 @@ fn cli_embedded_default_works_from_empty_cwd_ignores_untrusted_cwd_and_never_fal
     let oracle = load_golden_oracle();
 
     // 1. Version is bumped to 3.0.0.
-    let ver = vsp_cmd()
-        .arg("--version")
-        .output()
-        .expect("run --version");
+    let ver = vsp_cmd().arg("--version").output().expect("run --version");
     assert_eq!(ver.status.code(), Some(0));
     assert!(
         String::from_utf8_lossy(&ver.stdout).contains("3.0.0"),
@@ -533,14 +551,20 @@ fn cli_embedded_default_works_from_empty_cwd_ignores_untrusted_cwd_and_never_fal
     assert_eq!(sums1, sums2);
     assert_eq!(
         sha256_hex(&sums1),
-        oracle["dist_sha256sums_sha256"].as_str().expect("oracle sums")
+        oracle["dist_sha256sums_sha256"]
+            .as_str()
+            .expect("oracle sums")
     );
 
     // 3. Untrusted poisoned cwd MUST NEVER be auto-loaded when --catalog/VSPCLI_ROOT are omitted.
     let poisoned_cwd = TempDir::new().expect("poisoned cwd");
     fs::write(poisoned_cwd.path().join("presets.jsonc"), "{ INVALID JSONC").expect("write");
     fs::create_dir_all(poisoned_cwd.path().join("catalog")).expect("mkdir");
-    fs::write(poisoned_cwd.path().join("catalog/extensions.json"), "{ BROKEN").expect("write");
+    fs::write(
+        poisoned_cwd.path().join("catalog/extensions.json"),
+        "{ BROKEN",
+    )
+    .expect("write");
     let list_emb = vsp_cmd()
         .current_dir(poisoned_cwd.path())
         .env_remove("VSPCLI_ROOT")
@@ -563,7 +587,11 @@ fn cli_embedded_default_works_from_empty_cwd_ignores_untrusted_cwd_and_never_fal
 
     let empty_cat = TempDir::new().expect("empty cat");
     let empty_flag_out = vsp_cmd()
-        .args(["--catalog", empty_cat.path().to_str().expect("utf8"), "list"])
+        .args([
+            "--catalog",
+            empty_cat.path().to_str().expect("utf8"),
+            "list",
+        ])
         .output()
         .expect("empty --catalog");
     assert_eq!(empty_flag_out.status.code(), Some(4));
@@ -706,17 +734,11 @@ fn cli_exit_codes_help_unknown_flag_missing_path_detect_and_diff_check() {
     let catalog_arg = root.to_str().expect("utf8");
 
     // --help exits 0.
-    let help = vsp_cmd()
-        .arg("--help")
-        .output()
-        .expect("run --help");
+    let help = vsp_cmd().arg("--help").output().expect("run --help");
     assert_eq!(help.status.code(), Some(0));
 
     // --version exits 0.
-    let ver = vsp_cmd()
-        .arg("--version")
-        .output()
-        .expect("run --version");
+    let ver = vsp_cmd().arg("--version").output().expect("run --version");
     assert_eq!(ver.status.code(), Some(0));
 
     // Unknown flag exits 4 (NOT clap's default 2!).
@@ -782,7 +804,11 @@ fn cli_exit_codes_help_unknown_flag_missing_path_detect_and_diff_check() {
 
     // detect on Rust workspace with --explain exits 0.
     let rust_ws = TempDir::new().expect("rust ws");
-    fs::write(rust_ws.path().join("Cargo.toml"), "[package]\nname=\"demo\"\n").expect("write");
+    fs::write(
+        rust_ws.path().join("Cargo.toml"),
+        "[package]\nname=\"demo\"\n",
+    )
+    .expect("write");
     let det_rust = vsp_cmd()
         .args([
             "--catalog",
@@ -833,15 +859,8 @@ fn cli_exit_codes_help_unknown_flag_missing_path_detect_and_diff_check() {
 
     // Populate clean workspace files and verify diff --check exits 0!
     let catalog = load_legacy_catalog(&root).expect("load catalog");
-    let mods = resolve_profile_recipe(
-        &catalog,
-        "rust",
-        &[],
-        &[],
-        Some(UxPreset::Default),
-        None,
-    )
-    .expect("resolve rust");
+    let mods = resolve_profile_recipe(&catalog, "rust", &[], &[], Some(UxPreset::Default), None)
+        .expect("resolve rust");
     let ws_settings =
         compile_settings(&catalog, SettingsScope::Workspace, &mods, None).expect("ws settings");
     let ws_exts = compile_workspace_extensions(&catalog, &mods).expect("ws exts");
@@ -1050,7 +1069,13 @@ fn cli_list_show_completions_export_and_self_path() {
 
     // show legacy alias ai-profile-crisp -> resolves to ai-copilot
     let show_out = vsp_cmd()
-        .args(["--catalog", catalog_arg, "--json", "show", "ai-profile-crisp"])
+        .args([
+            "--catalog",
+            catalog_arg,
+            "--json",
+            "show",
+            "ai-profile-crisp",
+        ])
         .output()
         .expect("show legacy");
     assert_eq!(show_out.status.code(), Some(0));
@@ -1225,7 +1250,9 @@ fn diff_supports_user_profile_ux_and_ai_flags_and_rejects_contradictions() {
     assert_eq!(val["target"]["kind"], "user");
     assert_eq!(val["target"]["ux"], "crisp");
     assert_eq!(val["target"]["ai"], "off");
-    let changes = val["settings_changes"].as_array().expect("settings_changes");
+    let changes = val["settings_changes"]
+        .as_array()
+        .expect("settings_changes");
     assert!(changes
         .iter()
         .any(|c| c["key"] == "chat.disableAIFeatures" && c["desired"] == true));
@@ -1268,5 +1295,7 @@ fn diff_supports_user_profile_ux_and_ai_flags_and_rejects_contradictions() {
     assert_eq!(lval["target"]["ux"], "retina");
     let ext_changes = lval["extension_changes"].as_array().expect("ext changes");
     assert!(ext_changes.iter().any(|e| e["id"] == "github.copilot-chat"));
-    assert!(!ext_changes.iter().any(|e| e["id"] == "anthropic.claude-code"));
+    assert!(!ext_changes
+        .iter()
+        .any(|e| e["id"] == "anthropic.claude-code"));
 }

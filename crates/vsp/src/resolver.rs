@@ -13,12 +13,12 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::exit_codes::{VspError, VspResult};
-use crate::provenance::write_file_atomic;
 use crate::model::{
-    is_valid_module_id, AiMode, BundleExtensions, CodeProfileBundle,
-    ModuleKind, UxPreset, VsCodeExtensionEntry, VsCodeExtensionIdentifier, WorkspaceCatalog,
-    WorkspaceExtensionsFile, COMPILER_UNION_KEYS, GROUP_ORDER, LEGACY_BUNDLE_ALIASES,
+    is_valid_module_id, AiMode, BundleExtensions, CodeProfileBundle, ModuleKind, UxPreset,
+    VsCodeExtensionEntry, VsCodeExtensionIdentifier, WorkspaceCatalog, WorkspaceExtensionsFile,
+    COMPILER_UNION_KEYS, GROUP_ORDER, LEGACY_BUNDLE_ALIASES,
 };
+use crate::provenance::write_file_atomic;
 
 /// Scope selector when compiling module settings fragments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,10 +90,7 @@ pub struct BundleAdditions {
 ///
 /// Returns [`VspError::UsageOrConfig`] (exit `4`) on unknown module IDs, invalid ID syntax,
 /// cycles, excluded required dependencies, or conflicting module selections.
-pub fn resolve_modules(
-    catalog: &WorkspaceCatalog,
-    req: &ResolveRequest,
-) -> VspResult<Vec<String>> {
+pub fn resolve_modules(catalog: &WorkspaceCatalog, req: &ResolveRequest) -> VspResult<Vec<String>> {
     let roots = split_csv_items(&req.roots);
     let recipe_excludes = split_csv_items(&req.recipe_excludes);
     let cli_with = split_csv_items(&req.cli_with);
@@ -142,7 +139,14 @@ pub fn resolve_modules(
     // Phase 1: Transitive requires[] DFS.
     let mut visited: Vec<String> = Vec::new();
     for item in &initial {
-        dfs_visit(catalog, item, &mut Vec::new(), None, &eff_excluded, &mut visited)?;
+        dfs_visit(
+            catalog,
+            item,
+            &mut Vec::new(),
+            None,
+            &eff_excluded,
+            &mut visited,
+        )?;
     }
 
     // Phase 2: Fixed-point conditional defaultWith[] expansion.
@@ -150,9 +154,10 @@ pub fn resolve_modules(
         let mut added = false;
         let snapshot = visited.clone();
         for mod_id in &snapshot {
-            let def = catalog.modules.get(mod_id).ok_or_else(|| {
-                VspError::UsageOrConfig(format!("unknown module '{mod_id}'"))
-            })?;
+            let def = catalog
+                .modules
+                .get(mod_id)
+                .ok_or_else(|| VspError::UsageOrConfig(format!("unknown module '{mod_id}'")))?;
             for comp in &def.manifest.default_with {
                 if can_add_default_companion(catalog, comp, &visited, &eff_excluded) {
                     dfs_visit(
@@ -235,9 +240,7 @@ pub fn resolve_profile_recipe(
     }
     roots.extend(recipe.modules.iter().cloned());
 
-    let effective_ux = ux_override
-        .map(|u| u.as_str().to_string())
-        .unwrap_or_else(|| recipe.ux.clone());
+    let effective_ux = ux_override.map_or_else(|| recipe.ux.clone(), |u| u.as_str().to_string());
     if !effective_ux.is_empty() && effective_ux != "default" {
         roots.push(effective_ux);
     }
@@ -330,7 +333,10 @@ pub fn merge_json_object_into(target: &mut Map<String, Value>, overlay: Map<Stri
 
 /// Performs a pure recursive object merge (`jq`'s `$a * $b`) where arrays overwrite.
 #[must_use]
-pub fn recursive_object_multiply(lhs: &Map<String, Value>, rhs: &Map<String, Value>) -> Map<String, Value> {
+pub fn recursive_object_multiply(
+    lhs: &Map<String, Value>,
+    rhs: &Map<String, Value>,
+) -> Map<String, Value> {
     let mut out = lhs.clone();
     for (k, v) in rhs {
         match (out.get_mut(k), v) {
@@ -416,12 +422,7 @@ pub fn compile_canonical_profile_settings(
     )?;
     let (ov_ws, ov_prof) = recipe.split_overrides();
     let combined_ov = recursive_object_multiply(&ov_ws, &ov_prof);
-    let mut merged = compile_settings(
-        catalog,
-        SettingsScope::Both,
-        &resolved,
-        Some(&combined_ov),
-    )?;
+    let mut merged = compile_settings(catalog, SettingsScope::Both, &resolved, Some(&combined_ov))?;
     for ux_key in catalog.ux_managed_keys() {
         merged.remove(&ux_key);
     }
@@ -719,12 +720,9 @@ pub fn export_profiles_with_additions(
         for raw in names {
             let canonical = catalog
                 .resolve_alias(raw)
-                .map(|(c, _)| c)
-                .unwrap_or_else(|| raw.clone());
+                .map_or_else(|| raw.clone(), |(canonical, _)| canonical);
             if !catalog.profiles.contains_key(&canonical) {
-                return Err(VspError::TargetMissing(format!(
-                    "unknown profile '{raw}'"
-                )));
+                return Err(VspError::TargetMissing(format!("unknown profile '{raw}'")));
             }
             push_unique(&mut selected, &canonical);
         }
@@ -759,8 +757,9 @@ pub fn export_profiles_with_additions(
 
     if include_legacy_aliases {
         for &(alias_file, canonical_file) in LEGACY_BUNDLE_ALIASES {
-            if let Some((_, canonical_bytes)) =
-                emitted_files.iter().find(|(name, _)| name == canonical_file)
+            if let Some((_, canonical_bytes)) = emitted_files
+                .iter()
+                .find(|(name, _)| name == canonical_file)
             {
                 let alias_bytes = canonical_bytes.clone();
                 alias_bundles.push(alias_file.to_string());
@@ -849,9 +848,8 @@ pub fn build_dist(catalog: &WorkspaceCatalog, out_dir: &Path) -> VspResult<DistR
 
 /// Lists the names of the regular `*.code-profile` files in `dir`, sorted in byte order.
 fn list_code_profile_files(dir: &Path) -> VspResult<Vec<String>> {
-    let entries = fs::read_dir(dir).map_err(|err| {
-        VspError::Operational(format!("failed to list {}: {err}", dir.display()))
-    })?;
+    let entries = fs::read_dir(dir)
+        .map_err(|err| VspError::Operational(format!("failed to list {}: {err}", dir.display())))?;
     let mut names = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|err| {
@@ -908,9 +906,7 @@ fn dfs_visit(
     visited: &mut Vec<String>,
 ) -> VspResult<()> {
     if !is_valid_module_id(id) {
-        return Err(VspError::UsageOrConfig(format!(
-            "invalid module id '{id}'"
-        )));
+        return Err(VspError::UsageOrConfig(format!("invalid module id '{id}'")));
     }
     if excluded.iter().any(|e| e == id) {
         if let Some(req) = requester {

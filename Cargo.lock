@@ -979,6 +979,7 @@ dependencies = [
  "clap_complete",
  "fs4",
  "jsonc-parser",
+ "rustix",
  "semver",
  "serde",
  "serde_json",
