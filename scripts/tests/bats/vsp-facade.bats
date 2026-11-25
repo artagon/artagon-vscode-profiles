@@ -46,7 +46,7 @@ vsp() {
 
   run env PATH="${bin_dir}:${PATH}" vsp --version
   [[ "${status}" -eq 0 ]]
-  [[ "${output}" == *"vsp 2.2.0"* ]]
+  [[ "${output}" == *"vsp 3.0.0"* ]]
 
   run env PATH="${bin_dir}:${PATH}" vsp self path
   [[ "${status}" -eq 0 ]]
@@ -195,4 +195,65 @@ STUB
 
   run vsp self nonexistent-sub
   [[ "${status}" -eq 4 ]]
+}
+
+@test "facade: bash-fallback diff --check never silently exits 0 on --user, --all, existing workspace, or partial profile checks" {
+  install_code_mock "${TEST_TMP}/check-bin"
+
+  run --separate-stderr vsp diff --check --user
+  [[ "${status}" -eq 7 ]]
+  [[ "${stderr}" == *"compiled Rust vsp binary is required"* ]]
+
+  run --separate-stderr vsp diff --check --all
+  [[ "${status}" -eq 7 ]]
+  [[ "${stderr}" == *"compiled Rust vsp binary is required"* ]]
+
+  run --separate-stderr vsp diff --check --profile rust --compromised-only
+  [[ "${status}" -eq 7 ]]
+  [[ "${stderr}" == *"compiled Rust vsp binary is required"* ]]
+
+  # Workspace that already has .vscode/settings.json cannot be verified by Bash fallback alone -> exit 7 (not 0!).
+  ws="$(make_workspace existing-ws Cargo.toml)"
+  mkdir -p "${ws}/.vscode"
+  printf '{"editor.tabSize": 99}\n' > "${ws}/.vscode/settings.json"
+  run --separate-stderr vsp diff --toolchain rust --check "${ws}"
+  [[ "${status}" -eq 7 ]]
+  [[ "${stderr}" == *"compiled Rust vsp binary is required"* ]]
+
+  # Profile with all extensions already installed still lacks settings drift verification in Bash fallback -> exit 7 (not 0!).
+  data_root="${TEST_TMP}/vscode"
+  seeded=()
+  while IFS= read -r eid; do
+    [[ -n "${eid}" ]] && seeded+=("${eid}")
+  done < <("${BASH}" "${LIB_DIR}/compose-extensions.sh" general-minimal | jq -r '.[].identifier.id')
+  seed_code_mock_exts "general-minimal" "${data_root}" -- "${seeded[@]}"
+  run --separate-stderr vsp diff --profile general-minimal --check --check-compat=off --no-rtk
+  [[ "${status}" -eq 7 ]]
+  [[ "${stderr}" == *"compiled Rust vsp binary is required"* ]]
+}
+
+@test "facade: scripts/vspcli VSP_USE_RUST_SHIM=1 delegates with exact argv/exit/compat-env and refuses recursive targets" {
+  stub="${TEST_TMP}/vsp-shim-stub"
+  cat > "${stub}" <<'STUB'
+#!/usr/bin/env bash
+printf 'SHIM compat=%s argc=%d args=%s\n' "${VSP_COMPAT_VSPCLI:-unset}" "$#" "$*"
+exit 9
+STUB
+  chmod 0755 "${stub}"
+
+  run env VSP_USE_RUST_SHIM=1 VSP_BIN="${stub}" "${SCRIPTS_DIR}/vspcli" list "--flag" "two words"
+  [[ "${status}" -eq 9 ]]
+  [[ "${output}" == "SHIM compat=1 argc=3 args=list --flag two words" ]]
+
+  # Recursion guard refuses direct and symlinked paths to scripts/vspcli or bin/vsp.
+  link_vspcli="${TEST_TMP}/link-vspcli"
+  link_facade="${TEST_TMP}/link-facade"
+  ln -s "${SCRIPTS_DIR}/vspcli" "${link_vspcli}"
+  ln -s "${REPO_ROOT}/bin/vsp" "${link_facade}"
+
+  for bad_target in "${SCRIPTS_DIR}/vspcli" "${REPO_ROOT}/bin/vsp" "${link_vspcli}" "${link_facade}"; do
+    run --separate-stderr env VSP_USE_RUST_SHIM=1 VSP_BIN="${bad_target}" "${SCRIPTS_DIR}/vspcli" list
+    [[ "${status}" -eq 4 ]]
+    [[ "${stderr}" == *"refusing recursive"* ]]
+  done
 }

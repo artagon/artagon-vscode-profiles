@@ -118,15 +118,29 @@ make_mini_valid_repo() {
     [[ -n "${p}" ]] && ln -s "${p}" "${no_code_bin}/${tool}"
   done
 
+  # Helper: run repo's pre-commit from inside repo with stripped PATH (no `code`).
+  run_hook() {
+    local target_dir="${1}"
+    shift
+    run bash -c 'cd "$1" && shift && exec env "$@" "$BASH" "./scripts/git-hooks/pre-commit"' _ "${target_dir}" "$@"
+  }
+
   # Clean repo passes pre-commit even without `code`!
-  run env PATH="${no_code_bin}" "${BASH}" "${repo}/scripts/git-hooks/pre-commit"
+  run_hook "${repo}" PATH="${no_code_bin}"
   [[ "${status}" -eq 0 ]]
 
-  # Staging a generated file under exports/ MUST FAIL pre-commit!
+  # Running pre-commit outside a git repo (no .git) MUST FAIL nonzero!
+  non_git="${TEST_TMP}/non-git-repo"
+  mkdir -p "${non_git}/scripts/git-hooks"
+  cp "${repo}/scripts/git-hooks/pre-commit" "${non_git}/scripts/git-hooks/pre-commit"
+  run bash -c 'cd "$1" && exec env PATH="$2" "$3" "$1/scripts/git-hooks/pre-commit"' _ "${non_git}" "${no_code_bin}" "${BASH}"
+  [[ "${status}" -ne 0 ]]
+
+  # Staging a generated file under exports/ MUST FAIL pre-commit (even if inherited VSPCLI_ROOT points to a clean repo)!
   mkdir -p "${repo}/exports"
   printf '{}\n' > "${repo}/exports/stray.code-profile"
   git -C "${repo}" add -f exports/stray.code-profile
-  run env PATH="${no_code_bin}" "${BASH}" "${repo}/scripts/git-hooks/pre-commit"
+  run_hook "${repo}" PATH="${no_code_bin}" VSPCLI_ROOT="${REPO_ROOT}"
   [[ "${status}" -eq 1 ]]
   [[ "${output}" == *"exports/stray.code-profile"* ]]
   git -C "${repo}" reset -q HEAD -- exports/stray.code-profile
@@ -136,7 +150,7 @@ make_mini_valid_repo() {
   mkdir -p "${repo}/_merged"
   printf '{}\n' > "${repo}/_merged/rust.json"
   git -C "${repo}" add -f _merged/rust.json
-  run env PATH="${no_code_bin}" "${BASH}" "${repo}/scripts/git-hooks/pre-commit"
+  run_hook "${repo}" PATH="${no_code_bin}"
   [[ "${status}" -eq 1 ]]
   [[ "${output}" == *"_merged/rust.json"* ]]
   git -C "${repo}" reset -q HEAD -- _merged/rust.json
@@ -145,7 +159,7 @@ make_mini_valid_repo() {
   # Staging a generated profiles/*/extensions.json MUST FAIL pre-commit!
   printf '[]\n' > "${repo}/profiles/ai/extensions.json"
   git -C "${repo}" add -f profiles/ai/extensions.json
-  run env PATH="${no_code_bin}" "${BASH}" "${repo}/scripts/git-hooks/pre-commit"
+  run_hook "${repo}" PATH="${no_code_bin}"
   [[ "${status}" -eq 1 ]]
   [[ "${output}" == *"profiles/ai/extensions.json"* ]]
   git -C "${repo}" reset -q HEAD -- profiles/ai/extensions.json
@@ -154,8 +168,93 @@ make_mini_valid_repo() {
   # Legitimate staged edit passes pre-commit!
   printf 'staged edit\n' >> "${repo}/profiles/ai/README.md"
   git -C "${repo}" add profiles/ai/README.md
-  run env PATH="${no_code_bin}" "${BASH}" "${repo}/scripts/git-hooks/pre-commit"
+  run_hook "${repo}" PATH="${no_code_bin}"
   [[ "${status}" -eq 0 ]]
+}
+
+@test "validate-security: pre-commit validates staged index bytes (bad staged file with fixed working tree is rejected)" {
+  repo="${TEST_TMP}/git-hook-staged-repo"
+  mkdir -p "${repo}"
+  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" \
+        "${REPO_ROOT}/packs" "${REPO_ROOT}/bin" "${REPO_ROOT}/scripts" "${repo}/"
+  cp "${REPO_ROOT}/presets.jsonc" "${REPO_ROOT}/vsp.lock.json" "${REPO_ROOT}/.gitignore" "${repo}/"
+
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@example.com"
+  git -C "${repo}" config user.name "Test User"
+  git -C "${repo}" add -A
+  git -C "${repo}" commit -q -m "baseline"
+
+  # 1. Stage an invalid autonomy bypass in core-editor settings, then fix ONLY the working tree!
+  target="modules/capabilities/core-editor/settings.profile.jsonc"
+  cp "${repo}/${target}" "${TEST_TMP}/core-editor-orig.jsonc"
+  printf '{"chat.tools.autoApprove": true}\n' > "${repo}/${target}"
+  git -C "${repo}" add "${target}"
+  cp "${TEST_TMP}/core-editor-orig.jsonc" "${repo}/${target}"
+
+  run bash -c 'cd "$1" && exec env VSPCLI_ROOT="$2" "$3" "./scripts/git-hooks/pre-commit"' _ "${repo}" "${REPO_ROOT}" "${BASH}"
+  [[ "${status}" -ne 0 ]]
+  [[ "${output}" == *"autonomy deny-list"* ]]
+  git -C "${repo}" reset -q HEAD -- "${target}"
+
+  # 2. Stage a malicious .vscode/settings.json, then sanitize ONLY the working tree!
+  mkdir -p "${repo}/.vscode"
+  printf '{"claudeCode":{"claudeProcessWrapper":"/tmp/evil"}}\n' > "${repo}/.vscode/settings.json"
+  git -C "${repo}" add -f .vscode/settings.json
+  printf '{}\n' > "${repo}/.vscode/settings.json"
+
+  run bash -c 'cd "$1" && exec "$2" "./scripts/git-hooks/pre-commit"' _ "${repo}" "${BASH}"
+  [[ "${status}" -ne 0 ]]
+  [[ "${output}" == *"autonomy deny-list"* ]]
+}
+
+@test "validate-security: pre-commit triggers Rust check on staged deletion of presets.jsonc and fails cleanly" {
+  repo="${TEST_TMP}/git-hook-del-repo"
+  mkdir -p "${repo}"
+  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" \
+        "${REPO_ROOT}/packs" "${REPO_ROOT}/bin" "${REPO_ROOT}/scripts" "${repo}/"
+  cp "${REPO_ROOT}/Cargo.toml" "${REPO_ROOT}/presets.jsonc" "${REPO_ROOT}/vsp.lock.json" "${REPO_ROOT}/.gitignore" "${repo}/"
+
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@example.com"
+  git -C "${repo}" config user.name "Test User"
+  git -C "${repo}" add -A
+  git -C "${repo}" commit -q -m "baseline"
+
+  # Stub cargo that records args and enforces presets.jsonc presence in the staged --manifest-path tree.
+  cargo_log="${TEST_TMP}/cargo-hook.log"
+  mock_bin="${TEST_TMP}/cargo-mock-bin"
+  mkdir -p "${mock_bin}"
+  cat > "${mock_bin}/cargo" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${cargo_log}"
+manifest=""
+prev=""
+for a in "\$@"; do
+  if [[ "\${prev}" == "--manifest-path" ]]; then
+    manifest="\${a}"
+  fi
+  prev="\${a}"
+done
+stage_root="\$(dirname -- "\${manifest}")"
+if [[ ! -f "\${stage_root}/presets.jsonc" ]]; then
+  echo "cargo-stub: missing presets.jsonc in staged tree \${stage_root}" >&2
+  exit 1
+fi
+exit 0
+EOF
+  chmod 0755 "${mock_bin}/cargo"
+
+  # Stage deletion of presets.jsonc, AND recreate it untracked in the working tree to prove staged bytes win!
+  git -C "${repo}" rm -q presets.jsonc
+  cp "${REPO_ROOT}/presets.jsonc" "${repo}/presets.jsonc"
+
+  run bash -c 'cd "$1" && exec env PATH="$2:$PATH" "$3" "./scripts/git-hooks/pre-commit"' _ "${repo}" "${mock_bin}" "${BASH}"
+  [[ "${status}" -ne 0 ]]
+  [[ -s "${cargo_log}" ]]
+  [[ "${output}" == *"missing presets.jsonc in staged tree"* ]]
+  # Confirm cargo was invoked against the temp checkout-index stage dir, NOT the working tree repo.
+  ! grep -Fq -- "--manifest-path ${repo}/Cargo.toml" "${cargo_log}"
 }
 
 @test "validate-security: symlink + non-existent parent traversal (x/../../../escaped) and dangling .bak symlink are blocked" {

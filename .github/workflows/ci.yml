@@ -29,7 +29,7 @@ jobs:
             command -v "${tool}" >/dev/null || { echo "missing required CI tool: ${tool}" >&2; exit 1; }
           done
 
-      - name: Assert zero generated artifacts are tracked in git
+      - name: Assert zero generated artifacts or retired legacy scripts are tracked in git
         run: |
           tracked_gen="$(git ls-files _merged exports 'profiles/*/extensions.json' 'profiles/*/settings.json')"
           if [[ -n "${tracked_gen}" ]]; then
@@ -37,9 +37,29 @@ jobs:
             printf '%s\n' "${tracked_gen}" >&2
             exit 1
           fi
+          retired="$(git ls-files scripts/.vspcli-completion.zsh scripts/.vspcli-completion.fish scripts/setup-rust-toolchain.sh scripts/setup-cpp-toolchain.sh profiles/rust/tasks.example.json)"
+          if [[ -n "${retired}" ]]; then
+            echo "ERROR: retired v2 legacy files must not be tracked in git:" >&2
+            printf '%s\n' "${retired}" >&2
+            exit 1
+          fi
+          loc="$(wc -l < bin/vsp | tr -d ' ')"
+          if [[ "${loc}" -gt 400 ]]; then
+            echo "ERROR: bin/vsp exceeds 400 LOC cap (${loc})" >&2
+            exit 1
+          fi
 
-      - name: ShellCheck all Bash scripts and syntax-check Zsh/Fish RTK scripts
+      - name: ShellCheck all Bash scripts and syntax-check Bash/Zsh/Fish scripts
         run: |
+          /bin/bash -n \
+            bin/vsp \
+            scripts/vspcli \
+            scripts/*.sh \
+            scripts/lib/*.sh \
+            scripts/git-hooks/pre-commit \
+            scripts/tests/check-ux-symmetry.sh \
+            scripts/tests/run.sh \
+            packs/rtk-terminal/scripts/rtk-init.bash
           shellcheck --exclude=SC1091 \
             bin/vsp \
             scripts/vspcli \
@@ -161,6 +181,19 @@ jobs:
           done
           tracked_gen="$(git ls-files _merged exports 'profiles/*/extensions.json' 'profiles/*/settings.json')"
           test -z "${tracked_gen}"
+          retired="$(git ls-files scripts/.vspcli-completion.zsh scripts/.vspcli-completion.fish scripts/setup-rust-toolchain.sh scripts/setup-cpp-toolchain.sh profiles/rust/tasks.example.json)"
+          test -z "${retired}"
+          loc="$(wc -l < bin/vsp | tr -d ' ')"
+          test "${loc}" -le 400
+          /bin/bash -n \
+            bin/vsp \
+            scripts/vspcli \
+            scripts/*.sh \
+            scripts/lib/*.sh \
+            scripts/git-hooks/pre-commit \
+            scripts/tests/check-ux-symmetry.sh \
+            scripts/tests/run.sh \
+            packs/rtk-terminal/scripts/rtk-init.bash
           shellcheck --exclude=SC1091 \
             bin/vsp \
             scripts/vspcli \

@@ -24,8 +24,67 @@ while [[ -L "${_vsp_self}" ]]; do
   esac
 done
 _vsp_script_dir="$(CDPATH='' cd -P -- "$(dirname -- "${_vsp_self}")" && pwd -P)"
+VSPCLI_SELF_PATH="${_vsp_script_dir}/$(basename -- "${_vsp_self}")"
 SCRIPT_ROOT="$(CDPATH='' cd -P -- "${_vsp_script_dir}/.." && pwd -P)"
 unset _vsp_self _vsp_hops _vsp_dir _vsp_target _vsp_script_dir
+
+# Pure Bash 3.2 realpath resolver (40-hop guard) used by opt-in Rust shim delegation.
+_vspcli_resolve_real() {
+  local p="${1}" hops=0 d t
+  if [[ "${p}" != */* ]]; then
+    p="$(command -v -- "${p}" 2>/dev/null || printf '%s' "${p}")"
+  fi
+  while [[ -L "${p}" ]]; do
+    hops=$((hops + 1))
+    [[ "${hops}" -le 40 ]] || return 1
+    d="$(CDPATH='' cd -P -- "$(dirname -- "${p}")" 2>/dev/null && pwd -P)" || return 1
+    t="$(readlink "${p}")" || return 1
+    case "${t}" in
+      /*) p="${t}" ;;
+      *)  p="${d}/${t}" ;;
+    esac
+  done
+  d="$(CDPATH='' cd -P -- "$(dirname -- "${p}")" 2>/dev/null && pwd -P)" || return 1
+  printf '%s/%s\n' "${d}" "$(basename -- "${p}")"
+}
+
+# Opt-in delegation to compiled Rust `vsp` binary when VSP_USE_RUST_SHIM=1.
+# Refuses recursive delegation back to scripts/vspcli or bin/vsp and preserves exact argv/exit codes.
+if [[ "${VSP_USE_RUST_SHIM:-0}" == "1" ]]; then
+  _vsp_facade_real="${SCRIPT_ROOT}/bin/vsp"
+  if [[ -e "${_vsp_facade_real}" || -L "${_vsp_facade_real}" ]]; then
+    _vsp_facade_real="$(_vspcli_resolve_real "${_vsp_facade_real}" 2>/dev/null || printf '%s' "${SCRIPT_ROOT}/bin/vsp")"
+  fi
+  _shim_cand=""
+  if [[ -n "${VSP_BIN:-}" ]]; then
+    if [[ ! -x "${VSP_BIN}" || -d "${VSP_BIN}" ]]; then
+      printf 'vspcli: VSP_USE_RUST_SHIM=1 requires executable VSP_BIN (got %q)\n' "${VSP_BIN}" >&2
+      exit 4
+    fi
+    _shim_cand="${VSP_BIN}"
+  else
+    for _c in "${SCRIPT_ROOT}/target/release/vsp" "${SCRIPT_ROOT}/target/debug/vsp"; do
+      if [[ -x "${_c}" && ! -d "${_c}" ]]; then
+        _shim_cand="${_c}"
+        break
+      fi
+    done
+    unset _c
+  fi
+  if [[ -n "${_shim_cand}" ]]; then
+    if ! _shim_real="$(_vspcli_resolve_real "${_shim_cand}")"; then
+      printf 'vspcli: failed to resolve VSP_BIN symlink chain: %s\n' "${_shim_cand}" >&2
+      exit 4
+    fi
+    if [[ "${_shim_real}" == "${VSPCLI_SELF_PATH}" || "${_shim_real}" == "${_vsp_facade_real}" ]]; then
+      printf 'vspcli: refusing recursive VSP_USE_RUST_SHIM delegation to %s\n' "${_shim_real}" >&2
+      exit 4
+    fi
+    VSP_COMPAT_VSPCLI=1 exec "${_shim_cand}" "${@+"${@}"}"
+  fi
+  unset _vsp_facade_real _shim_cand _shim_real
+fi
+
 ROOT="${VSPCLI_ROOT:-${SCRIPT_ROOT}}"
 SCRIPTS_DIR="${SCRIPT_ROOT}/scripts"
 LIB_DIR="${SCRIPTS_DIR}/lib"
@@ -159,19 +218,56 @@ cmd_build() {
 }
 
 cmd_open() {
-  if [[ $# -lt 1 ]]; then
-    echo "vspcli: open requires <profile> [path]" >&2
-    exit 4
+  local prof="" has_prof_flag=0
+  local pos=()
+  while [[ $# -gt 0 ]]; do
+    case "${1}" in
+      -p|--profile)
+        need_val "${1}" "${2:-}"
+        prof="${2}"; has_prof_flag=1; shift 2 ;;
+      --profile=*)
+        prof="${1#*=}"
+        need_val "--profile" "${prof}"
+        has_prof_flag=1; shift ;;
+      --)
+        shift
+        while [[ $# -gt 0 ]]; do pos+=("${1}"); shift; done
+        ;;
+      -*)
+        printf 'vspcli: open: unknown option %q\n' "${1}" >&2
+        exit 4 ;;
+      *)
+        pos+=("${1}"); shift ;;
+    esac
+  done
+
+  local ws_path="."
+  if [[ "${has_prof_flag}" -eq 1 ]]; then
+    if [[ "${#pos[@]}" -gt 1 ]]; then
+      printf 'vspcli: open: unexpected argument %q\n' "${pos[1]}" >&2
+      exit 4
+    fi
+    [[ "${#pos[@]}" -eq 1 ]] && ws_path="${pos[0]}"
+  else
+    if [[ "${#pos[@]}" -lt 1 ]]; then
+      echo "vspcli: open requires <profile> [path]" >&2
+      exit 4
+    fi
+    if [[ "${#pos[@]}" -gt 2 ]]; then
+      printf 'vspcli: open: unexpected argument %q\n' "${pos[2]}" >&2
+      exit 4
+    fi
+    prof="${pos[0]}"
+    [[ "${#pos[@]}" -eq 2 ]] && ws_path="${pos[1]}"
   fi
+
   if ! command -v code >/dev/null 2>&1; then
     echo "vspcli: VS Code 'code' CLI is required on PATH" >&2
     exit 1
   fi
-  local prof="${1}"; shift
   local legacy
   legacy="$(resolve_legacy_profile_name "${prof}")"
   [[ -n "${legacy}" ]] && prof="${legacy%% *}"
-  local ws_path="${1:-.}"
 
   CODE_STORE_USER_DIR=""
   CODE_STORE_DATA_ROOT=""
@@ -279,19 +375,17 @@ _reconcile_one() {
   if [[ "${compromised_only}" -eq 0 ]]; then
     local ext_file="${ROOT}/profiles/${recipe_name}/extensions.json"
     local tmp_rec_ext=""
-    if [[ ! -f "${ext_file}" ]]; then
-      if [[ -f "${ROOT}/profiles/${recipe_name}/profile.json" ]]; then
-        tmp_rec_ext="$(mktemp "${TMPDIR:-/tmp}/vsp-rec-ext.XXXXXX")" || return 1
-        if ! compiler_compile_profile_extensions_file "${ROOT}" "${recipe_name}" "${tmp_rec_ext}"; then
-          rm -f "${tmp_rec_ext}"
-          printf 'reconcile: failed to compile extensions on-demand for recipe %q\n' "${recipe_name}" >&2
-          return 1
-        fi
-        ext_file="${tmp_rec_ext}"
-      else
-        printf 'reconcile: missing recipe extensions file: %s\n' "${ext_file}" >&2
+    if [[ -f "${ROOT}/profiles/${recipe_name}/profile.json" ]]; then
+      tmp_rec_ext="$(mktemp "${TMPDIR:-/tmp}/vsp-rec-ext.XXXXXX")" || return 1
+      if ! compiler_compile_profile_extensions_file "${ROOT}" "${recipe_name}" "${tmp_rec_ext}"; then
+        rm -f "${tmp_rec_ext}"
+        printf 'reconcile: failed to compile extensions on-demand for recipe %q\n' "${recipe_name}" >&2
         return 1
       fi
+      ext_file="${tmp_rec_ext}"
+    elif [[ ! -f "${ext_file}" ]]; then
+      printf 'reconcile: missing recipe extensions file: %s\n' "${ext_file}" >&2
+      return 1
     fi
     if ! jq -e -s 'length == 1 and (.[0] | type == "array")' "${ext_file}" >/dev/null 2>&1; then
       printf 'reconcile: invalid or malformed recipe extensions JSON: %s\n' "${ext_file}" >&2

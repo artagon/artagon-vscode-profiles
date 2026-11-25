@@ -230,3 +230,95 @@ EOF
   leftover="$(find "${build_tmp}" -mindepth 1 -maxdepth 1 -name 'vsp-build-prof.*' | wc -l | tr -d ' ')"
   [[ "${leftover}" -eq 0 ]]
 }
+
+@test "compiler: A19 export-profiles and install-extensions compile fresh profile.json instead of reusing stale _merged/extensions.json" {
+  repo="${TEST_TMP}/a19-stale-repo"
+  mkdir -p "${repo}"
+  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" "${repo}/"
+
+  # Initial build populates gitignored _merged/rust.json and profiles/rust/extensions.json.
+  VSPCLI_ROOT="${repo}" "${BASH}" "${SCRIPTS_DIR}/compose-settings.sh" rust >/dev/null
+  [[ -f "${repo}/_merged/rust.json" ]]
+  [[ -f "${repo}/profiles/rust/extensions.json" ]]
+
+  # Edit authoritative profiles/rust/profile.json AFTER build (without re-running compose-settings.sh).
+  jq '.modules = ((.modules // []) + ["dx-pro"]) | .overrides.profile = ((.overrides.profile // {}) + {"editor.rulers": [111]})' \
+    "${repo}/profiles/rust/profile.json" > "${repo}/profiles/rust/profile.json.tmp"
+  mv -f "${repo}/profiles/rust/profile.json.tmp" "${repo}/profiles/rust/profile.json"
+
+  # Verify stale artifacts on disk do NOT contain the new edits.
+  [[ "$(jq 'has("editor.rulers")' "${repo}/_merged/rust.json")" == "false" ]]
+  ! jq -e '.[] | select(.identifier.id == "alefragnani.bookmarks")' "${repo}/profiles/rust/extensions.json" >/dev/null
+
+  # export-profiles.sh must compile fresh from profile.json (ignoring stale _merged/ and extensions.json).
+  run env VSPCLI_ROOT="${repo}" "${BASH}" "${SCRIPTS_DIR}/export-profiles.sh" rust
+  [[ "${status}" -eq 0 ]]
+  [[ "$(jq -c '.settings."editor.rulers"' "${repo}/exports/rust.code-profile")" == "[111]" ]]
+  jq -e '.extensions.enabled | index("alefragnani.bookmarks") != null' "${repo}/exports/rust.code-profile" >/dev/null
+
+  # install-extensions.sh must also compile fresh from profile.json (ignoring stale extensions.json).
+  run env VSPCLI_ROOT="${repo}" "${BASH}" "${SCRIPTS_DIR}/install-extensions.sh" rust --dry-run
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == *"alefragnani.bookmarks"* ]]
+}
+
+@test "compiler: A22 sourced compiler.sh helpers propagate upstream compile/jq failures with set +e/+o pipefail without mutating caller options" {
+  repo="${TEST_TMP}/a22-fail-repo"
+  mkdir -p "${repo}"
+  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" "${repo}/"
+
+  # Break rust settings JSONC so upstream compiler_compile_settings fails.
+  printf '{broken jsonc\n' > "${repo}/modules/toolchains/rust/settings.profile.jsonc"
+
+  run "${BASH}" -c '
+    set +e
+    set +o pipefail
+    IFS=$'\'' \t\n'\''
+    trap '\''true'\'' USR1
+
+    snap_opts() {
+      printf "FLAGS=%s\n" "$-"
+      shopt -p
+      printf "IFS_HEX=%s\n" "$(printf "%s" "${IFS}" | od -An -tx1 | tr -d "[:space:]")"
+      trap -p
+    }
+
+    before="$(snap_opts)"
+
+    source "'"${LIB_DIR}"'/common.sh"
+    source "'"${LIB_DIR}"'/module-resolver.sh"
+    source "'"${LIB_DIR}"'/compiler.sh"
+
+    out1="'"${TEST_TMP}"'/a22-settings.json"
+    compiler_compile_profile_settings_file "'"${repo}"'" rust "${out1}" >/dev/null 2>&1
+    rc_settings=$?
+
+    # Break rust module.json so upstream compiler_compile_extensions fails.
+    printf "{broken module\n" > "'"${repo}"'/modules/toolchains/rust/module.json"
+    out2="'"${TEST_TMP}"'/a22-exts.json"
+    compiler_compile_profile_extensions_file "'"${repo}"'" rust "${out2}" >/dev/null 2>&1
+    rc_exts=$?
+
+    compiler_build_profile "'"${repo}"'" rust >/dev/null 2>&1
+    rc_build=$?
+
+    # Break crisp UX settings so compiler_ux_managed_keys_json fails.
+    printf "{broken ux\n" > "'"${repo}"'/modules/ux/crisp/settings.profile.jsonc"
+    compiler_ux_managed_keys_json "'"${repo}"'" >/dev/null 2>&1
+    rc_ux=$?
+
+    after="$(snap_opts)"
+
+    echo "rc_settings=${rc_settings} rc_exts=${rc_exts} rc_build=${rc_build} rc_ux=${rc_ux}"
+    if [[ "${rc_settings}" -eq 0 || "${rc_exts}" -eq 0 || "${rc_build}" -eq 0 || "${rc_ux}" -eq 0 ]]; then
+      exit 1
+    fi
+    if [[ "${before}" != "${after}" ]]; then
+      echo "CALLER SHELL OPTIONS MUTATED" >&2
+      diff -u <(printf "%s\n" "${before}") <(printf "%s\n" "${after}") >&2 || true
+      exit 2
+    fi
+    exit 0
+  '
+  [[ "${status}" -eq 0 ]]
+}

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# vsp — Thin Bash 3.2+ CLI facade for artagon-vscode-profiles (v2.2.0).
+# vsp — Thin Bash 3.2+ CLI facade for artagon-vscode-profiles (v3.0.0).
 # Delegates immediately to compiled Rust binary when available; otherwise routes
 # vsp verbs to existing scripts/vspcli and sibling scripts (zero new parser/lock code).
 set -euo pipefail
 
-VSP_VERSION="2.2.0"
+VSP_VERSION="3.0.0"
 
 _vsp_self="${BASH_SOURCE[0]:-${0}}"
 if [[ "${_vsp_self}" != */* ]]; then
@@ -114,6 +114,11 @@ cmd_completions() {
   esac
 }
 
+_check_requires_rust() {
+  printf 'vsp diff --check: compiled Rust vsp binary is required for full %s drift verification\n' "${1}" >&2
+  exit 7
+}
+
 _dispatch_sync_or_diff() {
   local mode="${1}"; shift
   local profile="" workspace="" from_bundle="" preset="" as_recipe="" ux_preset="" ai_val=""
@@ -207,6 +212,7 @@ _dispatch_sync_or_diff() {
     if [[ -n "${workspace}" || -n "${profile}" || -n "${from_bundle}" || "${user_mode}" -eq 1 ]]; then
       printf 'vsp %s: --all cannot be combined with workspace, profile, --from, or --user\n' "${mode}" >&2; exit 4
     fi
+    [[ "${check_mode}" -eq 1 ]] && _check_requires_rust "--all"
     local rec_args=(--all)
     [[ "${compromised_only}" -eq 1 ]] && rec_args+=(--compromised-only)
     [[ "${dry_run}" -eq 1 ]] && rec_args+=(--dry-run)
@@ -240,7 +246,10 @@ _dispatch_sync_or_diff() {
     [[ -n "${profile}" ]] && ws_args+=(--profile "${profile}")
     [[ -n "${preset}" ]] && ws_args+=(--toolchain "${preset}")
     "${BASH}" "${VSPCLI}" apply "${ws_args[@]}" "${apply_args[@]+"${apply_args[@]}"}" "${workspace}"
-    [[ "${check_mode}" -eq 1 && ! -f "${workspace}/.vscode/settings.json" ]] && exit 3
+    if [[ "${check_mode}" -eq 1 ]]; then
+      [[ -f "${workspace}/.vscode/settings.json" ]] || exit 3
+      _check_requires_rust "workspace"
+    fi
     return 0
   fi
 
@@ -249,6 +258,7 @@ _dispatch_sync_or_diff() {
     local step0_args=(--profile "${profile}" --compromised-only)
     [[ "${dry_run}" -eq 1 ]] && step0_args+=(--dry-run)
     if [[ "${compromised_only}" -eq 1 ]]; then
+      [[ "${check_mode}" -eq 1 ]] && _check_requires_rust "--compromised-only"
       "${BASH}" "${VSPCLI}" reconcile "${step0_args[@]}"
       return $?
     fi
@@ -271,13 +281,14 @@ _dispatch_sync_or_diff() {
       rec_out="$("${BASH}" "${VSPCLI}" reconcile "${rec_args[@]}")"
       printf '%s\n' "${rec_out}"
       case "${rec_out}" in *"[STEP 0]"*|*"[STEP 1]"*|*"[STEP 2]"*) exit 3 ;; esac
-      return 0
+      _check_requires_rust "profile"
     fi
     "${BASH}" "${VSPCLI}" reconcile "${rec_args[@]}"
     return $?
   fi
 
   if [[ "${user_mode}" -eq 1 ]]; then
+    [[ "${check_mode}" -eq 1 ]] && _check_requires_rust "--user"
     local g_args=(--target=global)
     [[ "${dry_run}" -eq 1 ]] && g_args+=(--dry-run)
     [[ -n "${preset}" ]] && g_args+=(--toolchain "${preset}")

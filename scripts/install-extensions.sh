@@ -254,18 +254,17 @@ TMP_EXT_FILE=""
 VSIX_TMP=""
 trap '[[ -n "${TMP_EXT_FILE}" ]] && rm -f "${TMP_EXT_FILE}"; [[ -n "${VSIX_TMP}" ]] && rm -rf "${VSIX_TMP}"' EXIT
 
-if [[ ! -f "${EXT_FILE}" ]]; then
-  if [[ -f "${ROOT}/profiles/${PROFILE}/profile.json" ]]; then
-    TMP_EXT_FILE="$(mktemp "${TMPDIR:-/tmp}/vsp-inst-ext.XXXXXX")"
-    if ! compiler_compile_profile_extensions_file "${ROOT}" "${PROFILE}" "${TMP_EXT_FILE}"; then
-      printf 'install-extensions: failed to compile extensions on-demand for profile %q\n' "${PROFILE}" >&2
-      exit 1
-    fi
-    EXT_FILE="${TMP_EXT_FILE}"
-  else
-    printf 'install-extensions: missing extensions file: %s\n' "${EXT_FILE}" >&2
+if [[ -f "${ROOT}/profiles/${PROFILE}/profile.json" ]]; then
+  # Always compile authoritative profile.json on demand rather than reusing stale ignored extensions.json.
+  TMP_EXT_FILE="$(mktemp "${TMPDIR:-/tmp}/vsp-inst-ext.XXXXXX")"
+  if ! compiler_compile_profile_extensions_file "${ROOT}" "${PROFILE}" "${TMP_EXT_FILE}"; then
+    printf 'install-extensions: failed to compile extensions on-demand for profile %q\n' "${PROFILE}" >&2
     exit 1
   fi
+  EXT_FILE="${TMP_EXT_FILE}"
+elif [[ ! -f "${EXT_FILE}" ]]; then
+  printf 'install-extensions: missing extensions file: %s\n' "${EXT_FILE}" >&2
+  exit 1
 fi
 
 if ! jq -e -s '
