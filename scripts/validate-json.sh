@@ -564,7 +564,7 @@ for bad_path in agents .agents/settings.local.json; do
   fi
 done
 
-# Parsed-config autonomy scan on tracked .agents/.vscode/.claude JSON/JSONC (supports git worktrees where .git is a file).
+# Parsed-config autonomy scan on tracked .agents/.vscode/.claude JSON/JSONC (supports git worktrees and staged checkout-index copies).
 if [[ -e "${ROOT}/.git" ]] && command -v git >/dev/null 2>&1; then
   while IFS= read -r cfg; do
     [[ -n "${cfg}" && -f "${ROOT}/${cfg}" ]] || continue
@@ -578,6 +578,21 @@ if [[ -e "${ROOT}/.git" ]] && command -v git >/dev/null 2>&1; then
         ;;
     esac
   done < <(git -C "${ROOT}" ls-files)
+elif [[ "${VSPCLI_STAGED_TREE:-0}" == "1" ]]; then
+  while IFS= read -r abs_cfg; do
+    [[ -n "${abs_cfg}" && -f "${abs_cfg}" ]] || continue
+    cfg="${abs_cfg#"${ROOT}/"}"
+    if parsed_cfg="$(compiler_parse_jsonc_object "${ROOT}" "${abs_cfg}" 2>"${TMP_WORK}/cfg.err")"; then
+      printf '%s\n' "${parsed_cfg}" | check_autonomy_denylist_json "${cfg}" || FAILED=1
+    else
+      err "${cfg}: failed JSON/JSONC parse during autonomy scan: $(cat "${TMP_WORK}/cfg.err")"
+    fi
+  done < <(
+    for cfg_dir in .agents .vscode .claude; do
+      [[ -d "${ROOT}/${cfg_dir}" ]] || continue
+      LC_ALL=C find "${ROOT}/${cfg_dir}" -type f \( -name '*.json' -o -name '*.jsonc' \) -print
+    done | LC_ALL=C sort
+  )
 fi
 
 # Check for broken symlinks anywhere in repo (excluding .git, .cache, target, dist).

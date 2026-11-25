@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
 # pre-commit — Repository validation & generated-artifact guard pre-commit hook.
+# Validates ONLY staged (indexed) bytes via a temporary git checkout-index copy.
 # Does NOT require VS Code CLI (`code`) on PATH so pure config edits work anywhere.
 set -euo pipefail
 
-SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${0}")" && pwd -P)"
-if [[ -n "${VSPCLI_ROOT:-}" ]]; then
-  ROOT="${VSPCLI_ROOT}"
-elif [[ -n "${GIT_DIR:-}" ]] && command -v git >/dev/null 2>&1 && git_top="$(git rev-parse --show-toplevel 2>/dev/null)" && [[ -n "${git_top}" ]]; then
-  ROOT="${git_top}"
-else
-  ROOT="$(CDPATH='' cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
+# Ignore inherited VSPCLI_ROOT; derive repository root strictly from Git.
+unset VSPCLI_ROOT
+
+if ! command -v git >/dev/null 2>&1; then
+  echo "pre-commit: git is required" >&2
+  exit 1
+fi
+
+if ! ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || [[ -z "${ROOT}" ]]; then
+  echo "pre-commit: failed to resolve git repository root via 'git rev-parse --show-toplevel'" >&2
+  exit 1
+fi
+
+if [[ ! -e "${ROOT}/.git" ]]; then
+  echo "pre-commit: missing .git at repository root: ${ROOT}" >&2
+  exit 1
 fi
 
 run() {
@@ -19,18 +29,21 @@ run() {
   "${@}"
 }
 
-# 1. Collect staged files (Added/Copied/Modified/Renamed) and reject generated artifacts.
-staged_files=""
-if [[ -e "${ROOT}/.git" ]] && command -v git >/dev/null 2>&1; then
-  if ! staged_files="$(git -C "${ROOT}" diff --cached --name-only --diff-filter=ACMR)"; then
-    echo "pre-commit: git diff --cached failed" >&2
-    exit 1
-  fi
+# 1. Collect staged files separately:
+#    - ACMR (added/copied/modified/renamed) for generated-artifact rejection (deletions allowed).
+#    - ACMRD with --no-renames (including deletions/renames) for triggering Rust/v3 schema validation.
+if ! staged_added_modified="$(git -C "${ROOT}" diff --cached --no-renames --name-only --diff-filter=ACMR)"; then
+  echo "pre-commit: git diff --cached (ACMR) failed" >&2
+  exit 1
+fi
+
+if ! staged_all_changes="$(git -C "${ROOT}" diff --cached --no-renames --name-only --diff-filter=ACMRD)"; then
+  echo "pre-commit: git diff --cached (ACMRD) failed" >&2
+  exit 1
 fi
 
 forbidden_staged=""
-need_rust_check=0
-if [[ -n "${staged_files}" ]]; then
+if [[ -n "${staged_added_modified}" ]]; then
   while IFS= read -r path; do
     [[ -n "${path}" ]] || continue
     case "${path}" in
@@ -42,12 +55,7 @@ if [[ -n "${staged_files}" ]]; then
         fi
         ;;
     esac
-    case "${path}" in
-      Cargo.toml|Cargo.lock|crates/*|catalog/*|packs/*|presets.jsonc|vsp.lock.json)
-        need_rust_check=1
-        ;;
-    esac
-  done <<< "${staged_files}"
+  done <<< "${staged_added_modified}"
 fi
 
 if [[ -n "${forbidden_staged}" ]]; then
@@ -62,16 +70,55 @@ EOF
   exit 1
 fi
 
-# 2. Validate catalog, packs, modules, presets, lockfile, and security invariants.
-run "validating catalog, modules, packs, and profiles" env VSPCLI_ROOT="${ROOT}" "${BASH}" "${ROOT}/scripts/validate-json.sh"
-
-# 3. ShellCheck bin/vsp when shellcheck is available.
-if [[ -f "${ROOT}/bin/vsp" ]] && command -v shellcheck >/dev/null 2>&1; then
-  run "shellchecking bin/vsp" shellcheck --exclude=SC1091 "${ROOT}/bin/vsp"
+need_rust_check=0
+if [[ -n "${staged_all_changes}" ]]; then
+  while IFS= read -r path; do
+    [[ -n "${path}" ]] || continue
+    case "${path}" in
+      Cargo.toml|Cargo.lock|crates/*|catalog/*|packs/*|presets.jsonc|vsp.lock.json)
+        need_rust_check=1
+        ;;
+    esac
+  done <<< "${staged_all_changes}"
 fi
 
-# 4. Run Rust tests and v2.2 catalog validation when cargo is available and relevant files are staged.
-if [[ "${need_rust_check}" -eq 1 && -f "${ROOT}/Cargo.toml" ]] && command -v cargo >/dev/null 2>&1; then
-  run "running cargo test --workspace" cargo test --manifest-path "${ROOT}/Cargo.toml" --workspace
-  run "running vsp dev validate" cargo run --quiet --manifest-path "${ROOT}/Cargo.toml" --bin vsp -- --catalog "${ROOT}" dev validate
+# 2. Materialize ONLY staged (indexed) bytes into an isolated temp directory so
+#    unstaged working-tree fixes can never mask broken staged content.
+STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vsp-pre-commit.XXXXXX")"
+STAGE_DIR="$(CDPATH='' cd -P -- "${STAGE_DIR}" && pwd -P)"
+cleanup() {
+  rm -rf -- "${STAGE_DIR}"
+}
+trap cleanup EXIT
+
+if ! git -C "${ROOT}" checkout-index -a -f --prefix="${STAGE_DIR}/"; then
+  echo "pre-commit: git checkout-index failed" >&2
+  exit 1
+fi
+
+# 3. Validate staged catalog, packs, modules, presets, lockfile, and security invariants.
+if [[ ! -f "${STAGE_DIR}/scripts/validate-json.sh" ]]; then
+  echo "pre-commit: missing scripts/validate-json.sh in staged index" >&2
+  exit 1
+fi
+run "validating staged catalog, modules, packs, and profiles" \
+  env VSPCLI_ROOT="${STAGE_DIR}" VSPCLI_STAGED_TREE=1 "${BASH}" "${STAGE_DIR}/scripts/validate-json.sh"
+
+# 4. ShellCheck staged bin/vsp when shellcheck is available.
+if [[ -f "${STAGE_DIR}/bin/vsp" ]] && command -v shellcheck >/dev/null 2>&1; then
+  run "shellchecking staged bin/vsp" shellcheck --exclude=SC1091 "${STAGE_DIR}/bin/vsp"
+fi
+
+# 5. Run Rust tests and v3 catalog validation against staged bytes when relevant files are staged.
+if [[ "${need_rust_check}" -eq 1 ]] && command -v cargo >/dev/null 2>&1; then
+  if [[ -f "${STAGE_DIR}/Cargo.toml" ]]; then
+    cargo_target="${CARGO_TARGET_DIR:-${ROOT}/target}"
+    run "running cargo test --workspace on staged tree" \
+      env CARGO_TARGET_DIR="${cargo_target}" cargo test --manifest-path "${STAGE_DIR}/Cargo.toml" --workspace
+    run "running vsp dev validate on staged tree" \
+      env CARGO_TARGET_DIR="${cargo_target}" cargo run --quiet --manifest-path "${STAGE_DIR}/Cargo.toml" --bin vsp -- --catalog "${STAGE_DIR}" dev validate
+  elif git -C "${ROOT}" cat-file -e HEAD:Cargo.toml 2>/dev/null; then
+    echo "pre-commit: Cargo.toml was deleted in staged index" >&2
+    exit 1
+  fi
 fi

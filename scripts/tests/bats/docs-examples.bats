@@ -25,14 +25,19 @@ MOCK
   export PATH="${bin_dir}:${PATH}"
 }
 
-@test "docs: README.md documents valid 2-step UX import flow and all Quick Start / CLI commands pass flag parsing" {
+@test "docs: v3.0 README.md Quick Start and CLI commands pass flag parsing cleanly on a clean checkout" {
   require_bin jq
   install_code_mock "${TEST_TMP}/bin"
   install_empty_marketplace_curl_mock "${TEST_TMP}/mp-bin"
 
-  # Never document unsupported --ux flag on import-profile.sh or vspcli import.
+  # Never document unsupported --ux flag on import-profile.sh/vspcli import or retired v2 script invocations.
   ! grep -E 'import-profile\.sh.*--ux|vspcli[[:space:]]+import.*--ux' "${REPO_ROOT}/README.md"
-  grep -Fq 'bash scripts/vspcli apply --target=profile --profile rust --ux=retina' "${REPO_ROOT}/README.md"
+  ! grep -Eq 'bash[[:space:]]+scripts/(setup-rust-toolchain|setup-cpp-toolchain)\.sh|source[[:space:]]+scripts/\.vspcli-completion\.' "${REPO_ROOT}/README.md"
+
+  # v3.0 README documents core unified `vsp` commands.
+  for expected_cmd in "vsp --version" "vsp list" "vsp show" "vsp detect" "vsp diff" "vsp sync" "vsp open" "vsp doctor"; do
+    grep -Fq "${expected_cmd}" "${REPO_ROOT}/README.md"
+  done
 
   # Prepare realistic temporary workspaces for documented /path/to/* placeholders.
   ws_repo="$(make_workspace doc-repo Cargo.toml)"
@@ -40,7 +45,7 @@ MOCK
   ws_astro="$(make_workspace doc-astro package.json astro.config.mjs)"
   ws_py="$(make_workspace doc-py pyproject.toml)"
 
-  # Extract every `bash scripts/...` command from fenced ```bash blocks in README.md.
+  # Extract every `vsp ...` command from fenced ```bash blocks in README.md.
   cmds_file="${TEST_TMP}/readme-cmds.txt"
   awk '
     /^```bash/ { in_bash=1; next }
@@ -55,58 +60,63 @@ MOCK
       }
       line = buf $0
       buf = ""
-      if (line ~ /^bash scripts\//) print line
+      if (line ~ /^vsp[[:space:]]/) print line
     }
   ' "${REPO_ROOT}/README.md" > "${cmds_file}"
 
   cmd_count="$(wc -l < "${cmds_file}" | tr -d ' ')"
-  [[ "${cmd_count}" -ge 15 ]]
+  [[ "${cmd_count}" -ge 8 ]]
 
-  # Build exports inside an isolated temp copy so standalone BATS passes on a clean checkout with zero tracked exports/.
-  doc_repo="${TEST_TMP}/doc-repo"
-  mkdir -p "${doc_repo}"
-  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" \
-        "${REPO_ROOT}/packs" "${REPO_ROOT}/scripts" "${REPO_ROOT}/docs" "${doc_repo}/"
-  cp "${REPO_ROOT}/README.md" "${REPO_ROOT}/AGENTS.md" "${REPO_ROOT}/CLAUDE.md" \
-     "${REPO_ROOT}/CODEX.md" "${REPO_ROOT}/GEMINI.md" "${REPO_ROOT}/presets.jsonc" \
-     "${REPO_ROOT}/vsp.lock.json" "${doc_repo}/"
-  VSPCLI_ROOT="${doc_repo}" "${BASH}" "${doc_repo}/scripts/vspcli" build >/dev/null
+  # Provide an offline `vsp` shim on PATH using bin/vsp Bash fallback so tests run identically
+  # on clean checkouts with zero tracked exports/ and zero pre-built target/ binary.
+  vsp_shim_bin="${TEST_TMP}/vsp-shim-bin"
+  mkdir -p "${vsp_shim_bin}"
+  cat > "${vsp_shim_bin}/vsp" <<EOF
+#!/usr/bin/env bash
+exec env VSP_FORCE_BASH=1 "${REPO_ROOT}/bin/vsp" "\$@"
+EOF
+  chmod 0755 "${vsp_shim_bin}/vsp"
+
+  # Run commands inside an isolated temp workdir so relative outputs (e.g. ./bundles) never dirty REPO_ROOT.
+  doc_work="${TEST_TMP}/doc-workdir"
+  mkdir -p "${doc_work}"
 
   while IFS= read -r cmd; do
     [[ -n "${cmd}" ]] || continue
-    # Substitute placeholder paths with real temp workspaces.
     cmd="${cmd//\/path\/to\/maven-spring-repo/${ws_mvn}}"
     cmd="${cmd//\/path\/to\/astro-repo/${ws_astro}}"
     cmd="${cmd//\/path\/to\/python-repo/${ws_py}}"
     cmd="${cmd//\/path\/to\/repo/${ws_repo}}"
 
     set +e
-    (cd "${doc_repo}" && VSPCLI_ROOT="${doc_repo}" eval "${cmd}") >/dev/null 2>&1
+    (cd "${doc_work}" && PATH="${vsp_shim_bin}:${PATH}" eval "${cmd}") >/dev/null 2>&1
     rc=$?
     set -e
 
-    # No documented command may fail flag parsing (exit 4 or 2).
+    # No documented command may fail flag/argument validation (exit 4 or 2).
     if [[ "${rc}" -eq 4 || "${rc}" -eq 2 ]]; then
       echo "README command failed flag/arg validation (exit=${rc}): ${cmd}" >&2
       return 1
     fi
-    # Import and apply examples must succeed cleanly offline.
+    # Core read/sync/export/open examples must succeed cleanly offline (doctor --strict may exit 1 on clean Default profile).
     case "${cmd}" in
-      *"scripts/import-profile.sh "*|*"scripts/vspcli apply "*)
+      "vsp --version"|"vsp list "*|"vsp show "*|"vsp detect "*|"vsp diff "*|"vsp sync "*|"vsp open "*|"vsp export "*)
         if [[ "${rc}" -ne 0 ]]; then
-          echo "README import/apply command failed (exit=${rc}): ${cmd}" >&2
+          echo "README vsp command failed (exit=${rc}): ${cmd}" >&2
           return 1
         fi
         ;;
     esac
   done < "${cmds_file}"
 
-  # Confirm the 2-step flow actually applied Retina UX to the imported rust profile.
+  # Confirm documented workspace sync, profile sync, and open examples produced expected results.
+  [[ -f "${ws_repo}/.vscode/settings.json" ]]
   rust_loc="$(jq -r '.userDataProfiles[] | select(.name == "rust") | .location' "${VSCODE_USER_DIR}/globalStorage/storage.json")"
   [[ -n "${rust_loc}" ]]
-  [[ "$(jq -r '."workbench.colorTheme"' "${VSCODE_USER_DIR}/profiles/${rust_loc}/settings.json")" == "Catppuccin Mocha" ]]
+  [[ -f "${VSCODE_USER_DIR}/profiles/${rust_loc}/settings.json" ]]
+  grep -q 'action=open profile=rust' "${CODE_LOG}"
 
-  # Verify CLI Quick Reference table flags (list, detect --json, check-extension-compatibility.sh).
+  # Verify legacy vspcli compatibility commands and check-extension-compatibility.sh cleanly on clean checkout.
   run vspcli list
   [[ "${status}" -eq 0 ]]
   run vspcli detect --json "${ws_repo}"

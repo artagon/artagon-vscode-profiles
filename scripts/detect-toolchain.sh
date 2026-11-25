@@ -19,13 +19,14 @@ source "${LIB_DIR}/common.sh"
 source "${LIB_DIR}/module-resolver.sh"
 
 JSON_MODE=0
+EXPLAIN_MODE=0
 NO_DETECT=0
 OVERRIDE_TOOLCHAINS=()
 TARGET_PATH="."
 
 usage() {
   cat <<'EOF'
-Usage: detect-toolchain.sh [--json] [--toolchain <id>] [--no-detect] [path]
+Usage: detect-toolchain.sh [--json] [--explain] [--toolchain <id>] [--no-detect] [path]
 EOF
 }
 
@@ -33,6 +34,10 @@ while [[ $# -gt 0 ]]; do
   case "${1}" in
     --json)
       JSON_MODE=1
+      shift
+      ;;
+    --explain)
+      EXPLAIN_MODE=1
       shift
       ;;
     --no-detect)
@@ -448,6 +453,11 @@ if [[ "${JSON_MODE}" -eq 1 ]]; then
   tc_json="$(printf '%s\n' "${FINAL[@]}" | jq -R . | jq -s .)"
   jq -n --argjson tc "${tc_json}" --argjson sig "${SIGNALS_JSON}" \
     '{ toolchains: $tc, signals: $sig, override: false }'
+elif [[ "${EXPLAIN_MODE}" -eq 1 ]]; then
+  for mod_id in "${FINAL[@]}"; do
+    sigs="$(printf '%s' "${SIGNALS_JSON}" | jq -r --arg k "${mod_id}" '(.[$k] // []) | join(", ")')"
+    printf '%s (%s)\n' "${mod_id}" "${sigs}"
+  done
 else
   printf '%s\n' "${FINAL[*]}"
 fi

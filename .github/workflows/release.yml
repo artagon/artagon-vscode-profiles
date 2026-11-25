@@ -184,7 +184,7 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" release-assets/* --clobber
+            gh release upload "${TAG}" release-assets/*
           else
             gh release create "${TAG}" release-assets/* \
               --verify-tag \

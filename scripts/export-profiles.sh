@@ -24,12 +24,20 @@ fi
 
 NO_LOCK=0
 BREAK_STALE=""
+OUT_DIR=""
 REQUESTED=()
 
 while [[ $# -gt 0 ]]; do
   case "${1}" in
     --no-lock)          NO_LOCK=1; shift ;;
     --break-stale-lock) BREAK_STALE="--break-stale-lock"; shift ;;
+    --out)
+      [[ $# -ge 2 && -n "${2}" ]] || { echo "export-profiles: --out requires a value" >&2; exit 4; }
+      OUT_DIR="${2}"; shift 2 ;;
+    --out=*)
+      OUT_DIR="${1#*=}"
+      [[ -n "${OUT_DIR}" ]] || { echo "export-profiles: --out requires a value" >&2; exit 4; }
+      shift ;;
     -*)
       printf 'export-profiles: unknown option %q\n' "${1}" >&2
       exit 4
@@ -57,7 +65,7 @@ if [[ "${NO_LOCK}" -eq 0 ]]; then
   acquire_lock "${LOCK_DIR}" 15 ${BREAK_STALE:+"${BREAK_STALE}"} || exit 1
 fi
 
-EXPORTS_DIR="${ROOT}/exports"
+EXPORTS_DIR="${OUT_DIR:-${ROOT}/exports}"
 mkdir -p "${EXPORTS_DIR}"
 
 PROFILES=()
@@ -81,22 +89,21 @@ STAGE_DIR="$(mktemp -d "${EXPORTS_DIR}/.stage.XXXXXX")" || exit 1
 
 STAGED_NAMES=()
 for profile in "${PROFILES[@]+"${PROFILES[@]}"}"; do
-  merged="${ROOT}/_merged/${profile}.json"
-  ext_file="${ROOT}/profiles/${profile}/extensions.json"
-  if [[ ! -f "${merged}" ]]; then
-    if [[ -f "${ROOT}/profiles/${profile}/profile.json" ]]; then
-      merged="${STAGE_DIR}/_${profile}.merged.json"
-      compiler_compile_profile_settings_file "${ROOT}" "${profile}" "${merged}" || exit 1
-    else
+  if [[ -f "${ROOT}/profiles/${profile}/profile.json" ]]; then
+    # Always compile authoritative profile.json on demand rather than reusing stale ignored artifacts.
+    merged="${STAGE_DIR}/_${profile}.merged.json"
+    ext_file="${STAGE_DIR}/_${profile}.extensions.json"
+    compiler_compile_profile_settings_file "${ROOT}" "${profile}" "${merged}" || exit 1
+    compiler_compile_profile_extensions_file "${ROOT}" "${profile}" "${ext_file}" || exit 1
+  else
+    # Artifact-only fallback strictly for legacy fixtures that have no profile.json.
+    merged="${ROOT}/_merged/${profile}.json"
+    ext_file="${ROOT}/profiles/${profile}/extensions.json"
+    if [[ ! -f "${merged}" ]]; then
       printf 'Warning: skipping %s — missing %s\n' "${profile}" "${merged}" >&2
       continue
     fi
-  fi
-  if [[ ! -f "${ext_file}" ]]; then
-    if [[ -f "${ROOT}/profiles/${profile}/profile.json" ]]; then
-      ext_file="${STAGE_DIR}/_${profile}.extensions.json"
-      compiler_compile_profile_extensions_file "${ROOT}" "${profile}" "${ext_file}" || exit 1
-    else
+    if [[ ! -f "${ext_file}" ]]; then
       printf 'Warning: skipping %s — missing %s\n' "${profile}" "${ext_file}" >&2
       continue
     fi
