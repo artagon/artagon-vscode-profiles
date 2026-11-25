@@ -84,12 +84,22 @@ for profile in "${PROFILES[@]+"${PROFILES[@]}"}"; do
   merged="${ROOT}/_merged/${profile}.json"
   ext_file="${ROOT}/profiles/${profile}/extensions.json"
   if [[ ! -f "${merged}" ]]; then
-    printf 'Warning: skipping %s — missing %s\n' "${profile}" "${merged}" >&2
-    continue
+    if [[ -f "${ROOT}/profiles/${profile}/profile.json" ]]; then
+      merged="${STAGE_DIR}/_${profile}.merged.json"
+      compiler_compile_profile_settings_file "${ROOT}" "${profile}" "${merged}" || exit 1
+    else
+      printf 'Warning: skipping %s — missing %s\n' "${profile}" "${merged}" >&2
+      continue
+    fi
   fi
   if [[ ! -f "${ext_file}" ]]; then
-    printf 'Warning: skipping %s — missing %s\n' "${profile}" "${ext_file}" >&2
-    continue
+    if [[ -f "${ROOT}/profiles/${profile}/profile.json" ]]; then
+      ext_file="${STAGE_DIR}/_${profile}.extensions.json"
+      compiler_compile_profile_extensions_file "${ROOT}" "${profile}" "${ext_file}" || exit 1
+    else
+      printf 'Warning: skipping %s — missing %s\n' "${profile}" "${ext_file}" >&2
+      continue
+    fi
   fi
 
   out_stage="${STAGE_DIR}/${profile}.code-profile"

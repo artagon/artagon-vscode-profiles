@@ -278,19 +278,33 @@ _reconcile_one() {
   local desired_lc=()
   if [[ "${compromised_only}" -eq 0 ]]; then
     local ext_file="${ROOT}/profiles/${recipe_name}/extensions.json"
+    local tmp_rec_ext=""
     if [[ ! -f "${ext_file}" ]]; then
-      printf 'reconcile: missing recipe extensions file: %s\n' "${ext_file}" >&2
-      return 1
+      if [[ -f "${ROOT}/profiles/${recipe_name}/profile.json" ]]; then
+        tmp_rec_ext="$(mktemp "${TMPDIR:-/tmp}/vsp-rec-ext.XXXXXX")" || return 1
+        if ! compiler_compile_profile_extensions_file "${ROOT}" "${recipe_name}" "${tmp_rec_ext}"; then
+          rm -f "${tmp_rec_ext}"
+          printf 'reconcile: failed to compile extensions on-demand for recipe %q\n' "${recipe_name}" >&2
+          return 1
+        fi
+        ext_file="${tmp_rec_ext}"
+      else
+        printf 'reconcile: missing recipe extensions file: %s\n' "${ext_file}" >&2
+        return 1
+      fi
     fi
     if ! jq -e -s 'length == 1 and (.[0] | type == "array")' "${ext_file}" >/dev/null 2>&1; then
       printf 'reconcile: invalid or malformed recipe extensions JSON: %s\n' "${ext_file}" >&2
+      [[ -n "${tmp_rec_ext}" ]] && rm -f "${tmp_rec_ext}"
       return 1
     fi
     local desired_raw=""
     if ! desired_raw="$(jq -r -s '.[0][] | .identifier.id // empty' "${ext_file}")"; then
       printf 'reconcile: failed to parse recipe extensions JSON: %s\n' "${ext_file}" >&2
+      [[ -n "${tmp_rec_ext}" ]] && rm -f "${tmp_rec_ext}"
       return 1
     fi
+    [[ -n "${tmp_rec_ext}" ]] && rm -f "${tmp_rec_ext}"
     while IFS= read -r line; do
       [[ -n "${line}" ]] && desired_lc+=("$(to_lower "${line}")")
     done <<< "${desired_raw}"

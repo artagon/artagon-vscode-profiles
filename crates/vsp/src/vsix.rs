@@ -19,6 +19,7 @@ use crate::exit_codes::{VspError, VspResult};
 use crate::model::{ExtensionPin, PinsLoadState, WorkspaceCatalog};
 use crate::policy::is_valid_sha256_hex;
 use crate::provenance::resolve_xdg_cache_home;
+use crate::schema_loader::{embedded_snapshot_files, EMBEDDED_ROOT_LABEL};
 use crate::vscode::InstalledExtension;
 
 /// Maximum number of concurrent VSIX download/verification worker threads.
@@ -47,7 +48,7 @@ pub struct LockPinEntry {
     pub required: bool,
 }
 
-/// Optional 4-tier `vsp.lock.json` document shape (forward-compatible with Phase 2 lockfile).
+/// Optional 4-tier `vsp.lock.json` document shape supporting v2.2 lockfiles and legacy layouts.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VspLockFile {
@@ -70,16 +71,43 @@ struct Tier2LockSection {
     pins: BTreeMap<String, LockPinRecord>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LockTargetRecord {
+    #[serde(default)]
+    sha256: Option<String>,
+    #[serde(default, alias = "vsix_url")]
+    vsix_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LockPinRecord {
     #[serde(default)]
-    version: String,
+    version: Option<String>,
     #[serde(default)]
-    sha256: String,
-    #[serde(default)]
-    vsix_url: String,
+    sha256: Option<String>,
+    #[serde(default, alias = "vsix_url")]
+    vsix_url: Option<String>,
     #[serde(default)]
     tier: Option<u8>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    targets: BTreeMap<String, LockTargetRecord>,
+}
+
+/// Returns the Marketplace/lockfile target platform key for the running host.
+#[must_use]
+pub fn current_lock_platform() -> &'static str {
+    match (env::consts::OS, env::consts::ARCH) {
+        ("macos", "aarch64") => "darwin-arm64",
+        ("macos", "x86_64") => "darwin-x64",
+        ("linux", "x86_64") => "linux-x64",
+        ("linux", "aarch64") => "linux-arm64",
+        ("windows", "x86_64") => "win32-x64",
+        _ => "universal",
+    }
 }
 
 /// Options controlling VSIX pin resolution and download verification.
@@ -259,21 +287,36 @@ pub fn load_combined_pin_index(
     let bypass = unlocked_bypass_active(allow_unlocked);
     let mut entries: BTreeMap<String, LockPinEntry> = BTreeMap::new();
     let mut pin_required = false;
+    let pins_env_override = env::var("ARTAGON_VSCODE_PINS_FILE")
+        .ok()
+        .is_some_and(|s| !s.trim().is_empty());
 
-    // 1. Optional 4-tier `vsp.lock.json` entries (forward-compatible).
-    let lock_path = catalog.root.join("vsp.lock.json");
-    if lock_path.is_file() {
-        let raw = fs::read_to_string(&lock_path).map_err(|err| {
-            VspError::SafetyRefusal(format!(
-                "vsix: unreadable vsp.lock.json {}: {err}",
-                lock_path.display()
-            ))
-        })?;
-        let lock_doc: VspLockFile = serde_json::from_str(&raw).map_err(|err| {
-            VspError::SafetyRefusal(format!(
-                "vsix: malformed vsp.lock.json {}: {err}",
-                lock_path.display()
-            ))
+    // 1. Authoritative 4-tier `vsp.lock.json` entries (unless explicitly overridden by ARTAGON_VSCODE_PINS_FILE).
+    let lock_bytes: Option<(String, Vec<u8>)> = if pins_env_override {
+        None
+    } else if catalog.root == Path::new(EMBEDDED_ROOT_LABEL) {
+        embedded_snapshot_files()
+            .iter()
+            .find(|(p, _)| *p == "vsp.lock.json")
+            .map(|(_, b)| ("<embedded>/vsp.lock.json".to_string(), b.to_vec()))
+    } else {
+        let lock_path = catalog.root.join("vsp.lock.json");
+        if lock_path.is_file() {
+            let bytes = fs::read(&lock_path).map_err(|err| {
+                VspError::SafetyRefusal(format!(
+                    "vsix: unreadable vsp.lock.json {}: {err}",
+                    lock_path.display()
+                ))
+            })?;
+            Some((lock_path.display().to_string(), bytes))
+        } else {
+            None
+        }
+    };
+
+    if let Some((lock_label, raw_bytes)) = lock_bytes {
+        let lock_doc: VspLockFile = serde_json::from_slice(&raw_bytes).map_err(|err| {
+            VspError::SafetyRefusal(format!("vsix: malformed vsp.lock.json {lock_label}: {err}"))
         })?;
         if lock_doc.pin_required
             || lock_doc
@@ -283,9 +326,25 @@ pub fn load_combined_pin_index(
         {
             pin_required = true;
         }
+        let host_platform = current_lock_platform();
         let mut insert_lock_map = |map: &BTreeMap<String, LockPinRecord>| {
             for (k, rec) in map {
-                if rec.sha256.is_empty() && rec.vsix_url.is_empty() {
+                if rec.status.as_deref() == Some("pending_refresh") {
+                    continue;
+                }
+                let platform_target = rec
+                    .targets
+                    .get(host_platform)
+                    .or_else(|| rec.targets.get("universal"));
+                let sha = platform_target
+                    .and_then(|t| t.sha256.as_deref())
+                    .or(rec.sha256.as_deref())
+                    .unwrap_or("");
+                let url = platform_target
+                    .and_then(|t| t.vsix_url.as_deref())
+                    .or(rec.vsix_url.as_deref())
+                    .unwrap_or("");
+                if sha.is_empty() && url.is_empty() {
                     continue;
                 }
                 let lc = k.to_ascii_lowercase();
@@ -293,9 +352,9 @@ pub fn load_combined_pin_index(
                     lc.clone(),
                     LockPinEntry {
                         id: lc,
-                        version: rec.version.clone(),
-                        sha256: rec.sha256.to_ascii_lowercase(),
-                        vsix_url: rec.vsix_url.clone(),
+                        version: rec.version.clone().unwrap_or_default(),
+                        sha256: sha.to_ascii_lowercase(),
+                        vsix_url: url.to_string(),
                         required: rec.tier == Some(1) || pin_required,
                     },
                 );
@@ -308,7 +367,7 @@ pub fn load_combined_pin_index(
         }
     }
 
-    // 2. Authoritative `catalog/extension-pins.json`.
+    // 2. Mapped pins (`vsp.lock.json` / `catalog/extension-pins.json` / `ARTAGON_VSCODE_PINS_FILE`).
     match &catalog.pins {
         PinsLoadState::Loaded(manifest) => {
             if manifest.pin_required {
@@ -316,16 +375,13 @@ pub fn load_combined_pin_index(
             }
             for (k, pin) in &manifest.pins {
                 let lc = k.to_ascii_lowercase();
-                entries.insert(
-                    lc.clone(),
-                    LockPinEntry {
-                        id: lc,
-                        version: pin.version.clone(),
-                        sha256: pin.sha256.to_ascii_lowercase(),
-                        vsix_url: pin.vsix_url.clone(),
-                        required: manifest.pin_required,
-                    },
-                );
+                entries.entry(lc.clone()).or_insert_with(|| LockPinEntry {
+                    id: lc,
+                    version: pin.version.clone(),
+                    sha256: pin.sha256.to_ascii_lowercase(),
+                    vsix_url: pin.vsix_url.clone(),
+                    required: manifest.pin_required,
+                });
             }
             Ok((entries, pin_required, false))
         }

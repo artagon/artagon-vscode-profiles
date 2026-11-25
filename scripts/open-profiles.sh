@@ -100,25 +100,39 @@ compute_cache_key() {
 sync_profile_settings() {
   local profile="${1}"
   local merged="${ROOT}/_merged/${profile}.json"
-  [[ -f "${merged}" ]] || return 0
+  local tmp_merged=""
+  if [[ ! -f "${merged}" ]]; then
+    if [[ -f "${ROOT}/profiles/${profile}/profile.json" ]]; then
+      tmp_merged="$(mktemp "${TMPDIR:-/tmp}/vsp-merged.XXXXXX")" || return 1
+      if ! compiler_compile_profile_settings_file "${ROOT}" "${profile}" "${tmp_merged}"; then
+        rm -f "${tmp_merged}"
+        return 1
+      fi
+      merged="${tmp_merged}"
+    else
+      return 0
+    fi
+  fi
 
   local prof_id=""
   prof_id="$(vscode_storage_find_profile_id "${CODE_USER_DIR}" "${profile}")" || {
     printf 'Warning: could not read profile registration for %s\n' "${profile}" >&2
+    [[ -n "${tmp_merged}" ]] && rm -f "${tmp_merged}"
     return 0
   }
   if [[ -z "${prof_id}" ]]; then
     printf 'Warning: profile %s is not registered in storage.json; skipping settings sync\n' "${profile}" >&2
+    [[ -n "${tmp_merged}" ]] && rm -f "${tmp_merged}"
     return 0
   fi
 
   local dest="${CODE_USER_DIR}/profiles/${prof_id}/settings.json"
   mkdir -p "$(dirname -- "${dest}")"
   local tmp_sync
-  tmp_sync="$(mktemp "${TMPDIR:-/tmp}/vsp-sync.XXXXXX")" || return 1
+  tmp_sync="$(mktemp "${TMPDIR:-/tmp}/vsp-sync.XXXXXX")" || { [[ -n "${tmp_merged}" ]] && rm -f "${tmp_merged}"; return 1; }
 
   if [[ -f "${dest}" ]]; then
-    backup_user_file "${dest}" 5 || { rm -f "${tmp_sync}"; return 1; }
+    backup_user_file "${dest}" 5 || { rm -f "${tmp_sync}"; [[ -n "${tmp_merged}" ]] && rm -f "${tmp_merged}"; return 1; }
     # Preserve existing local 14-key UX settings while syncing _merged/<name>.json.
     local strip="${LIB_DIR}/jsonc-strip.awk"
     local existing_clean
@@ -129,7 +143,7 @@ sync_profile_settings() {
             .[1] as $new
             | (.[0] | with_entries(select(.key as $k | $ux_keys | index($k) != null))) as $preserved_ux
             | $new * $preserved_ux
-          ' - "${merged}" > "${tmp_sync}" || { rm -f "${tmp_sync}"; return 1; }
+          ' - "${merged}" > "${tmp_sync}" || { rm -f "${tmp_sync}"; [[ -n "${tmp_merged}" ]] && rm -f "${tmp_merged}"; return 1; }
     else
       cp "${merged}" "${tmp_sync}"
     fi
@@ -140,6 +154,7 @@ sync_profile_settings() {
   local rc=0
   atomic_write_file "${dest}" "${tmp_sync}" 0600 || rc=$?
   rm -f "${tmp_sync}"
+  [[ -n "${tmp_merged}" ]] && rm -f "${tmp_merged}"
   return "${rc}"
 }
 
@@ -147,8 +162,19 @@ FAILED=()
 for profile in "${PROFILES[@]+"${PROFILES[@]}"}"; do
   if [[ "${SKIP_INSTALL}" != "1" ]]; then
     ext_file="${ROOT}/profiles/${profile}/extensions.json"
+    tmp_ext_file=""
+    if [[ ! -f "${ext_file}" && -f "${ROOT}/profiles/${profile}/profile.json" ]]; then
+      tmp_ext_file="$(mktemp "${TMPDIR:-/tmp}/vsp-open-ext.XXXXXX")"
+      if ! compiler_compile_profile_extensions_file "${ROOT}" "${profile}" "${tmp_ext_file}"; then
+        rm -f "${tmp_ext_file}"
+        FAILED+=("${profile}")
+        continue
+      fi
+      ext_file="${tmp_ext_file}"
+    fi
     if [[ -f "${ext_file}" ]]; then
-      key="$(compute_cache_key "${ext_file}")" || exit 1
+      key="$(compute_cache_key "${ext_file}")" || { [[ -n "${tmp_ext_file}" ]] && rm -f "${tmp_ext_file}"; exit 1; }
+      [[ -n "${tmp_ext_file}" ]] && rm -f "${tmp_ext_file}"
       marker="${CACHE_DIR}/${profile}"
       cached=""
       [[ -f "${marker}" ]] && cached="$(cat "${marker}" 2>/dev/null || true)"

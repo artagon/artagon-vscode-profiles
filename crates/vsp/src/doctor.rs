@@ -1,6 +1,8 @@
 //! Read-only environment, catalog, Default-profile security, and live VS Code auditor
 //! powering `vsp doctor [--strict]`.
 
+use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::path::Path;
 
@@ -12,6 +14,9 @@ use crate::legacy_loader::parse_jsonc_value;
 use crate::model::{ExtensionStatus, WorkspaceCatalog};
 use crate::policy::validate_repository;
 use crate::provenance::load_profile_provenance;
+use crate::schema_loader::{
+    embedded_snapshot_files, LockEntryStatus, LockfileManifest, EMBEDDED_ROOT_LABEL,
+};
 use crate::vscode::{
     find_code_binary, list_installed_extensions, list_storage_profiles, resolve_vscode_store,
     resolve_xdg_config_home,
@@ -216,6 +221,7 @@ pub fn run_doctor(
                     }
                 }
 
+                let locked_versions = load_verified_lock_versions(catalog);
                 for prof in scan_profiles {
                     if let Some(prov) = load_profile_provenance(&st.user_dir, &prof) {
                         if prov.unlocked_bypass {
@@ -259,16 +265,25 @@ pub fn run_doctor(
                                         );
                                     }
                                 }
-                                if let (Some(inst_ver), Some(pin)) =
-                                    (&ext.version, catalog.lookup_pin(&ext.id))
+                                let expected_pin_ver = catalog
+                                    .lookup_pin(&ext.id)
+                                    .filter(|p| !p.version.is_empty())
+                                    .map(|p| p.version.as_str())
+                                    .or_else(|| {
+                                        locked_versions
+                                            .get(&ext.id.to_ascii_lowercase())
+                                            .map(String::as_str)
+                                    });
+                                if let (Some(inst_ver), Some(pin_ver)) =
+                                    (&ext.version, expected_pin_ver)
                                 {
-                                    if !pin.version.is_empty() && pin.version != *inst_ver {
+                                    if pin_ver != *inst_ver {
                                         report.record(
                                             CheckSeverity::Warn,
                                             "pins",
                                             format!(
                                                 "profile '{}': pinned extension '{}' version drift (installed={}, pinned={})",
-                                                prof, ext.id, inst_ver, pin.version
+                                                prof, ext.id, inst_ver, pin_ver
                                             ),
                                         );
                                     }
@@ -282,6 +297,45 @@ pub fn run_doctor(
     }
 
     report
+}
+
+fn load_verified_lock_versions(catalog: &WorkspaceCatalog) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if env::var("ARTAGON_VSCODE_PINS_FILE")
+        .ok()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        return out;
+    }
+
+    let raw_bytes: Option<Vec<u8>> = if catalog.root == Path::new(EMBEDDED_ROOT_LABEL) {
+        embedded_snapshot_files()
+            .iter()
+            .find(|(p, _)| *p == "vsp.lock.json")
+            .map(|(_, b)| b.to_vec())
+    } else {
+        let lock_path = catalog.root.join("vsp.lock.json");
+        if lock_path.is_file() {
+            fs::read(&lock_path).ok()
+        } else {
+            None
+        }
+    };
+
+    let Some(bytes) = raw_bytes else {
+        return out;
+    };
+    let Ok(manifest) = serde_json::from_slice::<LockfileManifest>(&bytes) else {
+        return out;
+    };
+    for (id, entry) in manifest.extensions {
+        if entry.status == Some(LockEntryStatus::Verified) {
+            if let Some(ver) = entry.version.filter(|v| !v.is_empty()) {
+                out.insert(id.to_ascii_lowercase(), ver);
+            }
+        }
+    }
+    out
 }
 
 fn audit_default_profile_settings(settings_path: &Path, report: &mut DoctorReport) {

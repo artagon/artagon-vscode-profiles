@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pre-commit — Repository validation & artifact-sync pre-commit hook.
+# pre-commit — Repository validation & generated-artifact guard pre-commit hook.
 # Does NOT require VS Code CLI (`code`) on PATH so pure config edits work anywhere.
 set -euo pipefail
 
@@ -19,43 +19,59 @@ run() {
   "${@}"
 }
 
-run "validating catalog, modules, and profiles" "${BASH}" "${ROOT}/scripts/vspcli" validate
-run "rebuilding composed settings, extensions, and exports" "${BASH}" "${ROOT}/scripts/vspcli" build
+# 1. Collect staged files (Added/Copied/Modified/Renamed) and reject generated artifacts.
+staged_files=""
+if [[ -e "${ROOT}/.git" ]] && command -v git >/dev/null 2>&1; then
+  if ! staged_files="$(git -C "${ROOT}" diff --cached --name-only --diff-filter=ACMR)"; then
+    echo "pre-commit: git diff --cached failed" >&2
+    exit 1
+  fi
+fi
 
-# Check git porcelain independently (never mask git failures with `|| true`).
-if ! status_out="$(git -C "${ROOT}" status --porcelain --untracked-files=all -- _merged/ profiles/ exports/)"; then
-  echo "pre-commit: git status failed" >&2
+forbidden_staged=""
+need_rust_check=0
+if [[ -n "${staged_files}" ]]; then
+  while IFS= read -r path; do
+    [[ -n "${path}" ]] || continue
+    case "${path}" in
+      _merged/*|exports/*|profiles/*/extensions.json|profiles/*/settings.json)
+        if [[ -z "${forbidden_staged}" ]]; then
+          forbidden_staged="${path}"
+        else
+          forbidden_staged="${forbidden_staged}"$'\n'"${path}"
+        fi
+        ;;
+    esac
+    case "${path}" in
+      Cargo.toml|Cargo.lock|crates/*|catalog/*|packs/*|presets.jsonc|vsp.lock.json)
+        need_rust_check=1
+        ;;
+    esac
+  done <<< "${staged_files}"
+fi
+
+if [[ -n "${forbidden_staged}" ]]; then
+  cat >&2 <<EOF
+pre-commit: refusing to commit generated artifacts (built on demand since v2.2.0):
+
+${forbidden_staged}
+
+Unstage these paths ('git reset HEAD -- _merged exports profiles/*/extensions.json profiles/*/settings.json')
+and commit only source files (packs/, presets.jsonc, catalog/, vsp.lock.json, modules/, profiles/*/profile.json).
+EOF
   exit 1
 fi
 
-dirty=""
-dirty_re='^(\?\?|.[A-Z?!]|DD|AU|UD|UA|DU|AA|UU)'
-LC_ALL=C
-while IFS= read -r line; do
-  [[ -n "${line}" ]] || continue
-  # Reject:
-  #   - untracked files: `??`
-  #   - any non-space worktree column (M, D, T, A, R, C, ?, !): `^.[A-Z?!]`
-  #   - any unmerged conflict state: DD, AU, UD, UA, DU, AA, UU
-  # Allows purely staged index changes like `M  _merged/rust.json` or `A  exports/ai.code-profile`.
-  if [[ "${line}" =~ ${dirty_re} ]]; then
-    if [[ -z "${dirty}" ]]; then
-      dirty="${line}"
-    else
-      dirty="${dirty}"$'\n'"${line}"
-    fi
-  fi
-done <<< "${status_out}"
+# 2. Validate catalog, packs, modules, presets, lockfile, and security invariants.
+run "validating catalog, modules, packs, and profiles" env VSPCLI_ROOT="${ROOT}" "${BASH}" "${ROOT}/scripts/validate-json.sh"
 
-if [[ -n "${dirty}" ]]; then
-  cat >&2 <<EOF
-pre-commit: vspcli build regenerated files that are unstaged, untracked, or conflicted.
+# 3. ShellCheck bin/vsp when shellcheck is available.
+if [[ -f "${ROOT}/bin/vsp" ]] && command -v shellcheck >/dev/null 2>&1; then
+  run "shellchecking bin/vsp" shellcheck --exclude=SC1091 "${ROOT}/bin/vsp"
+fi
 
-Affected:
-${dirty}
-
-Run 'bash scripts/vspcli build', stage the updated _merged/, profiles/, and exports/
-files ('git add _merged/ profiles/ exports/'), and commit again.
-EOF
-  exit 1
+# 4. Run Rust tests and v2.2 catalog validation when cargo is available and relevant files are staged.
+if [[ "${need_rust_check}" -eq 1 && -f "${ROOT}/Cargo.toml" ]] && command -v cargo >/dev/null 2>&1; then
+  run "running cargo test --workspace" cargo test --manifest-path "${ROOT}/Cargo.toml" --workspace
+  run "running vsp dev validate" cargo run --quiet --manifest-path "${ROOT}/Cargo.toml" --bin vsp -- --catalog "${ROOT}" dev validate
 fi

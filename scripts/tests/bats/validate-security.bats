@@ -96,11 +96,12 @@ make_mini_valid_repo() {
   [[ "${output}" == *"python-envs.alwaysUseUv has scope=machine and is forbidden in settings.workspace.jsonc"* ]]
 }
 
-@test "validate-security: pre-commit hook works without code CLI, allows staged-only M, and rejects T/??/unstaged M" {
+@test "validate-security: pre-commit hook works without code CLI, allows valid staged edits, and rejects staged generated artifacts" {
   repo="${TEST_TMP}/git-hook-repo"
   mkdir -p "${repo}"
   cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" \
-        "${REPO_ROOT}/_merged" "${REPO_ROOT}/exports" "${REPO_ROOT}/scripts" "${repo}/"
+        "${REPO_ROOT}/packs" "${REPO_ROOT}/bin" "${REPO_ROOT}/scripts" "${repo}/"
+  cp "${REPO_ROOT}/presets.jsonc" "${REPO_ROOT}/vsp.lock.json" "${REPO_ROOT}/.gitignore" "${repo}/"
 
   git -C "${repo}" init -q
   git -C "${repo}" config user.email "test@example.com"
@@ -121,28 +122,37 @@ make_mini_valid_repo() {
   run env PATH="${no_code_bin}" "${BASH}" "${repo}/scripts/git-hooks/pre-commit"
   [[ "${status}" -eq 0 ]]
 
-  # Untracked file under exports/ (??) must FAIL pre-commit!
-  printf '{}\n' > "${repo}/exports/stray.json"
+  # Staging a generated file under exports/ MUST FAIL pre-commit!
+  mkdir -p "${repo}/exports"
+  printf '{}\n' > "${repo}/exports/stray.code-profile"
+  git -C "${repo}" add -f exports/stray.code-profile
   run env PATH="${no_code_bin}" "${BASH}" "${repo}/scripts/git-hooks/pre-commit"
   [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *"stray.json"* ]]
-  rm -f "${repo}/exports/stray.json"
+  [[ "${output}" == *"exports/stray.code-profile"* ]]
+  git -C "${repo}" reset -q HEAD -- exports/stray.code-profile
+  rm -rf "${repo}/exports"
 
-  # Symlink typechange (` T`) under profiles/ must FAIL pre-commit!
-  rm -f "${repo}/profiles/ai/README.md"
-  ln -s "../astro/README.md" "${repo}/profiles/ai/README.md"
+  # Staging a generated file under _merged/ MUST FAIL pre-commit!
+  mkdir -p "${repo}/_merged"
+  printf '{}\n' > "${repo}/_merged/rust.json"
+  git -C "${repo}" add -f _merged/rust.json
   run env PATH="${no_code_bin}" "${BASH}" "${repo}/scripts/git-hooks/pre-commit"
   [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *" T profiles/ai/README.md"* ]]
-  git -C "${repo}" checkout -- profiles/ai/README.md
+  [[ "${output}" == *"_merged/rust.json"* ]]
+  git -C "${repo}" reset -q HEAD -- _merged/rust.json
+  rm -rf "${repo}/_merged"
 
-  # Unstaged edit (` M`) must FAIL pre-commit!
-  printf 'unstaged edit\n' >> "${repo}/profiles/ai/README.md"
+  # Staging a generated profiles/*/extensions.json MUST FAIL pre-commit!
+  printf '[]\n' > "${repo}/profiles/ai/extensions.json"
+  git -C "${repo}" add -f profiles/ai/extensions.json
   run env PATH="${no_code_bin}" "${BASH}" "${repo}/scripts/git-hooks/pre-commit"
   [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *"profiles/ai/README.md"* ]]
+  [[ "${output}" == *"profiles/ai/extensions.json"* ]]
+  git -C "${repo}" reset -q HEAD -- profiles/ai/extensions.json
+  rm -f "${repo}/profiles/ai/extensions.json"
 
-  # Stage the edit (`M ` index-only, clean worktree) -> MUST PASS pre-commit!
+  # Legitimate staged edit passes pre-commit!
+  printf 'staged edit\n' >> "${repo}/profiles/ai/README.md"
   git -C "${repo}" add profiles/ai/README.md
   run env PATH="${no_code_bin}" "${BASH}" "${repo}/scripts/git-hooks/pre-commit"
   [[ "${status}" -eq 0 ]]
@@ -253,7 +263,6 @@ MOCK
 @test "validate-security: H3 validate-json fails closed when catalog/extension-pins.json is absent" {
   fix="${TEST_TMP}/missing-pins-repo"
   make_mini_valid_repo "${fix}"
-  cp -R "${REPO_ROOT}/_merged" "${fix}/"
 
   # Control: valid mini repo with extension-pins.json passes.
   run env VSPCLI_ROOT="${fix}" "${BASH}" "${SCRIPTS_DIR}/validate-json.sh"

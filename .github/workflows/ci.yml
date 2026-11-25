@@ -29,35 +29,98 @@ jobs:
             command -v "${tool}" >/dev/null || { echo "missing required CI tool: ${tool}" >&2; exit 1; }
           done
 
+      - name: Assert zero generated artifacts are tracked in git
+        run: |
+          tracked_gen="$(git ls-files _merged exports 'profiles/*/extensions.json' 'profiles/*/settings.json')"
+          if [[ -n "${tracked_gen}" ]]; then
+            echo "ERROR: generated artifacts must not be tracked in git:" >&2
+            printf '%s\n' "${tracked_gen}" >&2
+            exit 1
+          fi
+
       - name: ShellCheck all Bash scripts and syntax-check Zsh/Fish RTK scripts
         run: |
           shellcheck --exclude=SC1091 \
+            bin/vsp \
             scripts/vspcli \
             scripts/*.sh \
             scripts/lib/*.sh \
             scripts/git-hooks/pre-commit \
             scripts/tests/check-ux-symmetry.sh \
             scripts/tests/run.sh \
+            packs/rtk-terminal/scripts/rtk-init.bash \
             modules/capabilities/rtk-terminal/scripts/rtk-init.bash
           zsh -n \
+            packs/rtk-terminal/scripts/rtk-init.zsh \
+            packs/rtk-terminal/scripts/zsh/.zshenv \
+            packs/rtk-terminal/scripts/zsh/.zprofile \
+            packs/rtk-terminal/scripts/zsh/.zshrc \
+            packs/rtk-terminal/scripts/zsh/.zlogin \
             modules/capabilities/rtk-terminal/scripts/rtk-init.zsh \
             modules/capabilities/rtk-terminal/scripts/zsh/.zshenv \
             modules/capabilities/rtk-terminal/scripts/zsh/.zprofile \
             modules/capabilities/rtk-terminal/scripts/zsh/.zshrc \
             modules/capabilities/rtk-terminal/scripts/zsh/.zlogin
-          fish -n modules/capabilities/rtk-terminal/scripts/rtk-init.fish
+          fish -n \
+            packs/rtk-terminal/scripts/rtk-init.fish \
+            modules/capabilities/rtk-terminal/scripts/rtk-init.fish
 
-      - name: Rebuild compiled artifacts and assert git sync
+      - name: Run Rust test, clippy, rustdoc, validate, and deterministic double-run dev dist
         run: |
-          bash scripts/vspcli build
-          dirty="$(git status --porcelain --untracked-files=all -- _merged/ profiles/ exports/)"
-          if [[ -n "${dirty}" ]]; then
-            echo "ERROR: generated artifacts out of sync with catalog/modules/recipes:" >&2
-            printf '%s\n' "${dirty}" >&2
-            exit 1
+          cargo test --workspace
+          cargo clippy --workspace --all-targets -- -D warnings
+          RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
+          cargo build --workspace
+          VSP_BIN="$(pwd -P)/target/debug/vsp"
+          "${VSP_BIN}" --catalog "$(pwd -P)" dev validate
+          EMPTY_CWD="$(mktemp -d)"
+          DIST1="$(mktemp -d)"
+          DIST2="$(mktemp -d)"
+          trap 'rm -rf "${EMPTY_CWD}" "${DIST1}" "${DIST2}"' EXIT
+          (cd "${EMPTY_CWD}" && "${VSP_BIN}" dev validate)
+          (cd "${EMPTY_CWD}" && "${VSP_BIN}" dev dist --out "${DIST1}")
+          (cd "${EMPTY_CWD}" && "${VSP_BIN}" dev dist --out "${DIST2}")
+          diff -ru "${DIST1}" "${DIST2}"
+
+      - name: PR resolved-profile diff summary
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          VSP_BIN="$(pwd -P)/target/debug/vsp"
+          PR_DIST="$(mktemp -d)"
+          BASE_WORK="$(mktemp -d)"
+          BASE_DIST="$(mktemp -d)"
+          trap 'rm -rf "${PR_DIST}" "${BASE_WORK}" "${BASE_DIST}"' EXIT
+          "${VSP_BIN}" dev dist --out "${PR_DIST}"
+          {
+            echo "## Resolved vsp Profile Bundles Summary"
+            echo ""
+            echo "Deterministic \`vsp dev dist\` checksums (37 entries = 15 canonical + 22 legacy aliases):"
+            echo ""
+            echo '```text'
+            cat "${PR_DIST}/SHA256SUMS"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          if git fetch --depth=1 origin "${BASE_REF}" >/dev/null 2>&1; then
+            git archive "origin/${BASE_REF}" | tar -x -C "${BASE_WORK}"
+            if "${VSP_BIN}" --catalog "${BASE_WORK}" dev dist --out "${BASE_DIST}" >/dev/null 2>&1; then
+              {
+                echo ""
+                echo "### SHA256SUMS diff vs \`${BASE_REF}\`"
+                echo ""
+                echo '```diff'
+                if ! diff -u "${BASE_DIST}/SHA256SUMS" "${PR_DIST}/SHA256SUMS"; then
+                  :
+                else
+                  echo "No resolved bundle changes vs ${BASE_REF}."
+                fi
+                echo '```'
+              } >> "${GITHUB_STEP_SUMMARY}"
+            fi
           fi
 
-      - name: Validate catalog, modules, UX symmetry, Rust docs policy, and README matrix
+      - name: Validate catalog, packs, modules, UX symmetry, Rust docs policy, and README matrix
         run: |
           bash scripts/validate-json.sh
           bash scripts/tests/check-ux-symmetry.sh
@@ -76,7 +139,8 @@ jobs:
         run: |
           ISO_DIR="$(mktemp -d)"
           trap 'rm -rf "${ISO_DIR}"' EXIT
-          cp -R . "${ISO_DIR}/repo"
+          mkdir -p "${ISO_DIR}/repo"
+          tar --exclude='./target' -cf - . | (cd "${ISO_DIR}/repo" && tar -xf -)
           bash "${ISO_DIR}/repo/scripts/tests/run.sh"
 
   validate-and-test-macos:
@@ -95,27 +159,52 @@ jobs:
           for tool in jq openssl bats fish zsh shellcheck cargo; do
             command -v "${tool}" >/dev/null || { echo "missing required macOS CI tool: ${tool}" >&2; exit 1; }
           done
+          tracked_gen="$(git ls-files _merged exports 'profiles/*/extensions.json' 'profiles/*/settings.json')"
+          test -z "${tracked_gen}"
           shellcheck --exclude=SC1091 \
+            bin/vsp \
             scripts/vspcli \
             scripts/*.sh \
             scripts/lib/*.sh \
             scripts/git-hooks/pre-commit \
             scripts/tests/check-ux-symmetry.sh \
             scripts/tests/run.sh \
+            packs/rtk-terminal/scripts/rtk-init.bash \
             modules/capabilities/rtk-terminal/scripts/rtk-init.bash
           zsh -n \
+            packs/rtk-terminal/scripts/rtk-init.zsh \
+            packs/rtk-terminal/scripts/zsh/.zshenv \
+            packs/rtk-terminal/scripts/zsh/.zprofile \
+            packs/rtk-terminal/scripts/zsh/.zshrc \
+            packs/rtk-terminal/scripts/zsh/.zlogin \
             modules/capabilities/rtk-terminal/scripts/rtk-init.zsh \
             modules/capabilities/rtk-terminal/scripts/zsh/.zshenv \
             modules/capabilities/rtk-terminal/scripts/zsh/.zprofile \
             modules/capabilities/rtk-terminal/scripts/zsh/.zshrc \
             modules/capabilities/rtk-terminal/scripts/zsh/.zlogin
-          fish -n modules/capabilities/rtk-terminal/scripts/rtk-init.fish
+          fish -n \
+            packs/rtk-terminal/scripts/rtk-init.fish \
+            modules/capabilities/rtk-terminal/scripts/rtk-init.fish
 
-      - name: Validate, rebuild, and check idempotency
+      - name: Run Rust test, clippy, rustdoc, validate, and deterministic double-run dev dist
         run: |
-          bash scripts/vspcli build
-          dirty="$(git status --porcelain --untracked-files=all -- _merged/ profiles/ exports/)"
-          test -z "${dirty}"
+          cargo test --workspace
+          cargo clippy --workspace --all-targets -- -D warnings
+          RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
+          cargo build --workspace
+          VSP_BIN="$(pwd -P)/target/debug/vsp"
+          "${VSP_BIN}" --catalog "$(pwd -P)" dev validate
+          EMPTY_CWD="$(mktemp -d)"
+          DIST1="$(mktemp -d)"
+          DIST2="$(mktemp -d)"
+          trap 'rm -rf "${EMPTY_CWD}" "${DIST1}" "${DIST2}"' EXIT
+          (cd "${EMPTY_CWD}" && "${VSP_BIN}" dev validate)
+          (cd "${EMPTY_CWD}" && "${VSP_BIN}" dev dist --out "${DIST1}")
+          (cd "${EMPTY_CWD}" && "${VSP_BIN}" dev dist --out "${DIST2}")
+          diff -ru "${DIST1}" "${DIST2}"
+
+      - name: Validate clean checkout (catalog, packs, modules, UX symmetry, docs policy, README matrix)
+        run: |
           bash scripts/validate-json.sh
           bash scripts/tests/check-ux-symmetry.sh
           bash scripts/lib/apply-rust-policy.sh --check
@@ -127,5 +216,6 @@ jobs:
         run: |
           ISO_DIR="$(mktemp -d)"
           trap 'rm -rf "${ISO_DIR}"' EXIT
-          cp -R . "${ISO_DIR}/repo"
+          mkdir -p "${ISO_DIR}/repo"
+          tar --exclude='./target' -cf - . | (cd "${ISO_DIR}/repo" && tar -xf -)
           bash "${ISO_DIR}/repo/scripts/tests/run.sh"

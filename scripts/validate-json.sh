@@ -77,7 +77,7 @@ validate_file_doc() {
   return 0
 }
 
-for dir in catalog modules profiles _merged exports; do
+for dir in catalog packs modules profiles _merged exports; do
   [[ -d "${ROOT}/${dir}" ]] || continue
   while IFS= read -r f; do
     [[ -n "${f}" ]] || continue
@@ -94,6 +94,12 @@ for dir in catalog modules profiles _merged exports; do
         ;;
     esac
   done < <(LC_ALL=C find "${ROOT}/${dir}" -type f \( -name '*.json' -o -name '*.jsonc' -o -name '*.code-profile' \) -print | LC_ALL=C sort)
+done
+
+for root_manifest in presets.jsonc vsp.lock.json; do
+  if [[ -f "${ROOT}/${root_manifest}" ]]; then
+    validate_file_doc "${ROOT}/${root_manifest}" "object" || true
+  fi
 done
 
 if [[ "${CHECKED}" -eq 0 ]]; then
@@ -574,13 +580,13 @@ if [[ -e "${ROOT}/.git" ]] && command -v git >/dev/null 2>&1; then
   done < <(git -C "${ROOT}" ls-files)
 fi
 
-# Check for broken symlinks anywhere in repo (excluding .git and .cache).
+# Check for broken symlinks anywhere in repo (excluding .git, .cache, target, dist).
 while IFS= read -r link; do
   [[ -n "${link}" ]] || continue
   if [[ ! -e "${link}" ]]; then
     err "broken symlink: ${link}"
   fi
-done < <(find "${ROOT}" \( -path "${ROOT}/.git" -o -path "${ROOT}/.cache" \) -prune -o -type l -print 2>/dev/null)
+done < <(find "${ROOT}" \( -path "${ROOT}/.git" -o -path "${ROOT}/.cache" -o -path "${ROOT}/target" -o -path "${ROOT}/dist" \) -prune -o -type l -print 2>/dev/null)
 
 # Run Rust docs policy sync check if docs/rust.md and AGENTS.md exist in ROOT.
 if [[ -f "${ROOT}/docs/rust.md" && -f "${ROOT}/AGENTS.md" && -f "${LIB_DIR}/apply-rust-policy.sh" ]]; then

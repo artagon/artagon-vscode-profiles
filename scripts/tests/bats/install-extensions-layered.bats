@@ -56,8 +56,12 @@ load test_helper
 
 @test "compose: all 15 compiled profiles/<name>/extensions.json match compose-extensions.sh" {
   require_bin jq
+  built="${TEST_TMP}/compose-repo"
+  mkdir -p "${built}"
+  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" "${built}/"
+  VSPCLI_ROOT="${built}" "${BASH}" "${SCRIPTS_DIR}/compose-settings.sh" >/dev/null
   for flavor in ai ai-copilot ai-plus astro cpp-clangd cpp-intellisense general general-minimal github-workflows java-gradle java-maven java-spring python rust shell; do
-    profile_set="$(jq -S '[.[].identifier.id] | sort | unique' "${REPO_ROOT}/profiles/${flavor}/extensions.json")"
+    profile_set="$(jq -S '[.[].identifier.id] | sort | unique' "${built}/profiles/${flavor}/extensions.json")"
     composed_set="$("${BASH}" "${LIB_DIR}/compose-extensions.sh" "${flavor}" | jq -S '[.[].identifier.id] | sort | unique')"
     [[ "${profile_set}" = "${composed_set}" ]] || {
       echo "set mismatch for ${flavor}:" >&2

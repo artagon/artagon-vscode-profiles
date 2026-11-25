@@ -13,7 +13,6 @@ use crate::dev_ops::{
 };
 use crate::doctor::{run_doctor, CheckSeverity};
 use crate::exit_codes::{ExitCode, VspError, VspResult};
-use crate::legacy_loader::{load_legacy_catalog, resolve_catalog_root};
 use crate::model::{
     resolve_legacy_profile_name, AiMode, ModuleKind, UxPreset, WorkspaceCatalog,
 };
@@ -24,6 +23,7 @@ use crate::resolver::{
     build_dist, compile_canonical_profile_settings, compile_profile_extensions, export_profiles,
     resolve_profile_recipe, to_canonical_json_string,
 };
+use crate::schema_loader::{load_catalog_auto, resolve_repo_dir};
 use crate::sync::{run_sync, PruneMode, SyncOptions, SyncReport};
 use crate::vscode::{list_storage_profiles, resolve_vscode_store};
 
@@ -728,8 +728,7 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
 }
 
 fn load_catalog(catalog_override: Option<&std::path::Path>) -> VspResult<WorkspaceCatalog> {
-    let root = resolve_catalog_root(catalog_override)?;
-    load_legacy_catalog(&root)
+    load_catalog_auto(catalog_override)
 }
 
 fn run_self(command: SelfCommand, json: bool) -> VspResult<ExitCode> {
@@ -1158,7 +1157,7 @@ fn run_dev(
             run_dev_docs(&catalog, check, write, json, quiet)
         }
         DevCommand::Hooks => {
-            let root = resolve_catalog_root(catalog_override)?;
+            let root = resolve_repo_dir(catalog_override)?;
             run_dev_hooks(&root, json, quiet)
         }
         DevCommand::Test => {

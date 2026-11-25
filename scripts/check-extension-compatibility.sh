@@ -15,6 +15,8 @@ LIB_DIR="${SCRIPT_ROOT}/scripts/lib"
 source "${LIB_DIR}/common.sh"
 # shellcheck source=scripts/lib/module-resolver.sh
 source "${LIB_DIR}/module-resolver.sh"
+# shellcheck source=scripts/lib/compiler.sh
+source "${LIB_DIR}/compiler.sh"
 
 API_URL="https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery"
 JSON_MODE=0
@@ -113,15 +115,16 @@ VSCODE_VER="${VSCODE_VER%%-*}"
 
 # Collect unique lowercased extension IDs to audit.
 AUDIT_IDS=()
+AUDIT_IDS_LC_SEEN="|"
 add_id_unique() {
   local id="${1}"
   [[ -n "${id}" ]] || return 0
   local lc
   lc="$(to_lower "${id}")"
-  local existing
-  for existing in "${AUDIT_IDS[@]+"${AUDIT_IDS[@]}"}"; do
-    [[ "$(to_lower "${existing}")" == "${lc}" ]] && return 0
-  done
+  case "${AUDIT_IDS_LC_SEEN}" in
+    *"|${lc}|"*) return 0 ;;
+  esac
+  AUDIT_IDS_LC_SEEN="${AUDIT_IDS_LC_SEEN}${lc}|"
   AUDIT_IDS+=("${id}")
 }
 
@@ -161,9 +164,20 @@ fi
 
 for p in "${PROFILES[@]+"${PROFILES[@]}"}"; do
   ef="${ROOT}/profiles/${p}/extensions.json"
+  tmp_ef=""
   if [[ ! -f "${ef}" ]]; then
-    printf 'check-compat: missing extensions file for profile %q: %s\n' "${p}" "${ef}" >&2
-    exit 2
+    if [[ -f "${ROOT}/profiles/${p}/profile.json" ]]; then
+      tmp_ef="$(mktemp "${TMPDIR:-/tmp}/vsp-compat-ext.XXXXXX")"
+      if ! compiler_compile_profile_extensions_file "${ROOT}" "${p}" "${tmp_ef}"; then
+        rm -f "${tmp_ef}"
+        printf 'check-compat: failed to compile extensions on-demand for profile %q\n' "${p}" >&2
+        exit 2
+      fi
+      ef="${tmp_ef}"
+    else
+      printf 'check-compat: missing extensions file for profile %q: %s\n' "${p}" "${ef}" >&2
+      exit 2
+    fi
   fi
   if ! jq -e -s '
     length == 1
@@ -171,13 +185,16 @@ for p in "${PROFILES[@]+"${PROFILES[@]}"}"; do
     and (all(.[0][]; type == "object" and (.identifier | type == "object") and (.identifier.id | type == "string") and ((.identifier.id | length) > 0)))
   ' "${ef}" >/dev/null; then
     printf 'check-compat: invalid or malformed extensions JSON for profile %q: %s\n' "${p}" "${ef}" >&2
+    [[ -n "${tmp_ef}" ]] && rm -f "${tmp_ef}"
     exit 2
   fi
   prof_ids_raw=""
   if ! prof_ids_raw="$(jq -r -s '.[0][].identifier.id' "${ef}")"; then
     printf 'check-compat: failed to parse extensions JSON for profile %q: %s\n' "${p}" "${ef}" >&2
+    [[ -n "${tmp_ef}" ]] && rm -f "${tmp_ef}"
     exit 2
   fi
+  [[ -n "${tmp_ef}" ]] && rm -f "${tmp_ef}"
   while IFS= read -r id; do
     add_id_unique "${id}"
   done <<< "${prof_ids_raw}"

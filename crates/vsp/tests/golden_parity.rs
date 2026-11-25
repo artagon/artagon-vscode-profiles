@@ -23,6 +23,7 @@ use vsp::resolver::{
     merge_json_value, resolve_modules, resolve_profile_recipe, sha256_hex,
     to_canonical_json_string, ResolveRequest, RtkTaskMode, SettingsScope,
 };
+use vsp::schema_loader::{load_embedded, load_from_dir};
 
 fn repo_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -31,6 +32,14 @@ fn repo_root() -> PathBuf {
         .and_then(Path::parent)
         .expect("crates/vsp lives two levels below repo root")
         .to_path_buf()
+}
+
+fn load_golden_oracle() -> Value {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/v2_1_golden_sha256.json");
+    let raw = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read golden oracle {}: {e}", path.display()));
+    serde_json::from_str(&raw).expect("parse v2_1_golden_sha256.json")
 }
 
 fn vsp_bin() -> PathBuf {
@@ -51,34 +60,36 @@ fn write_executable_stub(dir: &Path, name: &str, script: &str) -> PathBuf {
 #[test]
 fn golden_parity_all_15_profile_settings_byte_identical() {
     let root = repo_root();
-    let catalog = load_legacy_catalog(&root).expect("load legacy catalog");
-    assert_eq!(
-        catalog.profiles.len(),
-        15,
-        "expected exactly 15 canonical profiles"
-    );
+    let oracle = load_golden_oracle();
+    let expected = oracle["merged_settings"]
+        .as_object()
+        .expect("oracle merged_settings");
+    assert_eq!(expected.len(), 15, "oracle must contain exactly 15 profiles");
 
-    for profile_name in catalog.profiles.keys() {
-        let compiled = compile_canonical_profile_settings(&catalog, profile_name)
-            .unwrap_or_else(|e| panic!("compile settings for {profile_name}: {e}"));
-        let compiled_bytes = to_canonical_json_string(&compiled).expect("serialize compiled");
+    let legacy = load_legacy_catalog(&root).expect("load legacy catalog");
+    let embedded = load_embedded().expect("load embedded v2.2 catalog");
+    assert_eq!(legacy.profiles.len(), 15);
+    assert_eq!(embedded.profiles.len(), 15);
 
-        let golden_path = root.join("_merged").join(format!("{profile_name}.json"));
-        let golden_str = fs::read_to_string(&golden_path)
-            .unwrap_or_else(|e| panic!("read golden {}: {e}", golden_path.display()));
+    for (profile_name, exp_sha_val) in expected {
+        let exp_sha = exp_sha_val.as_str().expect("sha256 str");
 
-        // Semantic equality first for clear diagnostic diffs.
-        let compiled_val: Value = serde_json::from_str(&compiled_bytes).expect("parse compiled");
-        let golden_val: Value = serde_json::from_str(&golden_str).expect("parse golden");
+        let leg_compiled = compile_canonical_profile_settings(&legacy, profile_name)
+            .unwrap_or_else(|e| panic!("compile legacy settings for {profile_name}: {e}"));
+        let leg_bytes = to_canonical_json_string(&leg_compiled).expect("serialize legacy");
+
+        let emb_compiled = compile_canonical_profile_settings(&embedded, profile_name)
+            .unwrap_or_else(|e| panic!("compile embedded settings for {profile_name}: {e}"));
+        let emb_bytes = to_canonical_json_string(&emb_compiled).expect("serialize embedded");
+
         assert_eq!(
-            compiled_val, golden_val,
-            "semantic settings mismatch for profile '{profile_name}'"
+            emb_bytes, leg_bytes,
+            "embedded vs legacy canonical settings mismatch for '{profile_name}'"
         );
-
-        // Byte-for-byte canonical JSON parity.
         assert_eq!(
-            compiled_bytes, golden_str,
-            "byte-for-byte canonical JSON mismatch for _merged/{profile_name}.json"
+            sha256_hex(emb_bytes.as_bytes()),
+            exp_sha,
+            "v2.1 golden SHA-256 mismatch for _merged/{profile_name}.json"
         );
     }
 }
@@ -86,30 +97,54 @@ fn golden_parity_all_15_profile_settings_byte_identical() {
 #[test]
 fn golden_parity_all_15_profile_extensions_byte_identical() {
     let root = repo_root();
-    let catalog = load_legacy_catalog(&root).expect("load legacy catalog");
-    assert_eq!(catalog.profiles.len(), 15);
+    let oracle = load_golden_oracle();
+    let expected = oracle["profile_extensions"]
+        .as_object()
+        .expect("oracle profile_extensions");
+    assert_eq!(expected.len(), 15);
 
-    for profile_name in catalog.profiles.keys() {
-        let resolved = resolve_profile_recipe(
-            &catalog,
+    let legacy = load_legacy_catalog(&root).expect("load legacy catalog");
+    let embedded = load_embedded().expect("load embedded v2.2 catalog");
+    assert_eq!(legacy.profiles.len(), 15);
+    assert_eq!(embedded.profiles.len(), 15);
+
+    for (profile_name, exp_sha_val) in expected {
+        let exp_sha = exp_sha_val.as_str().expect("sha256 str");
+
+        let leg_resolved = resolve_profile_recipe(
+            &legacy,
             profile_name,
             &[],
             &[],
             Some(UxPreset::Default),
             None,
         )
-        .unwrap_or_else(|e| panic!("resolve {profile_name}: {e}"));
-        let exts = compile_profile_extensions(&catalog, &resolved)
-            .unwrap_or_else(|e| panic!("compile extensions for {profile_name}: {e}"));
-        let compiled_str = to_canonical_json_string(&exts).expect("serialize extensions");
+        .unwrap_or_else(|e| panic!("resolve legacy {profile_name}: {e}"));
+        let leg_exts = compile_profile_extensions(&legacy, &leg_resolved)
+            .unwrap_or_else(|e| panic!("compile legacy extensions for {profile_name}: {e}"));
+        let leg_str = to_canonical_json_string(&leg_exts).expect("serialize legacy extensions");
 
-        let golden_path = root.join("profiles").join(profile_name).join("extensions.json");
-        let golden_str = fs::read_to_string(&golden_path)
-            .unwrap_or_else(|e| panic!("read golden {}: {e}", golden_path.display()));
+        let emb_resolved = resolve_profile_recipe(
+            &embedded,
+            profile_name,
+            &[],
+            &[],
+            Some(UxPreset::Default),
+            None,
+        )
+        .unwrap_or_else(|e| panic!("resolve embedded {profile_name}: {e}"));
+        let emb_exts = compile_profile_extensions(&embedded, &emb_resolved)
+            .unwrap_or_else(|e| panic!("compile embedded extensions for {profile_name}: {e}"));
+        let emb_str = to_canonical_json_string(&emb_exts).expect("serialize embedded extensions");
 
         assert_eq!(
-            compiled_str, golden_str,
-            "byte-for-byte mismatch for profiles/{profile_name}/extensions.json"
+            emb_str, leg_str,
+            "embedded vs legacy extensions mismatch for profiles/{profile_name}/extensions.json"
+        );
+        assert_eq!(
+            sha256_hex(emb_str.as_bytes()),
+            exp_sha,
+            "v2.1 golden SHA-256 mismatch for profiles/{profile_name}/extensions.json"
         );
     }
 }
@@ -117,46 +152,60 @@ fn golden_parity_all_15_profile_extensions_byte_identical() {
 #[test]
 fn golden_parity_all_15_exported_bundles_and_sha256sums() {
     let root = repo_root();
-    let catalog = load_legacy_catalog(&root).expect("load legacy catalog");
+    let oracle = load_golden_oracle();
+    let expected_bundles = oracle["canonical_bundles"]
+        .as_object()
+        .expect("oracle canonical_bundles");
+    assert_eq!(expected_bundles.len(), 15);
 
-    let tracked_sums =
-        fs::read_to_string(root.join("exports/SHA256SUMS")).expect("read exports/SHA256SUMS");
-    let mut expected_digests = std::collections::BTreeMap::new();
-    for line in tracked_sums.lines() {
-        let mut parts = line.split_whitespace();
-        if let (Some(h), Some(f)) = (parts.next(), parts.next()) {
-            expected_digests.insert(f.to_string(), h.to_string());
-        }
-    }
-    assert_eq!(expected_digests.len(), 15);
+    let legacy = load_legacy_catalog(&root).expect("load legacy catalog");
+    let embedded = load_embedded().expect("load embedded v2.2 catalog");
 
-    for profile_name in catalog.profiles.keys() {
-        let bundle = compile_code_profile_bundle(&catalog, profile_name)
-            .unwrap_or_else(|e| panic!("bundle {profile_name}: {e}"));
-        let compiled_str = to_canonical_json_string(&bundle).expect("serialize bundle");
+    let mut lines_15 = Vec::new();
+    for (fname, exp_sha_val) in expected_bundles {
+        let exp_sha = exp_sha_val.as_str().expect("sha256 str");
+        let profile_name = fname.strip_suffix(".code-profile").expect("bundle suffix");
 
-        let fname = format!("{profile_name}.code-profile");
-        let golden_path = root.join("exports").join(&fname);
-        let golden_str = fs::read_to_string(&golden_path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", golden_path.display()));
+        let leg_bundle = compile_code_profile_bundle(&legacy, profile_name)
+            .unwrap_or_else(|e| panic!("legacy bundle {profile_name}: {e}"));
+        let leg_str = to_canonical_json_string(&leg_bundle).expect("serialize legacy bundle");
+
+        let emb_bundle = compile_code_profile_bundle(&embedded, profile_name)
+            .unwrap_or_else(|e| panic!("embedded bundle {profile_name}: {e}"));
+        let emb_str = to_canonical_json_string(&emb_bundle).expect("serialize embedded bundle");
 
         assert_eq!(
-            compiled_str, golden_str,
-            "byte-for-byte mismatch for exports/{fname}"
+            emb_str, leg_str,
+            "embedded vs legacy bundle mismatch for exports/{fname}"
         );
-        let actual_sha = sha256_hex(compiled_str.as_bytes());
-        assert_eq!(
-            expected_digests.get(&fname).map(String::as_str),
-            Some(actual_sha.as_str()),
-            "SHA-256 mismatch for {fname}"
-        );
+        let actual_sha = sha256_hex(emb_str.as_bytes());
+        assert_eq!(actual_sha, exp_sha, "v2.1 golden SHA-256 mismatch for {fname}");
+        lines_15.push(format!("{actual_sha}  {fname}\n"));
     }
+
+    let sums_15_joined: String = lines_15.concat();
+    assert_eq!(
+        sha256_hex(sums_15_joined.as_bytes()),
+        oracle["exports_sha256sums_15_sha256"]
+            .as_str()
+            .expect("exports_sha256sums_15_sha256"),
+        "15-entry exports/SHA256SUMS digest drifted from v2.1 golden oracle"
+    );
 }
 
 #[test]
 fn dist_22_legacy_aliases_and_copilot_only_security_invariant() {
-    let root = repo_root();
-    let catalog = load_legacy_catalog(&root).expect("load legacy catalog");
+    let oracle = load_golden_oracle();
+    let oracle_aliases = oracle["legacy_aliases"]
+        .as_object()
+        .expect("oracle legacy_aliases");
+    let oracle_dist_sums = oracle["dist_sha256sums"]
+        .as_object()
+        .expect("oracle dist_sha256sums");
+    assert_eq!(oracle_aliases.len(), 22);
+    assert_eq!(oracle_dist_sums.len(), 37);
+
+    let catalog = load_embedded().expect("load embedded v2.2 catalog");
     let tmp = TempDir::new().expect("tempdir");
 
     let report = build_dist(&catalog, tmp.path()).expect("build_dist");
@@ -164,25 +213,11 @@ fn dist_22_legacy_aliases_and_copilot_only_security_invariant() {
     assert_eq!(report.alias_bundles.len(), 22);
     assert_eq!(report.checksums.len(), 37);
 
-    // Every tracked symlink alias in exports/ must exist as a materialized regular file in dist/.
-    let mut tracked_aliases = BTreeSet::new();
-    for entry in fs::read_dir(root.join("exports")).expect("read exports") {
-        let path = entry.expect("entry").path();
-        if path.is_symlink() {
-            tracked_aliases.insert(
-                path.file_name()
-                    .and_then(|n| n.to_str())
-                    .expect("utf8")
-                    .to_string(),
-            );
-        }
-    }
-    assert_eq!(tracked_aliases.len(), 22, "repo should have 22 legacy aliases");
-
     for &(alias_file, canonical_file) in LEGACY_BUNDLE_ALIASES {
-        assert!(
-            tracked_aliases.contains(alias_file),
-            "alias {alias_file} missing from tracked exports/"
+        assert_eq!(
+            oracle_aliases.get(alias_file).and_then(Value::as_str),
+            Some(canonical_file),
+            "alias {alias_file} target mismatch vs v2.1 golden oracle"
         );
         let alias_path = tmp.path().join(alias_file);
         let canonical_path = tmp.path().join(canonical_file);
@@ -195,6 +230,23 @@ fn dist_22_legacy_aliases_and_copilot_only_security_invariant() {
             fs::read(&alias_path).expect("read alias"),
             fs::read(&canonical_path).expect("read canonical"),
             "alias {alias_file} must match {canonical_file} byte-for-byte"
+        );
+    }
+
+    // Verify exact 37-entry SHA256SUMS matches v2.1 golden oracle!
+    let dist_sums_bytes = fs::read(&report.sha256sums_path).expect("read dist SHA256SUMS");
+    assert_eq!(
+        sha256_hex(&dist_sums_bytes),
+        oracle["dist_sha256sums_sha256"]
+            .as_str()
+            .expect("dist_sha256sums_sha256"),
+        "37-entry dist SHA256SUMS drifted from v2.1 golden oracle"
+    );
+    for (digest, fname) in &report.checksums {
+        assert_eq!(
+            oracle_dist_sums.get(fname).and_then(Value::as_str),
+            Some(digest.as_str()),
+            "dist SHA-256 mismatch for {fname}"
         );
     }
 
@@ -355,26 +407,141 @@ fn n1_security_autonomy_denylist_rejects_all_5_payloads() {
 #[test]
 fn repo_dev_validate_passes_cleanly() {
     let root = repo_root();
-    let catalog = load_legacy_catalog(&root).expect("load catalog");
-    let report = validate_repository(&catalog);
+    let legacy = load_legacy_catalog(&root).expect("load legacy catalog");
+    let legacy_report = validate_repository(&legacy);
     assert!(
-        report.is_ok(),
-        "expected 0 validation violations on tracked repo, got: {:#?}",
-        report.violations
+        legacy_report.is_ok(),
+        "expected 0 validation violations on legacy catalog, got: {:#?}",
+        legacy_report.violations
     );
-    assert!(report.checked_files > 100);
+    assert!(legacy_report.checked_files >= 90);
 
-    // Also validate via CLI `vsp dev validate`.
+    let v2_dir = load_from_dir(&root).expect("load v2.2 catalog from dir");
+    let v2_report = validate_repository(&v2_dir);
+    assert!(
+        v2_report.is_ok(),
+        "expected 0 validation violations on v2.2 catalog dir, got: {:#?}",
+        v2_report.violations
+    );
+
+    let embedded = load_embedded().expect("load embedded v2.2 catalog");
+    let emb_report = validate_repository(&embedded);
+    assert!(
+        emb_report.is_ok(),
+        "expected 0 validation violations on embedded v2.2 catalog, got: {:#?}",
+        emb_report.violations
+    );
+    assert!(emb_report.checked_files >= 40);
+
+    // Validate via CLI `vsp --catalog <root> dev validate`.
     let out = Command::new(vsp_bin())
         .args(["--catalog", root.to_str().expect("utf8"), "dev", "validate"])
         .output()
-        .expect("run vsp dev validate");
+        .expect("run vsp --catalog dev validate");
     assert_eq!(
         out.status.code(),
         Some(0),
-        "vsp dev validate failed: {}",
+        "vsp --catalog dev validate failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+
+    // Validate via CLI `vsp dev validate` from a completely empty temp cwd (embedded snapshot!).
+    let empty_cwd = TempDir::new().expect("empty cwd");
+    let out_emb = Command::new(vsp_bin())
+        .current_dir(empty_cwd.path())
+        .env_remove("VSPCLI_ROOT")
+        .args(["dev", "validate"])
+        .output()
+        .expect("run embedded vsp dev validate");
+    assert_eq!(
+        out_emb.status.code(),
+        Some(0),
+        "embedded vsp dev validate failed from empty cwd: {}",
+        String::from_utf8_lossy(&out_emb.stderr)
+    );
+}
+
+#[test]
+fn cli_embedded_default_works_from_empty_cwd_ignores_untrusted_cwd_and_never_falls_back() {
+    let oracle = load_golden_oracle();
+
+    // 1. Version is bumped to 2.2.0.
+    let ver = Command::new(vsp_bin())
+        .arg("--version")
+        .output()
+        .expect("run --version");
+    assert_eq!(ver.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&ver.stdout).contains("2.2.0"),
+        "expected version 2.2.0, got: {}",
+        String::from_utf8_lossy(&ver.stdout)
+    );
+
+    // 2. From an empty temp cwd with no --catalog and no VSPCLI_ROOT:
+    //    `vsp dev dist` succeeds twice and emits byte-identical bundles matching the v2.1 oracle.
+    let empty_cwd = TempDir::new().expect("empty cwd");
+    let d1 = TempDir::new().expect("d1");
+    let d2 = TempDir::new().expect("d2");
+    for d in [&d1, &d2] {
+        let out = Command::new(vsp_bin())
+            .current_dir(empty_cwd.path())
+            .env_remove("VSPCLI_ROOT")
+            .args(["dev", "dist", "--out", d.path().to_str().expect("utf8")])
+            .output()
+            .expect("embedded vsp dev dist");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "embedded dev dist failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let sums1 = fs::read(d1.path().join("SHA256SUMS")).expect("sums1");
+    let sums2 = fs::read(d2.path().join("SHA256SUMS")).expect("sums2");
+    assert_eq!(sums1, sums2);
+    assert_eq!(
+        sha256_hex(&sums1),
+        oracle["dist_sha256sums_sha256"].as_str().expect("oracle sums")
+    );
+
+    // 3. Untrusted poisoned cwd MUST NEVER be auto-loaded when --catalog/VSPCLI_ROOT are omitted.
+    let poisoned_cwd = TempDir::new().expect("poisoned cwd");
+    fs::write(poisoned_cwd.path().join("presets.jsonc"), "{ INVALID JSONC").expect("write");
+    fs::create_dir_all(poisoned_cwd.path().join("catalog")).expect("mkdir");
+    fs::write(poisoned_cwd.path().join("catalog/extensions.json"), "{ BROKEN").expect("write");
+    let list_emb = Command::new(vsp_bin())
+        .current_dir(poisoned_cwd.path())
+        .env_remove("VSPCLI_ROOT")
+        .args(["list", "presets"])
+        .output()
+        .expect("list presets in poisoned cwd");
+    assert_eq!(list_emb.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&list_emb.stdout).lines().count(),
+        15
+    );
+
+    // 4. Explicit --catalog / VSPCLI_ROOT MUST NEVER fall back to embedded defaults!
+    let missing_dir = empty_cwd.path().join("does-not-exist");
+    let miss_out = Command::new(vsp_bin())
+        .args(["--catalog", missing_dir.to_str().expect("utf8"), "list"])
+        .output()
+        .expect("missing catalog");
+    assert_eq!(miss_out.status.code(), Some(2));
+
+    let empty_cat = TempDir::new().expect("empty cat");
+    let empty_flag_out = Command::new(vsp_bin())
+        .args(["--catalog", empty_cat.path().to_str().expect("utf8"), "list"])
+        .output()
+        .expect("empty --catalog");
+    assert_eq!(empty_flag_out.status.code(), Some(4));
+
+    let empty_env_out = Command::new(vsp_bin())
+        .env("VSPCLI_ROOT", empty_cat.path())
+        .args(["list"])
+        .output()
+        .expect("empty VSPCLI_ROOT");
+    assert_eq!(empty_env_out.status.code(), Some(4));
 }
 
 #[test]

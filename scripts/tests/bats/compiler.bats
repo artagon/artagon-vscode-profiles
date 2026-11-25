@@ -53,7 +53,12 @@ load test_helper
   [[ "$(jq 'has("python-envs.alwaysUseUv")' "${ws}/.vscode/settings.json")" == "false" ]]
 
   # Compiled python profile DOES contain machine-scoped python-envs.alwaysUseUv=true.
-  [[ "$(jq -r '."python-envs.alwaysUseUv"' "${REPO_ROOT}/_merged/python.json")" == "true" ]]
+  py_merged="${TEST_TMP}/python.json"
+  source "${LIB_DIR}/common.sh"
+  source "${LIB_DIR}/module-resolver.sh"
+  source "${LIB_DIR}/compiler.sh"
+  compiler_compile_profile_settings_file "${REPO_ROOT}" python "${py_merged}"
+  [[ "$(jq -r '."python-envs.alwaysUseUv"' "${py_merged}")" == "true" ]]
 }
 
 @test "compiler: jq 1.7.1 scalar_leaves detects object-vs-leaf prefix collision across jointly selectable modules" {
@@ -86,43 +91,56 @@ load test_helper
   jq -e '.recommendations | index("vmware.vscode-spring-boot") != null' "${ws}/.vscode/extensions.json"
   [[ "$(jq -r '."java.jdt.ls.lombokSupport.enabled"' "${ws}/.vscode/settings.json")" == "true" ]]
   [[ "$(jq 'has("java.import.gradle.arguments")' "${ws}/.vscode/settings.json")" == "false" ]]
-  [[ "$(jq -r '."java.import.gradle.arguments"' "${REPO_ROOT}/_merged/java-gradle.json")" == *"--parallel"* ]]
-  [[ "$(jq -r '."java.import.gradle.jvmArguments"' "${REPO_ROOT}/_merged/java-gradle.json")" == *"-Xmx2G"* ]]
+  jg_merged="${TEST_TMP}/java-gradle.json"
+  source "${LIB_DIR}/common.sh"
+  source "${LIB_DIR}/module-resolver.sh"
+  source "${LIB_DIR}/compiler.sh"
+  compiler_compile_profile_settings_file "${REPO_ROOT}" java-gradle "${jg_merged}"
+  [[ "$(jq -r '."java.import.gradle.arguments"' "${jg_merged}")" == *"--parallel"* ]]
+  [[ "$(jq -r '."java.import.gradle.jvmArguments"' "${jg_merged}")" == *"-Xmx2G"* ]]
   [[ "$(jq 'has("java.import.gradle.jvmArguments")' "${ws}/.vscode/settings.json")" == "false" ]]
   [[ "$(jq -r '."files.associations"."application*.yml"' "${ws}/.vscode/settings.json")" == "spring-boot-properties-yaml" ]]
 }
 
 @test "compiler: Project Explorer nesting, Antigravity default AI, Markdown hard breaks, and GitHub Actions YAML handoff compile cleanly" {
+  built="${TEST_TMP}/compiled-repo"
+  mkdir -p "${built}"
+  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" "${built}/"
+  VSPCLI_ROOT="${built}" "${BASH}" "${SCRIPTS_DIR}/compose-settings.sh" >/dev/null
+
   # Compiled AI profile includes Project Explorer file nesting, completion ergonomics, and Antigravity default settings.
-  [[ "$(jq -r '."explorer.fileNesting.enabled"' "${REPO_ROOT}/_merged/ai.json")" == "true" ]]
-  [[ "$(jq -r '."explorer.fileNesting.patterns"."Cargo.toml"' "${REPO_ROOT}/_merged/ai.json")" == *"Cargo.lock"* ]]
-  [[ "$(jq -r '."editor.suggestSelection"' "${REPO_ROOT}/_merged/ai.json")" == "recentlyUsedByPrefix" ]]
-  [[ "$(jq -r '."antigravity.autoAcceptOnChat"' "${REPO_ROOT}/_merged/ai.json")" == "false" ]]
-  [[ "$(jq -r '."github.copilot.enable"."markdown"' "${REPO_ROOT}/_merged/ai.json")" == "false" ]]
-  [[ "$(jq -r '."[markdown]"."files.trimTrailingWhitespace"' "${REPO_ROOT}/_merged/ai.json")" == "false" ]]
+  [[ "$(jq -r '."explorer.fileNesting.enabled"' "${built}/_merged/ai.json")" == "true" ]]
+  [[ "$(jq -r '."explorer.fileNesting.patterns"."Cargo.toml"' "${built}/_merged/ai.json")" == *"Cargo.lock"* ]]
+  [[ "$(jq -r '."editor.suggestSelection"' "${built}/_merged/ai.json")" == "recentlyUsedByPrefix" ]]
+  [[ "$(jq -r '."antigravity.autoAcceptOnChat"' "${built}/_merged/ai.json")" == "false" ]]
+  [[ "$(jq -r '."github.copilot.enable"."markdown"' "${built}/_merged/ai.json")" == "false" ]]
+  [[ "$(jq -r '."[markdown]"."files.trimTrailingWhitespace"' "${built}/_merged/ai.json")" == "false" ]]
 
   # Rust profile uses isolated RA targetDir and stable formatOnSaveMode.
-  [[ "$(jq -r '."rust-analyzer.cargo.targetDir"' "${REPO_ROOT}/_merged/rust.json")" == "true" ]]
-  [[ "$(jq -r '."[rust]"."editor.formatOnSaveMode"' "${REPO_ROOT}/_merged/rust.json")" == "file" ]]
+  [[ "$(jq -r '."rust-analyzer.cargo.targetDir"' "${built}/_merged/rust.json")" == "true" ]]
+  [[ "$(jq -r '."[rust]"."editor.formatOnSaveMode"' "${built}/_merged/rust.json")" == "file" ]]
 
   # GitHub workflows profile lets github-actions-workflow own workflows without files.associations override.
   [[ "$(jq 'has("files.associations")' "${REPO_ROOT}/modules/capabilities/github-workflows/settings.workspace.jsonc" 2>/dev/null || echo false)" == "false" ]]
-  [[ "$(jq -r '."[github-actions-workflow]"."editor.defaultFormatter"' "${REPO_ROOT}/_merged/github-workflows.json")" == "redhat.vscode-yaml" ]]
+  [[ "$(jq -r '."[github-actions-workflow]"."editor.defaultFormatter"' "${built}/_merged/github-workflows.json")" == "redhat.vscode-yaml" ]]
 
   # Tier 1 IntelliJ-style DX settings + dx-pro in ai-plus + opt-in intellij-keybindings resolve cleanly.
-  [[ "$(jq -r '."editor.suggest.insertMode"' "${REPO_ROOT}/_merged/ai.json")" == "replace" ]]
-  [[ "$(jq -r '."editor.suggest.matchOnWordStartOnly"' "${REPO_ROOT}/_merged/ai.json")" == "false" ]]
-  [[ "$(jq -r '."editor.occurrencesHighlight"' "${REPO_ROOT}/_merged/ai.json")" == "multiFile" ]]
-  [[ "$(jq -r '."debug.inlineValues"' "${REPO_ROOT}/_merged/ai.json")" == "on" ]]
-  [[ "$(jq -r '."workbench.editor.limit.value"' "${REPO_ROOT}/_merged/ai.json")" -eq 10 ]]
-  [[ "$(jq -r '."bookmarks.navigateThroughAllFiles"' "${REPO_ROOT}/_merged/ai-plus.json")" == "true" ]]
-  jq -e '.[] | select(.identifier.id == "buenon.scratchpads")' "${REPO_ROOT}/profiles/ai-plus/extensions.json" >/dev/null
-  jq -e '.[] | select(.identifier.id == "chadalen.vscode-jetbrains-icon-theme")' "${REPO_ROOT}/profiles/ai-plus/extensions.json" >/dev/null
+  [[ "$(jq -r '."editor.suggest.insertMode"' "${built}/_merged/ai.json")" == "replace" ]]
+  [[ "$(jq -r '."editor.suggest.matchOnWordStartOnly"' "${built}/_merged/ai.json")" == "false" ]]
+  [[ "$(jq -r '."editor.occurrencesHighlight"' "${built}/_merged/ai.json")" == "multiFile" ]]
+  [[ "$(jq -r '."debug.inlineValues"' "${built}/_merged/ai.json")" == "on" ]]
+  [[ "$(jq -r '."workbench.editor.limit.value"' "${built}/_merged/ai.json")" -eq 10 ]]
+  [[ "$(jq -r '."bookmarks.navigateThroughAllFiles"' "${built}/_merged/ai-plus.json")" == "true" ]]
+  jq -e '.[] | select(.identifier.id == "buenon.scratchpads")' "${built}/profiles/ai-plus/extensions.json" >/dev/null
+  jq -e '.[] | select(.identifier.id == "chadalen.vscode-jetbrains-icon-theme")' "${built}/profiles/ai-plus/extensions.json" >/dev/null
   # intellij-keybindings stays opt-in (absent from default ai-plus unless --with intellij-keybindings).
-  ! jq -e '.[] | select(.identifier.id == "k--kato.intellij-idea-keybindings")' "${REPO_ROOT}/profiles/ai-plus/extensions.json" >/dev/null
+  ! jq -e '.[] | select(.identifier.id == "k--kato.intellij-idea-keybindings")' "${built}/profiles/ai-plus/extensions.json" >/dev/null
 
   # Every one of the 15 compiled profiles includes shell LSP/linter/formatter + JSON/YAML/TOML/XML/CSV tooling.
-  for merged in "${REPO_ROOT}"/_merged/*.json; do
+  merged_count=0
+  for merged in "${built}"/_merged/*.json; do
+    [[ -f "${merged}" ]] || continue
+    merged_count=$((merged_count + 1))
     p="$(basename "${merged}" .json)"
     [[ "$(jq -r '."bashIde.includeAllWorkspaceSymbols"' "${merged}")" == "true" ]]
     [[ "$(jq -r '."shellcheck.enable"' "${merged}")" == "true" ]]
@@ -133,13 +151,14 @@ load test_helper
     [[ "$(jq -r '."xml.server.preferBinary"' "${merged}")" == "true" ]]
     [[ "$(jq -r '."redhat.telemetry.enabled"' "${merged}")" == "false" ]]
     [[ "$(jq 'has("[json]") and has("[jsonc]") and has("[yaml]") and has("[toml]") and has("[xml]")' "${merged}")" == "true" ]]
-    jq -e '.[] | select(.identifier.id == "mads-hartmann.bash-ide-vscode")' "${REPO_ROOT}/profiles/${p}/extensions.json" >/dev/null
-    jq -e '.[] | select(.identifier.id == "timonwong.shellcheck")' "${REPO_ROOT}/profiles/${p}/extensions.json" >/dev/null
-    jq -e '.[] | select(.identifier.id == "mkhl.shfmt")' "${REPO_ROOT}/profiles/${p}/extensions.json" >/dev/null
-    jq -e '.[] | select(.identifier.id == "redhat.vscode-yaml")' "${REPO_ROOT}/profiles/${p}/extensions.json" >/dev/null
-    jq -e '.[] | select(.identifier.id == "redhat.vscode-xml")' "${REPO_ROOT}/profiles/${p}/extensions.json" >/dev/null
-    jq -e '.[] | select(.identifier.id == "mechatroner.rainbow-csv")' "${REPO_ROOT}/profiles/${p}/extensions.json" >/dev/null
+    jq -e '.[] | select(.identifier.id == "mads-hartmann.bash-ide-vscode")' "${built}/profiles/${p}/extensions.json" >/dev/null
+    jq -e '.[] | select(.identifier.id == "timonwong.shellcheck")' "${built}/profiles/${p}/extensions.json" >/dev/null
+    jq -e '.[] | select(.identifier.id == "mkhl.shfmt")' "${built}/profiles/${p}/extensions.json" >/dev/null
+    jq -e '.[] | select(.identifier.id == "redhat.vscode-yaml")' "${built}/profiles/${p}/extensions.json" >/dev/null
+    jq -e '.[] | select(.identifier.id == "redhat.vscode-xml")' "${built}/profiles/${p}/extensions.json" >/dev/null
+    jq -e '.[] | select(.identifier.id == "mechatroner.rainbow-csv")' "${built}/profiles/${p}/extensions.json" >/dev/null
   done
+  [[ "${merged_count}" -eq 15 ]]
 }
 
 @test "compiler: workspace fingerprint is stable across both GNU stat (-c %i) and BSD stat (-f %i)" {

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# vsp — Thin Bash 3.2+ CLI facade for artagon-vscode-profiles (v2.1.0).
+# vsp — Thin Bash 3.2+ CLI facade for artagon-vscode-profiles (v2.2.0).
 # Delegates immediately to compiled Rust binary when available; otherwise routes
 # vsp verbs to existing scripts/vspcli and sibling scripts (zero new parser/lock code).
 set -euo pipefail
 
-VSP_VERSION="2.1.0"
+VSP_VERSION="2.2.0"
 
 _vsp_self="${BASH_SOURCE[0]:-${0}}"
 if [[ "${_vsp_self}" != */* ]]; then

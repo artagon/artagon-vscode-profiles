@@ -1496,9 +1496,11 @@ fn verify_bundle_sha256sums(
     let Some(canon_base) = canon_bundle.file_name().and_then(|n| n.to_str()) else {
         return Ok(());
     };
-    let managed_exports = resolve_canonical_path(&catalog.root.join("exports"))
-        .unwrap_or_else(|_| catalog.root.join("exports"));
-    let is_managed = canon_dir == managed_exports;
+    let is_managed = catalog.root != Path::new(crate::schema_loader::EMBEDDED_ROOT_LABEL) && {
+        let managed_exports = resolve_canonical_path(&catalog.root.join("exports"))
+            .unwrap_or_else(|_| catalog.root.join("exports"));
+        canon_dir == managed_exports
+    };
     let sums_path = canon_dir.join("SHA256SUMS");
 
     if !sums_path.is_file() {
@@ -1762,7 +1764,6 @@ fn restore_quick_suggestions_if_needed(
 /// Returns [`VspError::Operational`] or [`VspError::SafetyRefusal`] if source scripts are
 /// missing or writing fails.
 pub fn install_rtk_xdg_wrappers(catalog_root: &Path) -> VspResult<PathBuf> {
-    let src_dir = catalog_root.join("modules/capabilities/rtk-terminal/scripts");
     let dest_dir = resolve_xdg_config_home().join("vsp/rtk");
     let zsh_dir = dest_dir.join("zsh");
     fs::create_dir_all(&zsh_dir).map_err(|err| {
@@ -1777,6 +1778,23 @@ pub fn install_rtk_xdg_wrappers(catalog_root: &Path) -> VspResult<PathBuf> {
         let _ = fs::set_permissions(&dest_dir, fs::Permissions::from_mode(0o755));
         let _ = fs::set_permissions(&zsh_dir, fs::Permissions::from_mode(0o755));
     }
+
+    if catalog_root == Path::new(crate::schema_loader::EMBEDDED_ROOT_LABEL) {
+        for (rel_path, bytes) in crate::schema_loader::embedded_rtk_scripts() {
+            let Some(suffix) = rel_path.strip_prefix("packs/rtk-terminal/scripts/") else {
+                continue;
+            };
+            write_file_atomic(&dest_dir.join(suffix), bytes, 0o644, true)?;
+        }
+        return Ok(dest_dir);
+    }
+
+    let v2_src_dir = catalog_root.join("packs/rtk-terminal/scripts");
+    let src_dir = if v2_src_dir.is_dir() {
+        v2_src_dir
+    } else {
+        catalog_root.join("modules/capabilities/rtk-terminal/scripts")
+    };
 
     for fname in ["rtk-init.bash", "rtk-init.fish", "rtk-init.zsh"] {
         let src = src_dir.join(fname);

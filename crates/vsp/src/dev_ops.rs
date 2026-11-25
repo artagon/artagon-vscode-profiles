@@ -71,11 +71,22 @@ pub fn run_dev_pins(
     }
 
     if refresh {
-        let pins_path = env::var("ARTAGON_VSCODE_PINS_FILE")
+        let env_pins = env::var("ARTAGON_VSCODE_PINS_FILE")
             .ok()
             .filter(|s| !s.trim().is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| catalog.root.join("catalog/extension-pins.json"));
+            .map(PathBuf::from);
+        let pins_path = match env_pins {
+            Some(p) => p,
+            None => {
+                if catalog.root == Path::new(crate::schema_loader::EMBEDDED_ROOT_LABEL) {
+                    return Err(VspError::UsageOrConfig(
+                        "vsp dev pins --refresh requires --catalog <REPO_DIR> when using embedded defaults"
+                            .to_string(),
+                    ));
+                }
+                catalog.root.join("catalog/extension-pins.json")
+            }
+        };
 
         let mut target_ids: BTreeSet<String> = DEFAULT_PIN_IDS
             .iter()
@@ -720,9 +731,14 @@ pub fn run_dev_docs(
     let write_mode = write;
     let mut drifts = Vec::new();
     let mut updated = Vec::new();
+    let docs_root = if catalog.root == Path::new(crate::schema_loader::EMBEDDED_ROOT_LABEL) {
+        crate::schema_loader::resolve_repo_dir(None)?
+    } else {
+        catalog.root.clone()
+    };
 
     // 1. Rust docs policy sentinel sync/check across agent docs.
-    let rust_doc_path = catalog.root.join("docs/rust.md");
+    let rust_doc_path = docs_root.join("docs/rust.md");
     if rust_doc_path.is_file() {
         let policy_body = extract_rust_policy_block(&rust_doc_path)?;
         let expected_block = format!("{RUST_POLICY_BEGIN}\n{policy_body}\n{RUST_POLICY_END}");
@@ -730,7 +746,7 @@ pub fn run_dev_docs(
         // Preflight inspect all target files before modifying any file.
         if write_mode {
             for rel in AGENT_DOC_FILES {
-                let target = catalog.root.join(rel);
+                let target = docs_root.join(rel);
                 if target.is_file() {
                     let content = fs::read_to_string(&target).map_err(|err| {
                         VspError::Operational(format!("failed to read {}: {err}", target.display()))
@@ -748,7 +764,7 @@ pub fn run_dev_docs(
         }
 
         for rel in AGENT_DOC_FILES {
-            let target = catalog.root.join(rel);
+            let target = docs_root.join(rel);
             if !target.is_file() {
                 if write_mode {
                     let out = format!("{expected_block}\n");
@@ -804,7 +820,7 @@ pub fn run_dev_docs(
     }
 
     // 2. README.md generated matrix block sync/check.
-    let readme_path = catalog.root.join("README.md");
+    let readme_path = docs_root.join("README.md");
     if readme_path.is_file() {
         let expected_matrix = render_readme_matrix_block(catalog)?;
         let readme_content = fs::read_to_string(&readme_path).map_err(|err| {

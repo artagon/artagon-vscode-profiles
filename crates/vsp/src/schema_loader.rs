@@ -523,6 +523,162 @@ pub fn load_from_dir(root: &Path) -> VspResult<WorkspaceCatalog> {
     load_schema_from_dir(root).map(|s| s.catalog)
 }
 
+/// Loads a [`WorkspaceCatalog`] using the authoritative v2.2 CLI resolution policy:
+///
+/// 1. When `--catalog <DIR>` or non-empty `VSPCLI_ROOT` is explicitly provided:
+///    - Rejects missing paths with [`VspError::TargetMissing`] (exit `2`) and non-directories
+///      with [`VspError::UsageOrConfig`] (exit `4`).
+///    - Detects v2.2 layout (`presets.jsonc` / `packs/`) vs legacy layout
+///      (`catalog/extensions.json`, `modules/`, `profiles/`) and loads strictly from that
+///      directory. **NEVER** falls back to the embedded snapshot on an explicit external dir.
+/// 2. When neither `--catalog` nor `VSPCLI_ROOT` is provided:
+///    - Loads directly from [`load_embedded`] (**NEVER** auto-loads an untrusted catalog from
+///      the current working directory).
+/// 3. Honors an explicit non-empty `ARTAGON_VSCODE_PINS_FILE` environment override for
+///    pin manifest resolution (preserving offline test fixtures and fail-closed pin checks).
+///
+/// # Errors
+///
+/// Returns [`VspError::TargetMissing`] (exit `2`), [`VspError::UsageOrConfig`] (exit `4`),
+/// [`VspError::SafetyRefusal`] (exit `5`), or [`VspError::Operational`] (exit `1`).
+pub fn load_catalog_auto(cli_catalog: Option<&Path>) -> VspResult<WorkspaceCatalog> {
+    let explicit_dir: Option<PathBuf> = if let Some(p) = cli_catalog {
+        Some(p.to_path_buf())
+    } else {
+        std::env::var("VSPCLI_ROOT")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+    };
+
+    let mut catalog = if let Some(dir) = explicit_dir {
+        load_explicit_catalog_dir(&dir)?
+    } else {
+        load_embedded()?
+    };
+
+    if let Ok(override_pins) = std::env::var("ARTAGON_VSCODE_PINS_FILE") {
+        let trimmed = override_pins.trim();
+        if !trimmed.is_empty() {
+            catalog.pins = crate::legacy_loader::load_pins_state(Path::new(trimmed));
+        }
+    }
+
+    Ok(catalog)
+}
+
+/// Loads strictly from an explicit external directory, auto-detecting v2.2 layout
+/// (`presets.jsonc` / `packs/`) vs legacy layout (`catalog/extensions.json` + `modules/` + `profiles/`).
+///
+/// Never falls back to the compile-time embedded snapshot.
+///
+/// # Errors
+///
+/// - [`VspError::TargetMissing`] (exit `2`) when `dir` does not exist.
+/// - [`VspError::UsageOrConfig`] (exit `4`) when `dir` is not a directory, is incomplete, or
+///   matches neither v2.2 nor legacy layout.
+/// - [`VspError::SafetyRefusal`] (exit `5`) on symlink escapes or security invariant failures.
+/// - [`VspError::Operational`] (exit `1`) on unreadable or malformed JSON/JSONC.
+pub fn load_explicit_catalog_dir(dir: &Path) -> VspResult<WorkspaceCatalog> {
+    if !dir.exists() {
+        return Err(VspError::TargetMissing(format!(
+            "catalog directory not found: {}",
+            dir.display()
+        )));
+    }
+    if !dir.is_dir() {
+        return Err(VspError::UsageOrConfig(format!(
+            "catalog path is not a directory: {}",
+            dir.display()
+        )));
+    }
+
+    let has_v2_markers = is_valid_v2_root(dir)
+        || dir.join("presets.jsonc").exists()
+        || dir.join("packs").exists()
+        || dir.join("catalog/extensions.jsonc").exists()
+        || dir.join("catalog/policy.jsonc").exists();
+
+    if has_v2_markers {
+        return load_from_dir(dir);
+    }
+
+    if crate::legacy_loader::is_valid_legacy_root(dir)
+        || dir.join("catalog/extensions.json").is_file()
+    {
+        return crate::legacy_loader::load_legacy_catalog(dir);
+    }
+
+    Err(VspError::UsageOrConfig(format!(
+        "invalid catalog root {}: expected v2.2 layout (presets.jsonc + packs/) or legacy layout (catalog/extensions.json + modules/ + profiles/)",
+        dir.display()
+    )))
+}
+
+/// Resolves a physical repository checkout directory for maintainer file operations
+/// (`vsp dev hooks`, `vsp dev docs`), supporting both v2.2 and legacy repository layouts.
+///
+/// # Errors
+///
+/// Returns [`VspError::TargetMissing`] (exit `2`) if an explicit directory does not exist,
+/// or [`VspError::UsageOrConfig`] (exit `4`) if no repository root can be located.
+pub fn resolve_repo_dir(cli_catalog: Option<&Path>) -> VspResult<PathBuf> {
+    let explicit: Option<PathBuf> = if let Some(p) = cli_catalog {
+        Some(p.to_path_buf())
+    } else {
+        std::env::var("VSPCLI_ROOT")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+    };
+
+    if let Some(dir) = explicit {
+        if !dir.exists() {
+            return Err(VspError::TargetMissing(format!(
+                "repository directory not found: {}",
+                dir.display()
+            )));
+        }
+        return fs::canonicalize(&dir).map_err(|err| {
+            VspError::TargetMissing(format!(
+                "cannot resolve repository directory {}: {err}",
+                dir.display()
+            ))
+        });
+    }
+
+    let is_repo = |d: &Path| {
+        is_valid_v2_root(d)
+            || crate::legacy_loader::is_valid_legacy_root(d)
+            || (d.join("README.md").is_file() && d.join("docs/rust.md").is_file())
+    };
+
+    if let Ok(cwd) = std::env::current_dir() {
+        let canon = fs::canonicalize(&cwd).unwrap_or(cwd);
+        for ancestor in canon.ancestors() {
+            if is_repo(ancestor) {
+                return Ok(ancestor.to_path_buf());
+            }
+        }
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        let canon = fs::canonicalize(&exe).unwrap_or(exe);
+        for ancestor in canon.ancestors().skip(1) {
+            if is_repo(ancestor) {
+                return Ok(ancestor.to_path_buf());
+            }
+        }
+    }
+
+    Err(VspError::UsageOrConfig(
+        "could not locate repository root (pass --catalog <DIR> or run inside the repository)"
+            .to_string(),
+    ))
+}
+
 /// Shared strict parser and validator powering both [`load_embedded_schema`] and
 /// [`load_schema_from_dir`].
 ///

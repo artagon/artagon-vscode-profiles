@@ -18,6 +18,8 @@ source "${LIB_DIR}/vsix-pin.sh"
 source "${LIB_DIR}/legacy-profile-name.sh"
 # shellcheck source=scripts/lib/module-resolver.sh
 source "${LIB_DIR}/module-resolver.sh"
+# shellcheck source=scripts/lib/compiler.sh
+source "${LIB_DIR}/compiler.sh"
 
 usage() {
   cat <<'EOF'
@@ -248,9 +250,22 @@ if [[ "${EXACT_PROFILE}" -eq 0 ]]; then
 fi
 
 EXT_FILE="${ROOT}/profiles/${PROFILE}/extensions.json"
+TMP_EXT_FILE=""
+VSIX_TMP=""
+trap '[[ -n "${TMP_EXT_FILE}" ]] && rm -f "${TMP_EXT_FILE}"; [[ -n "${VSIX_TMP}" ]] && rm -rf "${VSIX_TMP}"' EXIT
+
 if [[ ! -f "${EXT_FILE}" ]]; then
-  printf 'install-extensions: missing extensions file: %s\n' "${EXT_FILE}" >&2
-  exit 1
+  if [[ -f "${ROOT}/profiles/${PROFILE}/profile.json" ]]; then
+    TMP_EXT_FILE="$(mktemp "${TMPDIR:-/tmp}/vsp-inst-ext.XXXXXX")"
+    if ! compiler_compile_profile_extensions_file "${ROOT}" "${PROFILE}" "${TMP_EXT_FILE}"; then
+      printf 'install-extensions: failed to compile extensions on-demand for profile %q\n' "${PROFILE}" >&2
+      exit 1
+    fi
+    EXT_FILE="${TMP_EXT_FILE}"
+  else
+    printf 'install-extensions: missing extensions file: %s\n' "${EXT_FILE}" >&2
+    exit 1
+  fi
 fi
 
 if ! jq -e -s '
@@ -326,7 +341,6 @@ DELAY="${VSCODE_EXTENSION_INSTALL_DELAY:-1}"
 PINS_FILE="$(pins_file_path "${ROOT}")"
 export VSCODE_VSIX_CACHE_DIR="${VSCODE_VSIX_CACHE_DIR-${ROOT}/.cache/vsix}"
 VSIX_TMP="$(mktemp -d "${TMPDIR:-/tmp}/vsp-vsix.XXXXXX")"
-trap 'rm -rf "${VSIX_TMP}"' EXIT
 
 FAILED=()
 BATCH_IDS=()

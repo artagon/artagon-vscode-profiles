@@ -341,6 +341,61 @@ compiler_rtk_terminal_settings_json() {
   '
 }
 
+# Compile canonical UX-agnostic profile settings for <profile_name> into <out_file>
+# without writing generated artifacts into <root>.
+compiler_compile_profile_settings_file() {
+  local root="${1}"
+  local profile_name="${2}"
+  local out_file="${3}"
+  local recipe="${root}/profiles/${profile_name}/profile.json"
+  if [[ ! -f "${recipe}" ]]; then
+    printf 'error: missing profile recipe: %s\n' "${recipe}" >&2
+    return 1
+  fi
+
+  local resolved_str
+  resolved_str="$(resolve_profile_recipe "${root}" "${profile_name}" "" "" "default")" || return $?
+  local mods=()
+  local m
+  while IFS= read -r m; do
+    [[ -n "${m}" ]] && mods+=("${m}")
+  done <<< "${resolved_str}"
+
+  local ov_ws ov_prof combined_ov
+  ov_ws="$(jq -c 'if (.overrides | type) == "object" and (.overrides | has("workspace") or has("profile")) then (.overrides.workspace // {}) else {} end' "${recipe}")"
+  ov_prof="$(jq -c 'if (.overrides | type) == "object" and (.overrides | has("workspace") or has("profile")) then (.overrides.profile // {}) else (.overrides // {}) end' "${recipe}")"
+  combined_ov="$(jq -n --argjson a "${ov_ws}" --argjson b "${ov_prof}" '$a * $b')"
+
+  local ux_keys
+  ux_keys="$(compiler_ux_managed_keys_json "${root}")" || return 1
+
+  compiler_compile_settings "${root}" both --override-json "${combined_ov}" -- "${mods[@]+"${mods[@]}"}" \
+    | jq -S --argjson ux "${ux_keys}" 'reduce $ux[] as $k (.; del(.[$k]))' > "${out_file}"
+}
+
+# Compile canonical VS Code profile extensions array for <profile_name> into <out_file>
+# without writing generated artifacts into <root>.
+compiler_compile_profile_extensions_file() {
+  local root="${1}"
+  local profile_name="${2}"
+  local out_file="${3}"
+  local recipe="${root}/profiles/${profile_name}/profile.json"
+  if [[ ! -f "${recipe}" ]]; then
+    printf 'error: missing profile recipe: %s\n' "${recipe}" >&2
+    return 1
+  fi
+
+  local resolved_str
+  resolved_str="$(resolve_profile_recipe "${root}" "${profile_name}" "" "" "default")" || return $?
+  local mods=()
+  local m
+  while IFS= read -r m; do
+    [[ -n "${m}" ]] && mods+=("${m}")
+  done <<< "${resolved_str}"
+
+  compiler_compile_extensions "${root}" profile "${mods[@]+"${mods[@]}"}" | jq . > "${out_file}"
+}
+
 # Build a canonical profile recipe into:
 #   - _merged/<name>.json (0644, UX-agnostic: all 15 symmetric UX keys stripped)
 #   - profiles/<name>/settings.json -> ../../_merged/<name>.json

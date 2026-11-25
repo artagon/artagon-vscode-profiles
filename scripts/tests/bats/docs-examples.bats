@@ -62,6 +62,16 @@ MOCK
   cmd_count="$(wc -l < "${cmds_file}" | tr -d ' ')"
   [[ "${cmd_count}" -ge 15 ]]
 
+  # Build exports inside an isolated temp copy so standalone BATS passes on a clean checkout with zero tracked exports/.
+  doc_repo="${TEST_TMP}/doc-repo"
+  mkdir -p "${doc_repo}"
+  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" \
+        "${REPO_ROOT}/packs" "${REPO_ROOT}/scripts" "${REPO_ROOT}/docs" "${doc_repo}/"
+  cp "${REPO_ROOT}/README.md" "${REPO_ROOT}/AGENTS.md" "${REPO_ROOT}/CLAUDE.md" \
+     "${REPO_ROOT}/CODEX.md" "${REPO_ROOT}/GEMINI.md" "${REPO_ROOT}/presets.jsonc" \
+     "${REPO_ROOT}/vsp.lock.json" "${doc_repo}/"
+  VSPCLI_ROOT="${doc_repo}" "${BASH}" "${doc_repo}/scripts/vspcli" build >/dev/null
+
   while IFS= read -r cmd; do
     [[ -n "${cmd}" ]] || continue
     # Substitute placeholder paths with real temp workspaces.
@@ -71,7 +81,7 @@ MOCK
     cmd="${cmd//\/path\/to\/repo/${ws_repo}}"
 
     set +e
-    (cd "${REPO_ROOT}" && eval "${cmd}") >/dev/null 2>&1
+    (cd "${doc_repo}" && VSPCLI_ROOT="${doc_repo}" eval "${cmd}") >/dev/null 2>&1
     rc=$?
     set -e
 
@@ -163,10 +173,16 @@ MOCK
   cmd_count="$(wc -l < "${cmds_file}" | tr -d ' ')"
   [[ "${cmd_count}" -ge 8 ]]
 
+  # Build profiles once in a temp repo copy so `--all` and `--extensions-file profiles/rust/extensions.json` run fast on a clean checkout.
+  compat_repo="${TEST_TMP}/compat-doc-repo"
+  mkdir -p "${compat_repo}"
+  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" "${REPO_ROOT}/scripts" "${compat_repo}/"
+  VSPCLI_ROOT="${compat_repo}" "${BASH}" "${compat_repo}/scripts/compose-settings.sh" >/dev/null
+
   while IFS= read -r cmd; do
     [[ -n "${cmd}" ]] || continue
     set +e
-    (cd "${REPO_ROOT}" && eval "${cmd}") >/dev/null 2>&1
+    (cd "${compat_repo}" && VSPCLI_ROOT="${compat_repo}" eval "${cmd}") >/dev/null 2>&1
     rc=$?
     set -e
     if [[ "${rc}" -eq 2 || "${rc}" -eq 4 ]]; then

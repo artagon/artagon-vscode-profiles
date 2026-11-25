@@ -16,7 +16,11 @@ use crate::model::{
     ExtensionStatus, ModuleKind, PinsLoadState, WorkspaceCatalog, COMPILER_UNION_KEYS,
     EXPECTED_UX_KEYS, GROUP_ORDER,
 };
-use crate::resolver::{resolve_modules, resolve_profile_recipe, sha256_hex, ResolveRequest};
+use crate::resolver::{
+    compile_canonical_profile_settings, resolve_modules, resolve_profile_recipe, sha256_hex,
+    ResolveRequest,
+};
+use crate::schema_loader::{embedded_snapshot_files, EMBEDDED_ROOT_LABEL};
 
 /// Execution-override keys denied anywhere in configuration (matched case-insensitively
 /// against both leaf keys and joined dot-paths).
@@ -277,29 +281,78 @@ pub fn is_valid_marketplace_vsix_url(url: &str) -> bool {
 pub fn validate_repository(catalog: &WorkspaceCatalog) -> ValidationReport {
     let mut violations = Vec::new();
     let mut checked_files = 0usize;
+    let is_embedded = catalog.root == Path::new(EMBEDDED_ROOT_LABEL);
 
     // 1. Strict JSON / JSONC syntax pass.
-    for dir_name in ["catalog", "modules", "profiles", "_merged", "exports"] {
-        let dir = catalog.root.join(dir_name);
-        if dir.is_dir() {
-            validate_tree_syntax(&catalog.root, &dir, &mut checked_files, &mut violations);
+    if is_embedded {
+        checked_files += embedded_snapshot_files().len();
+    } else {
+        for dir_name in ["catalog", "packs", "modules", "profiles", "_merged", "exports"] {
+            let dir = catalog.root.join(dir_name);
+            if dir.is_dir() {
+                validate_tree_syntax(&catalog.root, &dir, &mut checked_files, &mut violations);
+            }
+        }
+        let presets_path = catalog.root.join("presets.jsonc");
+        if presets_path.is_file() {
+            checked_files += 1;
+            if let Err(err) = parse_jsonc_settings_object(&presets_path) {
+                violations.push(PolicyViolation {
+                    source: presets_path.display().to_string(),
+                    message: err.to_string(),
+                });
+            }
+        }
+        let lock_path = catalog.root.join("vsp.lock.json");
+        if lock_path.is_file() {
+            checked_files += 1;
+            if let Err(err) = read_strict_json_value(&lock_path, false) {
+                violations.push(PolicyViolation {
+                    source: lock_path.display().to_string(),
+                    message: err.to_string(),
+                });
+            }
         }
     }
 
     // 2. Module sibling files, references, symmetric conflicts, and DAG acyclicity.
     for (mid, def) in &catalog.modules {
         let manifest_label = def.dir.join("module.json").display().to_string();
-        for (field, rel) in [
-            ("settings.workspace", &def.manifest.settings.workspace),
-            ("settings.profile", &def.manifest.settings.profile),
-            ("tasks", &def.manifest.tasks),
-        ] {
-            if let Some(rel_path) = rel {
-                if !rel_path.is_empty() && !def.dir.join(rel_path).is_file() {
-                    violations.push(PolicyViolation {
-                        source: manifest_label.clone(),
-                        message: format!("references missing {field} file '{rel_path}'"),
-                    });
+        if is_embedded {
+            if def.manifest.settings.workspace.is_some() && def.workspace_settings.is_none() {
+                violations.push(PolicyViolation {
+                    source: manifest_label.clone(),
+                    message: "embedded pack declares settings.workspace but parsed map is missing"
+                        .to_string(),
+                });
+            }
+            if def.manifest.settings.profile.is_some() && def.profile_settings.is_none() {
+                violations.push(PolicyViolation {
+                    source: manifest_label.clone(),
+                    message: "embedded pack declares settings.profile but parsed map is missing"
+                        .to_string(),
+                });
+            }
+            if def.manifest.tasks.is_some() && def.tasks_doc.is_none() {
+                violations.push(PolicyViolation {
+                    source: manifest_label.clone(),
+                    message: "embedded pack declares tasks but parsed document is missing"
+                        .to_string(),
+                });
+            }
+        } else {
+            for (field, rel) in [
+                ("settings.workspace", &def.manifest.settings.workspace),
+                ("settings.profile", &def.manifest.settings.profile),
+                ("tasks", &def.manifest.tasks),
+            ] {
+                if let Some(rel_path) = rel {
+                    if !rel_path.is_empty() && !def.dir.join(rel_path).is_file() {
+                        violations.push(PolicyViolation {
+                            source: manifest_label.clone(),
+                            message: format!("references missing {field} file '{rel_path}'"),
+                        });
+                    }
                 }
             }
         }
@@ -942,17 +995,37 @@ fn validate_profiles_and_artifacts(
     ux_keys: &[String],
     violations: &mut Vec<PolicyViolation>,
 ) {
+    let is_embedded = catalog.root == Path::new(EMBEDDED_ROOT_LABEL);
+
     for (name, recipe) in &catalog.profiles {
-        let src = format!("profiles/{name}/profile.json");
+        let src = format!("preset:{name}");
         if let Ok(val) = serde_json::to_value(recipe) {
             violations.extend(check_autonomy_denylist(&val, &src));
         }
         if let Err(err) = resolve_profile_recipe(catalog, name, &[], &[], None, None) {
             violations.push(PolicyViolation {
-                source: src,
+                source: src.clone(),
                 message: format!("profile '{name}' recipe failed resolution: {err}"),
             });
+            continue;
         }
+        match compile_canonical_profile_settings(catalog, name) {
+            Ok(compiled) => {
+                let val = Value::Object(compiled);
+                violations.extend(check_autonomy_denylist(&val, &src));
+                check_baseline_invariants(&val, &src, true, ux_keys, violations);
+            }
+            Err(err) => {
+                violations.push(PolicyViolation {
+                    source: src,
+                    message: format!("profile '{name}' canonical settings compilation failed: {err}"),
+                });
+            }
+        }
+    }
+
+    if is_embedded {
+        return;
     }
 
     // Forbidden security-bypass paths.

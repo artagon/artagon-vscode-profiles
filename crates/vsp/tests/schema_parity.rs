@@ -222,6 +222,20 @@ fn parity_37_entry_dev_dist_sha256sums_and_22_legacy_aliases_identical() {
     assert_eq!(sums_dir, sums_leg, "load_from_dir SHA256SUMS drifted from legacy_loader");
     assert_eq!(sums_emb, sums_leg, "load_embedded SHA256SUMS drifted from legacy_loader");
 
+    // Anchor embedded + dir SHA256SUMS against the snapshotted v2.1 golden oracle fixture!
+    let oracle_raw = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2_1_golden_sha256.json"),
+    )
+    .expect("read v2_1_golden_sha256.json");
+    let oracle: Value = serde_json::from_str(&oracle_raw).expect("parse golden oracle");
+    assert_eq!(
+        sha256_hex(&sums_emb),
+        oracle["dist_sha256sums_sha256"]
+            .as_str()
+            .expect("dist_sha256sums_sha256"),
+        "embedded v2.2 SHA256SUMS drifted from v2.1 golden oracle"
+    );
+
     // Verify all 22 legacy aliases in presets.jsonc match LEGACY_BUNDLE_ALIASES
     // and ai-profile-{crisp,retina} map strictly to ai-copilot with ZERO non-Copilot AI IDs.
     let schema = load_embedded_schema().expect("embedded schema");

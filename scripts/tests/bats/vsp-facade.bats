@@ -46,7 +46,7 @@ vsp() {
 
   run env PATH="${bin_dir}:${PATH}" vsp --version
   [[ "${status}" -eq 0 ]]
-  [[ "${output}" == *"vsp 2.1.0"* ]]
+  [[ "${output}" == *"vsp 2.2.0"* ]]
 
   run env PATH="${bin_dir}:${PATH}" vsp self path
   [[ "${status}" -eq 0 ]]
@@ -151,7 +151,7 @@ WRAP
   seeded=("JScearcy.rust-doc-viewer")
   while IFS= read -r eid; do
     [[ -n "${eid}" ]] && seeded+=("${eid}")
-  done < <(jq -r '.[1:][].identifier.id' "${REPO_ROOT}/profiles/general-minimal/extensions.json")
+  done < <("${BASH}" "${LIB_DIR}/compose-extensions.sh" general-minimal | jq -r '.[1:][].identifier.id')
   seed_code_mock_exts "general-minimal" "${data_root}" -- "${seeded[@]}"
 
   run vsp sync -p general-minimal --check-compat=off --no-rtk
