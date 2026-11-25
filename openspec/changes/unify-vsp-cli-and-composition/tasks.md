@@ -33,9 +33,11 @@
 ## Phase 3: Legacy Retirement, Homebrew Launch & Final Cutover (`v3.0.0`)
 
 - [ ] 3.1 Retire legacy Bash compiler internals (`scripts/lib/*.sh`) and finalize `scripts/vspcli` deprecation shim per deprecation policy.
-  - [ ] Implement `vsp init` and load user-only composition defaults from `~/.config/vsp/config.jsonc` (`D1`).
-  - [ ] Implement and verify native `vsp self install` and `vsp self uninstall`.
+  - [x] Implement `vsp init` and load user-only composition defaults from `~/.config/vsp/config.jsonc` (`D1`).
+  - [x] Implement and verify native `vsp self install` and `vsp self uninstall`.
+  - [x] Implement and test native `vspcli` compatibility dispatch and legacy exit mapping.
 - [ ] 3.2 Publish signed, SLSA-attested `vsp` tag release via `.github/workflows/release.yml` and launch the Homebrew formula (`D4`).
   - [x] Update README, project overview, changelog, contributor workflow, and OpenSpec context for the v3.0.0 cutover.
+  - [x] Document the implemented configuration and compatibility contracts, and verify the CLI interface, composition, supply-chain locking, and user-config deltas with `openspec validate unify-vsp-cli-and-composition --strict`.
   - [ ] Verify the published tarballs and `SHA256SUMS` attestations and run the Homebrew install and audit gates.
 - [ ] 3.3 Archive superseded OpenSpec changes and sync `openspec/specs/` to reflect the unified `vsp` architecture.

@@ -20,7 +20,7 @@ A big-bang rewrite would risk behavior drift and double maintenance. This ADR de
 
 ### 1. CLI Name & Command Taxonomy
 
-The primary command is `vsp`. Phase 3 retains `scripts/vspcli` as the v2.x migration shim.
+The primary command is `vsp`. Phase 3 provides native compatibility for supported v2.x `vspcli` commands.
 
 | Group | Verbs | Role |
 | --- | --- | --- |
@@ -51,13 +51,19 @@ All `vsp` commands share one exit code table across both the Phase 1 Bash facade
 | `6` | Retryable lock, preimage, or partial apply | Lock contention, `storage.json` CAS preimage mismatch, partial apply |
 | `7` | Incomplete observation / verification unavailable | Failed `code --list-extensions` during `doctor`, unreachable compatibility check |
 
+The native binary selects legacy parsing if the basename of `argv[0]` is `vspcli` (or `vspcli.exe`, ignoring case), if `VSP_COMPAT_VSPCLI=1`, or if the first argument is `compat-vspcli` as in `vsp compat-vspcli …`. Only legacy `doctor`, `reconcile`, and `install-ext` map `5`, `6`, and `7` to `1`. All other exit codes pass through.
+
 ### 3. Locked Architecture Decisions (`D1`–`D5`)
 
-- **D1 — JSONC-only user config, zero repo `.vsp.toml`.** Personal defaults live only at `${XDG_CONFIG_HOME:-~/.config}/vsp/config.jsonc`. Repositories do not carry a `.vsp.toml` manifest; workspace intent stays in standard project markers, `.vscode/` files, and explicit CLI selectors.
+- **D1 — User-only JSONC configuration.** `vsp init` writes `${XDG_CONFIG_HOME:-~/.config}/vsp/config.jsonc`. An explicit `--config PATH` selects a single alternate source. `vsp` ignores repo-local `.vsp.toml` and `.vsp.jsonc`. Workspace intent stays in standard project markers, `.vscode/` files, and explicit CLI selectors.
 - **D2 — Exit `7` for incomplete observation.** Audit and verification commands must fail closed with exit `7` whenever required observation fails (for example, `code --list-extensions` fails or `storage.json` cannot be enumerated). Incomplete checks never downgrade to warnings or exit `0`.
 - **D3 — Fail-closed lock hardening in `v2.0.1` + `fs4`/CAS in Rust.** Phase 0 (`v2.0.1`) hardened shell lock reclamation and spaced macOS VS Code process detection. Phase 2 replaces shell locks with OS-level advisory locks (`fs4`) paired with pre-publish SHA-256 compare-and-swap (CAS) checks on VS Code `storage.json` and atomic renames.
 - **D4 — Homebrew formula launches with the compiled Rust binary.** A Homebrew formula ships only when the cross-platform Rust `vsp` binary and SLSA-attested release tarballs are ready (Phase 3), avoiding a temporary Bash formula that users would need to migrate.
 - **D5 — Preserve `ai` `chat.editor.fontSize=14` override during schema consolidation.** `profiles/ai/profile.json` sets `overrides.profile["chat.editor.fontSize"] = 14`. Schema consolidation keeps this override intact so Rust achieves 100% golden settings parity across all 15 canonical profiles.
+
+The user config requires integer `version: 1`. The optional `defaults` object accepts `ux` (`crisp`, `retina`, `default`), `ai` (`full`, `copilot`, `off`), and boolean `rtkTerminal`. The optional `profiles` map accepts `description`, `extends` (catalog preset or pack), `with` and `without` (pack ID arrays), `overrides` (profile settings), and `extraExtensions` (exact extension ID array) per profile name. The parser permits top-level `$schema` metadata. Defaults apply to personal targets. Explicit CLI selections take precedence, and profile overrides apply after UX settings.
+
+Override keys must be dotted VS Code setting IDs or `[language]` blocks. Bare setting keys exit `4`. The autonomy deny-list rejects overrides with exit `5`, including within language blocks. This config check cannot be bypassed with `--allow-unsafe-settings`. Publisher trust fields (`trust`, `publishers`, `trustedPublishers`) and wildcard extension IDs exit `4`. Compromised or removed extension IDs exit `5`.
 
 ### 4. Four-Tier VSIX Policy and Target Provenance
 
@@ -67,6 +73,8 @@ Tier 0 is declared in `catalog/extensions.jsonc`. `vsp.lock.json` records tiers 
 2. **Tier 1** covers extensions with per-platform SHA-256 VSIX locks.
 3. **Tier 2** covers executable extensions with version locks.
 4. **Tier 3** covers unlocked declarative themes, grammars, and keymaps.
+
+An exact catalog-external ID in `extraExtensions` is also Tier 3, labeled `user-unlocked`. It has no VSIX pin. `vsp doctor` records a `WARN` and includes the ID in the JSON `user_unlocked_extensions` array. With complete observation, `vsp doctor --strict` fails the audit with exit `1` while retaining the `WARN` finding.
 
 `pending_refresh` records indicate incomplete VSIX verification. Target provenance is stored separately under `${XDG_STATE_HOME:-~/.local/state}/vsp/` and tracks managed settings, recommendations, and workspace fingerprints. Distribution checksums live in `SHA256SUMS`.
 
@@ -83,12 +91,15 @@ No new parser, planner, or lock code is written in Bash after Phase 0.
    - Land ADR 0001, OpenSpec change artifacts, `.github/workflows/release.yml`, and thin `bin/vsp` facade (`<= 400` LOC, pure Bash 3.2+, zero new parser/planner/lock code; automatically `exec`s `VSP_BIN` or compiled `target/{release,debug}/vsp` when present).
    - Bootstrap `crates/vsp` with the typed domain model, legacy-layout loader, DAG resolver, policy validator, unified `Plan`, read-only CLI verbs (`list`, `show`, `detect`, `diff`, `doctor`, `export`, `completions`, `dev validate`, `dev dist`), and 100% golden parity tests against all 15 tracked profiles and 22 legacy aliases.
 3. **Phase 2 (`v2.2.0`):** Implement Rust mutating `sync` and `open`, `fs4` and CAS locking, comment-preserving JSONC edits, target provenance, and the four-tier VSIX policy. Untrack the 83 generated files from git and switch CI/release generation to `vsp dev dist`.
-4. **Phase 3 (`v3.0.0`):** Retire the legacy Bash compiler and retain the `scripts/vspcli` migration shim. Deliver `vsp init`, local composition defaults, and native binary installation. Publish signed cross-platform Rust binaries (`aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`) and launch the Homebrew formula (`D4`).
+4. **Phase 3 (`v3.0.0`):** Retire the legacy Bash compiler from the v3 workflow and provide native `vspcli` compatibility. Deliver `vsp init`, local composition defaults, and native binary installation. Publish signed cross-platform Rust binaries (`aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`) and launch the Homebrew formula (`D4`).
+
+The v3 workflow retires `scripts/.vspcli-completion.{zsh,fish}`, `scripts/setup-rust-toolchain.sh`, `scripts/setup-cpp-toolchain.sh`, and `profiles/rust/tasks.example.json` as entry points. Generate completions with `vsp completions`, install language toolchains separately, and use workspace sync for generated settings and Rust documentation tasks.
 
 ## Implementation Evidence
 
 - `7b2f532` introduced the Rust planner and legacy loader. The golden tests now compare all canonical settings and extensions and 22 aliases against frozen v2.1 checksums.
 - `52aeaf9` introduced the consolidated schema and build-time snapshot. `cd7aa47` added Rust synchronization, JSONC CST edits, VSIX verification, and storage CAS. `6972eeb` switched to the embedded catalog and untracked the 83 generated files.
+- `718183e` added user configuration, `init`, native `self` commands, live completions, and `vspcli` compatibility. `crates/vsp/tests/v3_user_config_and_compat.rs` covers the configuration gates, strict doctor exit, compatibility dispatch, and install lifecycle.
 - The architecture is implemented in the Rust engine. The [release checklist](../../openspec/changes/unify-vsp-cli-and-composition/tasks.md#phase-3-legacy-retirement-homebrew-launch--final-cutover-v300) tracks the remaining cutover and publication gates.
 
 ## Consequences

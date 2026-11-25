@@ -8,11 +8,11 @@
 
 **vsp** is the unified CLI for Visual Studio Code profiles, workspace toolchains, and extension management. The v3.0.0 cutover uses a native Rust binary with an embedded catalog. It composes 15 profiles from editor, AI, language, and UX packs.
 
-[Installation](#installation) · [Quick Start](#quick-start) · [Composition](#composition) · [Profiles & Modules](#profile--module-matrix) · [Security](#security--supply-chain-controls) · [CLI Reference](#cli-quick-reference) · [Migrating from v2](#migrating-from-v2)
+[Installation](#installation) · [Quick Start](#quick-start) · [Composition](#composition) · [Personal Configuration](#personal-configuration) · [Profiles & Modules](#profile--module-matrix) · [Security](#security--supply-chain-controls) · [CLI Reference](#cli-quick-reference) · [Migrating from v2](#migrating-from-v2)
 
 ## Installation
 
-The Homebrew formula and native installer are v3.0.0 cutover deliverables. Check the [release checklist](openspec/changes/unify-vsp-cli-and-composition/tasks.md#phase-3-legacy-retirement-homebrew-launch--final-cutover-v300) for their status.
+Install the v3.0.0 binary with Homebrew once the tag release is published. The [release checklist](openspec/changes/unify-vsp-cli-and-composition/tasks.md#phase-3-legacy-retirement-homebrew-launch--final-cutover-v300) tracks publication.
 
 ```bash
 brew install artagon/aitools/vsp
@@ -40,8 +40,8 @@ vsp detect /path/to/repo --explain
 vsp diff --workspace /path/to/repo --preset rust
 vsp sync --workspace /path/to/repo --preset rust
 
-# Sync a named profile with a personal display preset, then open it
-vsp sync --profile rust --preset rust --ux retina
+# Sync the Rust profile directly from the built-in catalog, then open it
+vsp sync -p rust
 vsp open --profile rust /path/to/repo
 
 # Audit installed profiles, including Default
@@ -50,18 +50,59 @@ vsp doctor --strict
 
 Use `vsp sync --dry-run` with the same selector and composition flags to preview a standard sync. Use `vsp diff --check` to detect drift in automation.
 
+To import from a local bundle, first export it or download and extract the profile archive from [GitHub Releases](https://github.com/Artagon/artagon-vscode-profiles/releases). Keep `SHA256SUMS` beside the bundle.
+
+```bash
+vsp export rust --out ./bundles
+vsp sync --from ./bundles/rust.code-profile -p rust
+```
+
 ## Composition
 
 - `--with` and `--without` add or exclude packs. The resolver loads required packs and rejects conflicting combinations. For example, `vsp diff /path/to/astro-repo --preset astro --with biome --without ts-eslint-prettier` previews changing the Astro formatter.
 - `--profile NAME` selects a named VS Code profile. `--preset NAME` selects a recipe and can be combined with a profile or workspace selector. Use `--user` for the Default VS Code profile.
-- The v3.0.0 design uses `vsp init` to create `~/.config/vsp/config.jsonc` (or `$XDG_CONFIG_HOME/vsp/config.jsonc`) for personal defaults without a fork. Until the config loader lands, pass composition flags explicitly. For security, `vsp` does not support repo-local `.vsp.toml`. Use VS Code workspace files and explicit CLI selectors to express project intent.
 - Use `--ux retina` or `--ux crisp` on a profile or user target for personal typography and themes. Workspace sync can apply an explicitly selected UX preset. Leave `--ux` out of team workspace commands to keep personal display settings out of the workspace.
+
+## Personal Configuration
+
+Run `vsp init` to create `~/.config/vsp/config.jsonc`, or `$XDG_CONFIG_HOME/vsp/config.jsonc` when `XDG_CONFIG_HOME` is an absolute path. `--config PATH` replaces that source for one invocation. For security, `vsp` ignores repo-local `.vsp.toml` and `.vsp.jsonc`.
+
+```jsonc
+{
+  "version": 1,
+  "defaults": { "ux": "retina", "ai": "copilot", "rtkTerminal": false },
+  "profiles": {
+    "my-rust": {
+      "description": "Rust with Git tooling",
+      "extends": "rust",
+      "with": ["git-pro"],
+      "without": [],
+      "overrides": { "editor.fontSize": 14, "[rust]": { "editor.formatOnSave": true } },
+      "extraExtensions": ["editorconfig.editorconfig"]
+    }
+  }
+}
+```
+
+`version` must be the integer `1`. `defaults` and `profiles` are optional objects. The parser also permits a top-level `$schema` key.
+
+Defaults apply to personal targets:
+
+- `ux` accepts `crisp`, `retina`, or `default`. An explicit `--ux` or a UX preset implied by a legacy alias takes precedence over the default.
+- `ai` accepts `full`, `copilot`, or `off`. Explicit `--ai` or `--no-ai` takes precedence.
+- `rtkTerminal: true` adds the pack unless `--no-rtk` or `--without rtk-terminal` is present. `rtkTerminal: false` skips wrapper installation.
+
+Specify a catalog preset or pack in `extends`. Use `with` and `without` for arrays of pack IDs. Run `vsp diff -p my-rust` to preview and `vsp sync -p my-rust` to apply the example profile. Its overrides apply after UX settings.
+
+- Use literal dotted VS Code setting IDs or `[language]` blocks in `overrides`. Bare keys such as `chat` exit `4`. A setting that matches the autonomy deny-list exits `5`, even with `--allow-unsafe-settings`.
+- Use exact `publisher.name` IDs in `extraExtensions`. Wildcards and publisher trust keys (`trust`, `publishers`, `trustedPublishers`) exit `4`. Compromised or removed IDs exit `5`.
+- A catalog-external exact ID is Tier 3 `user-unlocked` and uses no VSIX pin. `vsp doctor` prints `WARN` and includes the ID in `user_unlocked_extensions` in JSON. Under `--strict`, the warning fails the audit with exit `1` when observation completes. The finding still displays as `WARN`.
 
 ## Architecture & Capability Highlights
 
 The Rust engine in [`crates/vsp`](crates/vsp) resolves capability and toolchain packs from `packs/*.jsonc`. It reads recipes and legacy aliases from [`presets.jsonc`](presets.jsonc), and reads extension metadata and settings policy from [`catalog/`](catalog). The embedded snapshot lets the compiled binary work outside a clone. Use `--catalog DIR` to test a local catalog.
 
-The 83 generated files formerly tracked in `_merged/`, `exports/`, and `profiles/*/{extensions,settings}.json` are built in memory on demand. Use `vsp export rust --out ./exports` for a single bundle or `vsp dev dist --out ./dist` for all 15 canonical bundles, 22 legacy aliases, and their `SHA256SUMS`. The tag release workflow publishes binary and profile archives as GitHub Release assets with `SHA256SUMS` and signed build provenance attestations. [GitHub Releases](https://github.com/Artagon/artagon-vscode-profiles/releases)
+The 83 generated files formerly tracked in `_merged/`, `exports/`, and `profiles/*/{extensions,settings}.json` are built in memory on demand. Use `vsp export rust --out ./bundles` for a single bundle or `vsp dev dist --out ./dist` for all 15 canonical bundles, 22 legacy aliases, and their `SHA256SUMS`. The tag release workflow publishes binary and profile archives as GitHub Release assets with `SHA256SUMS` and signed build provenance attestations. [GitHub Releases](https://github.com/Artagon/artagon-vscode-profiles/releases)
 
 | Domain | Included Capabilities & Tuning | Modules |
 | :--- | :--- | :--- |
@@ -200,7 +241,7 @@ Need extra color or icon themes beyond Tokyo Night and Catppuccin Mocha? Include
 - **Autonomy policy.** The settings deny-list checks dotted and nested paths, including case-insensitive execution overrides and boolean strings. It catches automatic approval and process-wrapper bypass settings before writes. Profile defaults prompt for Workspace Trust and disable telemetry. Use `vsp doctor --strict` to audit the Default profile's application-scoped settings.
 - **GlassWorm remediation.** Named-profile sync removes installed compromised or removed extensions in Step 0 before settings writes and extension installs. `vsp sync --all --compromised-only` sweeps every registered profile and Default. `vsp doctor` reports compromised extensions such as `jscearcy.rust-doc-viewer` and returns exit `7` if a required extension listing fails.
 - **Four-tier VSIX lock.** Tier 0 records compromised or removed IDs in `catalog/extensions.jsonc` for Step 0. [`vsp.lock.json`](vsp.lock.json) records tiers 1–3. Tier 1 uses SHA-256 hashes and platform-specific VSIX URLs. Tier 2 records version locks for executable extensions. Tier 3 covers unlocked declarative extensions such as themes, grammars, and keymaps. Entries marked `pending_refresh` represent incomplete verification. Available VSIX pins require approved HTTPS Marketplace hosts and matching hashes before installation.
-- **Bundle integrity.** Keep `SHA256SUMS` beside exported bundles. `vsp sync --from ./exports/rust.code-profile --profile rust` checks a matching checksum and rejects mismatches. Verify the release archive against its published checksum and attestation before extracting it.
+- **Bundle integrity.** Keep `SHA256SUMS` beside exported bundles. `vsp sync --from BUNDLE -p NAME` checks a matching checksum and rejects mismatches. Verify the release archive against its published checksum and attestation before extracting it.
 - **Lossless JSONC writes.** The concrete syntax tree (CST) merge preserves comments and formatting on untouched settings and keeps user-owned keys. Sync checks workspace symlink containment. Advisory locks and a SHA-256 compare-and-swap guard protect VS Code's `storage.json` updates.
 
 ## Shell Formatting & RTK Terminal Wrappers
@@ -219,7 +260,7 @@ The shell pack ships syntax support for Bash, Fish, and Zsh. Use `shfmt` for POS
 | `vsp show NAME` | Inspect a preset, pack, UX preset, or legacy alias. |
 | `vsp detect PATH --explain` | Inspect workspace signals without writing files. |
 | `vsp export rust --out DIR` | Export a bundle and checksum. Omit the names to export all canonical profiles. |
-| `vsp init` | Bootstrap personal configuration for the v3.0.0 cutover. |
+| `vsp init` | Create the personal JSONC configuration. |
 | `vsp completions zsh` | Generate completions for Bash, Zsh, or Fish. |
 | `vsp self path`, `vsp self install` | Locate the running binary or install the v3.0.0 binary in your user bin directory. |
 | `vsp dev validate`, `vsp dev dist --out DIR` | Validate composition inputs or build deterministic distribution bundles. |
@@ -239,7 +280,9 @@ Both `sync` and `diff` require an explicit target selector. A missing selector e
 
 ## Migrating from v2
 
-The v3.0.0 cutover retains the checkout's `scripts/vspcli` compatibility shim for existing v2.x users. Use `vsp` for new automation.
+The native binary enters compatibility mode when the basename of `argv[0]` is `vspcli` (or `vspcli.exe`, ignoring case), when `VSP_COMPAT_VSPCLI=1`, or when invoked as `vsp compat-vspcli …`. A source install can add the `vspcli` symlink with `vsp self install --with-vspcli`.
+
+In compatibility mode, `doctor`, `reconcile`, and `install-ext` map exits `5`, `6`, and `7` to `1`. All other exits pass through. Use the commands below to migrate, including replacing the retired `build` verb, which returns `4` in compatibility mode.
 
 | v2 workflow | `vsp` workflow |
 | --- | --- |
@@ -251,5 +294,7 @@ The v3.0.0 cutover retains the checkout's `scripts/vspcli` compatibility shim fo
 | `vspcli validate` | `vsp dev validate` |
 
 Move raw branch export downloads to the release profile archive. The archive materializes the 22 legacy bundle filenames. Both `ai-profile-crisp.code-profile` and `ai-profile-retina.code-profile` contain the Copilot-only bundle.
+
+The v3.0.0 workflow retires `scripts/.vspcli-completion.zsh` and `scripts/.vspcli-completion.fish` in favor of `vsp completions zsh` and `vsp completions fish`. It retires `scripts/setup-rust-toolchain.sh`, `scripts/setup-cpp-toolchain.sh`, and `profiles/rust/tasks.example.json` as setup entry points. Install language toolchains separately and use `vsp sync --workspace PATH` for workspace settings, extension recommendations, and Rust documentation tasks where applicable.
 
 See [Contributing](CONTRIBUTING.md) for source paths and checks, [About](ABOUT.md) for architecture, and [Security](SECURITY.md) to report a vulnerability.
