@@ -1,0 +1,193 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional version label for dry-run dispatch (e.g. v2.1.0-rc1)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build-binary:
+    name: Build vsp (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Resolve release tag
+        id: meta
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          elif [[ -n "${INPUT_TAG}" ]]; then
+            tag="${INPUT_TAG}"
+          else
+            tag="v0.0.0-dev-${GITHUB_SHA::7}"
+          fi
+          printf 'tag=%s\n' "${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build release binary for ${{ matrix.target }}
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          rustup target add "${TARGET}"
+          cargo build --release --locked --bin vsp --target "${TARGET}"
+
+      - name: Package binary tarball
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          stage="release-stage/vsp-${TAG}-${TARGET}"
+          mkdir -p "${stage}" release-out
+          cp "target/${TARGET}/release/vsp" "${stage}/vsp"
+          chmod 0755 "${stage}/vsp"
+          for doc in README.md SECURITY.md CHANGELOG.md LICENSE; do
+            [[ -f "${doc}" ]] && cp "${doc}" "${stage}/${doc}"
+          done
+          tar -C release-stage -czf "release-out/vsp-${TAG}-${TARGET}.tar.gz" "vsp-${TAG}-${TARGET}"
+
+      - name: Upload target tarball artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vsp-${{ matrix.target }}
+          path: release-out/vsp-*.tar.gz
+          if-no-files-found: error
+
+  build-profiles:
+    name: Build deterministic profile bundles & SHA256SUMS
+    needs:
+      - build-binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Resolve release tag
+        id: meta
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          elif [[ -n "${INPUT_TAG}" ]]; then
+            tag="${INPUT_TAG}"
+          else
+            tag="v0.0.0-dev-${GITHUB_SHA::7}"
+          fi
+          printf 'tag=%s\n' "${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download Linux vsp binary
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: vsp-x86_64-unknown-linux-gnu
+          path: bin-dist
+
+      - name: Run vsp dev dist twice and verify deterministic SHA256SUMS
+        shell: bash
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p bin-unpacked
+          tar -xzf "bin-dist/vsp-${TAG}-x86_64-unknown-linux-gnu.tar.gz" -C bin-unpacked
+          VSP_BIN="${PWD}/bin-unpacked/vsp-${TAG}-x86_64-unknown-linux-gnu/vsp"
+          chmod 0755 "${VSP_BIN}"
+
+          "${VSP_BIN}" dev validate
+
+          rm -rf dist dist-verify
+          "${VSP_BIN}" dev dist --out dist
+          "${VSP_BIN}" dev dist --out dist-verify
+
+          cmp -s dist/SHA256SUMS dist-verify/SHA256SUMS
+          diff -ru dist dist-verify
+          (cd dist && sha256sum -c SHA256SUMS)
+
+          mkdir -p profiles-out
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -C dist -czf "profiles-out/vsp-profiles-${TAG}.tar.gz" .
+          cp dist/SHA256SUMS "profiles-out/vsp-profiles-${TAG}.SHA256SUMS"
+
+      - name: Upload deterministic profiles bundle artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vsp-profiles
+          path: profiles-out/*
+          if-no-files-found: error
+
+  publish-release:
+    name: Checksum, attest provenance & publish GitHub Release
+    needs:
+      - build-binary
+      - build-profiles
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download all release artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate and verify unified SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          LC_ALL=C find . -maxdepth 1 -type f -name '*.tar.gz' -printf '%f\n' \
+            | LC_ALL=C sort \
+            | xargs sha256sum > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release-assets/*
+
+      - name: Attach assets to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" release-assets/* --clobber
+          else
+            gh release create "${TAG}" release-assets/* \
+              --verify-tag \
+              --title "${TAG}" \
+              --generate-notes
+          fi

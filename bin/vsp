@@ -1,0 +1,385 @@
+#!/usr/bin/env bash
+# vsp — Thin Bash 3.2+ CLI facade for artagon-vscode-profiles (v2.1.0).
+# Delegates immediately to compiled Rust binary when available; otherwise routes
+# vsp verbs to existing scripts/vspcli and sibling scripts (zero new parser/lock code).
+set -euo pipefail
+
+VSP_VERSION="2.1.0"
+
+_vsp_self="${BASH_SOURCE[0]:-${0}}"
+if [[ "${_vsp_self}" != */* ]]; then
+  _vsp_self="$(command -v -- "${_vsp_self}" 2>/dev/null || printf './%s' "${_vsp_self}")"
+fi
+_vsp_hops=0
+while [[ -L "${_vsp_self}" ]]; do
+  _vsp_hops=$((_vsp_hops + 1))
+  if [[ "${_vsp_hops}" -gt 40 ]]; then
+    printf 'vsp: symlink loop detected resolving %s\n' "${_vsp_self}" >&2
+    exit 1
+  fi
+  _vsp_dir="$(CDPATH='' cd -P -- "$(dirname -- "${_vsp_self}")" && pwd -P)"
+  _vsp_target="$(readlink "${_vsp_self}")"
+  case "${_vsp_target}" in
+    /*) _vsp_self="${_vsp_target}" ;;
+    *)  _vsp_self="${_vsp_dir}/${_vsp_target}" ;;
+  esac
+done
+_vsp_bin_dir="$(CDPATH='' cd -P -- "$(dirname -- "${_vsp_self}")" && pwd -P)"
+VSP_SELF_PATH="${_vsp_bin_dir}/$(basename -- "${_vsp_self}")"
+REPO_ROOT="$(CDPATH='' cd -P -- "${_vsp_bin_dir}/.." && pwd -P)"
+unset _vsp_self _vsp_hops _vsp_dir _vsp_target _vsp_bin_dir
+
+# Delegate to explicit VSP_BIN or compiled Rust binary unless VSP_FORCE_BASH=1.
+if [[ -n "${VSP_BIN:-}" && -x "${VSP_BIN}" && ! -d "${VSP_BIN}" && "${VSP_BIN}" != "${VSP_SELF_PATH}" ]]; then
+  exec "${VSP_BIN}" "${@+"${@}"}"
+fi
+if [[ "${VSP_FORCE_BASH:-0}" != "1" ]]; then
+  for _cand in "${REPO_ROOT}/target/release/vsp" "${REPO_ROOT}/target/debug/vsp"; do
+    if [[ -x "${_cand}" && ! -d "${_cand}" ]]; then
+      exec "${_cand}" "${@+"${@}"}"
+    fi
+  done
+  unset _cand
+fi
+
+SCRIPTS_DIR="${REPO_ROOT}/scripts"
+VSPCLI="${SCRIPTS_DIR}/vspcli"
+ROOT="${VSPCLI_ROOT:-${REPO_ROOT}}"
+
+usage() {
+  cat <<'EOF'
+vsp — Manage Artagon VS Code profiles, capability modules, and workspaces
+
+Usage: vsp [--catalog <dir>] [--vscode-data-dir <dir>] <command> [options]
+
+Everyday:    sync <selector> | diff <selector> [--check] | open|use <profile> [path] | doctor [--strict]
+Inspection:  list [presets|ux] | show <name> | detect [opts] [path] | export [name...] | completions <sh>
+Utility:     version | help | -V/--version | -h/--help
+Maintainer:  dev {validate,build,dist,pins,compat,docs,hooks,test}
+Self:        self {path,install,uninstall}
+
+Exit codes: 0 ok, 1 fail, 2 missing, 3 no match/drift, 4 usage/conflict,
+            5 safety refusal, 6 lock/CAS/partial, 7 incomplete observation.
+EOF
+}
+
+need_val() {
+  if [[ $# -lt 2 || -z "${2}" ]]; then
+    printf 'vsp: %s requires a value\n' "${1}" >&2
+    exit 4
+  fi
+}
+
+cmd_list() {
+  [[ $# -le 1 ]] || { printf 'vsp list: unexpected argument %q\n' "${2}" >&2; exit 4; }
+  case "${1:-presets}" in
+    -h|--help)        echo "Usage: vsp list [presets|profiles|ux]"; exit 0 ;;
+    presets|profiles) "${BASH}" "${VSPCLI}" list ;;
+    ux)               printf '%s\n' crisp default retina ;;
+    *)                printf 'vsp list: unknown scope %q\n' "${1}" >&2; exit 4 ;;
+  esac
+}
+
+cmd_show() {
+  [[ $# -ge 1 ]] || { echo "vsp show: requires <preset-or-module>" >&2; exit 4; }
+  case "${1}" in
+    -h|--help) echo "Usage: vsp show <preset-or-module>"; exit 0 ;;
+    -*)        printf 'vsp show: unknown option %q\n' "${1}" >&2; exit 4 ;;
+  esac
+  [[ $# -eq 1 ]] || { printf 'vsp show: unexpected argument %q\n' "${2}" >&2; exit 4; }
+  local name="${1}" cand="" kind
+  if [[ -f "${ROOT}/profiles/${name}/profile.json" ]]; then
+    cand="${ROOT}/profiles/${name}/profile.json"
+  else
+    for kind in capabilities toolchains ux; do
+      if [[ -f "${ROOT}/modules/${kind}/${name}/module.json" ]]; then
+        cand="${ROOT}/modules/${kind}/${name}/module.json"
+        break
+      fi
+    done
+  fi
+  [[ -n "${cand}" ]] || { printf 'vsp show: target not found: %s\n' "${name}" >&2; exit 2; }
+  cat "${cand}"
+}
+
+cmd_completions() {
+  [[ $# -ge 1 ]] || { echo "vsp completions: requires <bash|zsh|fish>" >&2; exit 4; }
+  case "${1}" in
+    -h|--help) echo "Usage: vsp completions <bash|zsh|fish>"; exit 0 ;;
+    bash|zsh|fish)
+      [[ $# -eq 1 ]] || { printf 'vsp completions: unexpected argument %q\n' "${2}" >&2; exit 4; }
+      "${BASH}" "${VSPCLI}" completions "${1}" | sed 's/vspcli/vsp/g'
+      ;;
+    *) printf 'vsp completions: unsupported shell %q (supported: bash, zsh, fish)\n' "${1}" >&2; exit 4 ;;
+  esac
+}
+
+_dispatch_sync_or_diff() {
+  local mode="${1}"; shift
+  local profile="" workspace="" from_bundle="" preset="" as_recipe="" ux_preset="" ai_val=""
+  local user_mode=0 all_mode=0 compromised_only=0 dry_run=0 check_mode=0
+  local prune_retired=0 prune_unmanaged=0 has_ux=0
+  local apply_args=() import_args=() ux_args=()
+
+  [[ "${mode}" == "diff" ]] && dry_run=1
+
+  while [[ $# -gt 0 ]]; do
+    case "${1}" in
+      -h|--help)
+        echo "Usage: vsp ${mode} (<path> | --workspace <path> | -p <name> | --from <bundle> -p <name> | --user | --all [--compromised-only]) [options]"
+        exit 0
+        ;;
+      -p|--profile)      need_val "${1}" "${2:-}"; profile="${2}"; shift 2 ;;
+      --profile=*)       profile="${1#*=}"; need_val "--profile" "${profile}"; shift ;;
+      --workspace)       need_val "${1}" "${2:-}"; workspace="${2}"; shift 2 ;;
+      --workspace=*)     workspace="${1#*=}"; need_val "--workspace" "${workspace}"; shift ;;
+      --from)            need_val "${1}" "${2:-}"; from_bundle="${2}"; shift 2 ;;
+      --from=*)          from_bundle="${1#*=}"; need_val "--from" "${from_bundle}"; shift ;;
+      --preset)          need_val "${1}" "${2:-}"; preset="${2}"; shift 2 ;;
+      --preset=*)        preset="${1#*=}"; need_val "--preset" "${preset}"; shift ;;
+      --as)              need_val "${1}" "${2:-}"; as_recipe="${2}"; shift 2 ;;
+      --as=*)            as_recipe="${1#*=}"; need_val "--as" "${as_recipe}"; shift ;;
+      --ux)              need_val "${1}" "${2:-}"; ux_preset="${2}"; has_ux=1; apply_args+=(--ux "${2}"); ux_args+=(--ux "${2}"); shift 2 ;;
+      --ux=*)            ux_preset="${1#*=}"; need_val "--ux" "${ux_preset}"; has_ux=1; apply_args+=("${1}"); ux_args+=("${1}"); shift ;;
+      --ai|--ai=*)
+        if [[ "${1}" == --ai=* ]]; then ai_val="${1#*=}"; shift
+        else need_val "${1}" "${2:-}"; ai_val="${2}"; shift 2; fi
+        case "${ai_val}" in
+          full)    apply_args+=(--with ai-agents) ;;
+          copilot) apply_args+=(--without ai-agents --with ai-copilot) ;;
+          off)     apply_args+=(--without ai-agents --without ai-copilot); import_args+=(--no-ai) ;;
+          *)       printf 'vsp %s: invalid --ai %q (expected full, copilot, or off)\n' "${mode}" "${ai_val}" >&2; exit 4 ;;
+        esac
+        ;;
+      --no-ai)           apply_args+=(--without ai-agents --without ai-copilot); import_args+=(--no-ai); shift ;;
+      --user)            user_mode=1; shift ;;
+      --all)             all_mode=1; shift ;;
+      --compromised-only) compromised_only=1; shift ;;
+      -n|--dry-run)      dry_run=1; shift ;;
+      --check)
+        [[ "${mode}" == "diff" ]] || { echo "vsp sync: --check is only valid with vsp diff" >&2; exit 4; }
+        check_mode=1; shift
+        ;;
+      --prune-retired)   prune_retired=1; shift ;;
+      --prune-unmanaged) prune_unmanaged=1; shift ;;
+      --force)           apply_args+=(--force); import_args+=(--force); ux_args+=(--force); shift ;;
+      --no-batch|--allow-unsafe-settings|--break-stale-lock) import_args+=("${1}"); shift ;;
+      --without-group)   need_val "${1}" "${2:-}"; import_args+=(--without-group "${2}"); shift 2 ;;
+      --without-group=*) import_args+=("${1}"); shift ;;
+      --with|--without|--toolchain|--ux-target|--font|--font-size|--theme|--icon-theme|--check-compat)
+        need_val "${1}" "${2:-}"; apply_args+=("${1}" "${2}")
+        case "${1}" in
+          --font|--font-size|--theme|--icon-theme) has_ux=1; ux_args+=("${1}" "${2}") ;;
+          --check-compat) ux_args+=("${1}" "${2}") ;;
+        esac
+        shift 2
+        ;;
+      --with=*|--without=*|--toolchain=*|--ux-target=*|--font=*|--font-size=*|--theme=*|--icon-theme=*|--check-compat=*)
+        apply_args+=("${1}")
+        case "${1}" in
+          --font=*|--font-size=*|--theme=*|--icon-theme=*) has_ux=1; ux_args+=("${1}") ;;
+          --check-compat=*) ux_args+=("${1}") ;;
+        esac
+        shift
+        ;;
+      --no-detect|--ux-in-workspace|--rtk-in-workspace|--no-rtk|--allow-comment-loss)
+        apply_args+=("${1}")
+        [[ "${1}" == "--allow-comment-loss" ]] && ux_args+=("${1}")
+        shift
+        ;;
+      --)
+        shift
+        if [[ $# -gt 0 ]]; then
+          [[ -z "${workspace}" ]] || { printf 'vsp %s: unexpected argument %q\n' "${mode}" "${1}" >&2; exit 4; }
+          workspace="${1}"; shift
+        fi
+        [[ $# -eq 0 ]] || { printf 'vsp %s: unexpected argument %q\n' "${mode}" "${1}" >&2; exit 4; }
+        ;;
+      -*) printf 'vsp %s: unknown option %q\n' "${mode}" "${1}" >&2; exit 4 ;;
+      *)
+        [[ -z "${workspace}" ]] || { printf 'vsp %s: unexpected argument %q\n' "${mode}" "${1}" >&2; exit 4; }
+        workspace="${1}"; shift
+        ;;
+    esac
+  done
+
+  if [[ "${all_mode}" -eq 1 ]]; then
+    if [[ -n "${workspace}" || -n "${profile}" || -n "${from_bundle}" || "${user_mode}" -eq 1 ]]; then
+      printf 'vsp %s: --all cannot be combined with workspace, profile, --from, or --user\n' "${mode}" >&2; exit 4
+    fi
+    local rec_args=(--all)
+    [[ "${compromised_only}" -eq 1 ]] && rec_args+=(--compromised-only)
+    [[ "${dry_run}" -eq 1 ]] && rec_args+=(--dry-run)
+    [[ "${prune_retired}" -eq 1 ]] && rec_args+=(--prune-retired)
+    [[ "${prune_unmanaged}" -eq 1 ]] && rec_args+=(--prune-unmanaged)
+    "${BASH}" "${VSPCLI}" reconcile "${rec_args[@]}"
+    return $?
+  fi
+
+  if [[ -n "${from_bundle}" ]]; then
+    [[ "${mode}" != "diff" ]] || { echo "vsp diff: --from preview is not supported in bash-facade mode" >&2; exit 4; }
+    [[ -n "${profile}" ]] || { echo "vsp sync: --from requires -p/--profile <name>" >&2; exit 4; }
+    [[ -z "${workspace}" && "${user_mode}" -eq 0 ]] || { echo "vsp sync: --from cannot be combined with workspace or --user" >&2; exit 4; }
+    [[ -f "${from_bundle}" ]] || { printf 'vsp sync: bundle not found: %s\n' "${from_bundle}" >&2; exit 2; }
+    if [[ "${dry_run}" -eq 1 ]]; then
+      printf 'DRY-RUN: would import %s into profile %s\n' "${from_bundle}" "${profile}"
+      [[ -n "${ux_preset}" ]] && printf 'DRY-RUN: would apply UX preset %s to profile %s\n' "${ux_preset}" "${profile}"
+      return 0
+    fi
+    "${BASH}" "${SCRIPTS_DIR}/import-profile.sh" "${profile}" "${from_bundle}" "${import_args[@]+"${import_args[@]}"}"
+    if [[ "${has_ux}" -eq 1 ]]; then
+      "${BASH}" "${VSPCLI}" apply --target=profile --profile "${profile}" "${ux_args[@]+"${ux_args[@]}"}"
+    fi
+    return 0
+  fi
+
+  if [[ -n "${workspace}" ]]; then
+    [[ "${user_mode}" -eq 0 ]] || { printf 'vsp %s: cannot combine workspace path with --user\n' "${mode}" >&2; exit 4; }
+    local ws_args=(--target=workspace)
+    [[ "${dry_run}" -eq 1 ]] && ws_args+=(--dry-run)
+    [[ -n "${profile}" ]] && ws_args+=(--profile "${profile}")
+    [[ -n "${preset}" ]] && ws_args+=(--toolchain "${preset}")
+    "${BASH}" "${VSPCLI}" apply "${ws_args[@]}" "${apply_args[@]+"${apply_args[@]}"}" "${workspace}"
+    [[ "${check_mode}" -eq 1 && ! -f "${workspace}/.vscode/settings.json" ]] && exit 3
+    return 0
+  fi
+
+  if [[ -n "${profile}" ]]; then
+    [[ "${user_mode}" -eq 0 ]] || { printf 'vsp %s: cannot combine --profile with --user\n' "${mode}" >&2; exit 4; }
+    local step0_args=(--profile "${profile}" --compromised-only)
+    [[ "${dry_run}" -eq 1 ]] && step0_args+=(--dry-run)
+    if [[ "${compromised_only}" -eq 1 ]]; then
+      "${BASH}" "${VSPCLI}" reconcile "${step0_args[@]}"
+      return $?
+    fi
+    # Step 0: unconditionally remediate compromised extensions BEFORE settings or installs.
+    "${BASH}" "${VSPCLI}" reconcile "${step0_args[@]}"
+
+    local prof_args=(--target=profile --profile "${profile}")
+    [[ "${dry_run}" -eq 1 ]] && prof_args+=(--dry-run)
+    [[ -n "${preset}" ]] && prof_args+=(--toolchain "${preset}")
+    "${BASH}" "${VSPCLI}" apply "${prof_args[@]}" "${apply_args[@]+"${apply_args[@]}"}"
+
+    local rec_args=(--profile "${profile}")
+    local eff_recipe="${as_recipe:-${preset}}"
+    [[ -n "${eff_recipe}" ]] && rec_args+=(--as "${eff_recipe}")
+    [[ "${dry_run}" -eq 1 ]] && rec_args+=(--dry-run)
+    [[ "${prune_retired}" -eq 1 ]] && rec_args+=(--prune-retired)
+    [[ "${prune_unmanaged}" -eq 1 ]] && rec_args+=(--prune-unmanaged)
+    if [[ "${check_mode}" -eq 1 ]]; then
+      local rec_out
+      rec_out="$("${BASH}" "${VSPCLI}" reconcile "${rec_args[@]}")"
+      printf '%s\n' "${rec_out}"
+      case "${rec_out}" in *"[STEP 0]"*|*"[STEP 1]"*|*"[STEP 2]"*) exit 3 ;; esac
+      return 0
+    fi
+    "${BASH}" "${VSPCLI}" reconcile "${rec_args[@]}"
+    return $?
+  fi
+
+  if [[ "${user_mode}" -eq 1 ]]; then
+    local g_args=(--target=global)
+    [[ "${dry_run}" -eq 1 ]] && g_args+=(--dry-run)
+    [[ -n "${preset}" ]] && g_args+=(--toolchain "${preset}")
+    "${BASH}" "${VSPCLI}" apply "${g_args[@]}" "${apply_args[@]+"${apply_args[@]}"}"
+    return $?
+  fi
+
+  printf 'vsp %s: explicit target selector required (<path>, --workspace <path>, -p/--profile <name>, --user, --from <bundle>, or --all --compromised-only)\n' "${mode}" >&2
+  exit 4
+}
+
+cmd_dev() {
+  local sub="${1:-}"
+  if [[ -z "${sub}" || "${sub}" == "-h" || "${sub}" == "--help" ]]; then
+    echo "Usage: vsp dev {validate|build|dist|pins|compat|docs|hooks|test} [args...]"; exit 0
+  fi
+  shift
+  case "${sub}" in
+    validate) "${BASH}" "${SCRIPTS_DIR}/validate-json.sh" "${@+"${@}"}" ;;
+    build)    "${BASH}" "${VSPCLI}" build "${@+"${@}"}" ;;
+    dist)     "${BASH}" "${SCRIPTS_DIR}/export-profiles.sh" "${@+"${@}"}" ;;
+    pins)     "${BASH}" "${SCRIPTS_DIR}/refresh-pins.sh" "${@+"${@}"}" ;;
+    compat)   "${BASH}" "${SCRIPTS_DIR}/check-extension-compatibility.sh" "${@+"${@}"}" ;;
+    docs)     "${BASH}" "${SCRIPTS_DIR}/generate-readme-matrix.sh" "${@+"${@}"}" ;;
+    hooks)    "${BASH}" "${SCRIPTS_DIR}/install-hooks.sh" "${@+"${@}"}" ;;
+    test)     "${BASH}" "${SCRIPTS_DIR}/tests/run.sh" "${@+"${@}"}" ;;
+    *)        printf 'vsp dev: unknown subcommand %q\n' "${sub}" >&2; exit 4 ;;
+  esac
+}
+
+cmd_self() {
+  local sub="${1:-}"
+  if [[ -z "${sub}" || "${sub}" == "-h" || "${sub}" == "--help" ]]; then
+    echo "Usage: vsp self {path|install|uninstall}"; exit 0
+  fi
+  shift
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    printf 'Usage: vsp self %s\n' "${sub}"; exit 0
+  fi
+  [[ $# -eq 0 ]] || { printf 'vsp self %s: unexpected argument %q\n' "${sub}" "${1}" >&2; exit 4; }
+  local bin_dir="${XDG_BIN_HOME:-${HOME}/.local/bin}"
+  local link_path="${bin_dir}/vsp"
+  case "${sub}" in
+    path) printf '%s\n' "${VSP_SELF_PATH}" ;;
+    install)
+      if [[ -e "${link_path}" && ! -L "${link_path}" ]]; then
+        printf 'vsp self install: refusing to overwrite non-symlink %s\n' "${link_path}" >&2; exit 5
+      fi
+      mkdir -p "${bin_dir}"
+      ln -sfn "${VSP_SELF_PATH}" "${link_path}"
+      printf 'Installed %s -> %s\n' "${link_path}" "${VSP_SELF_PATH}"
+      ;;
+    uninstall)
+      if [[ ! -L "${link_path}" && ! -e "${link_path}" ]]; then
+        printf 'vsp self uninstall: not installed at %s\n' "${link_path}"; return 0
+      fi
+      if [[ ! -L "${link_path}" ]]; then
+        printf 'vsp self uninstall: refusing to remove non-symlink %s\n' "${link_path}" >&2; exit 5
+      fi
+      rm -f "${link_path}"
+      printf 'Removed %s\n' "${link_path}"
+      ;;
+    *) printf 'vsp self: unknown subcommand %q\n' "${sub}" >&2; exit 4 ;;
+  esac
+}
+
+while [[ $# -gt 0 ]]; do
+  case "${1}" in
+    --catalog)           need_val "${1}" "${2:-}"; export VSPCLI_ROOT="${2}"; ROOT="${2}"; shift 2 ;;
+    --catalog=*)         export VSPCLI_ROOT="${1#*=}"; ROOT="${VSPCLI_ROOT}"; shift ;;
+    --vscode-data-dir)   need_val "${1}" "${2:-}"; export VSCODE_USER_DATA_DIR="${2}"; shift 2 ;;
+    --vscode-data-dir=*) export VSCODE_USER_DATA_DIR="${1#*=}"; shift ;;
+    -V|--version)        printf 'vsp %s (bash-facade)\n' "${VSP_VERSION}"; exit 0 ;;
+    -h|--help)           usage; exit 0 ;;
+    -*)                  printf 'vsp: unknown flag %q (run vsp --help)\n' "${1}" >&2; exit 4 ;;
+    *)                   break ;;
+  esac
+done
+
+[[ $# -gt 0 ]] || { usage; exit 0; }
+
+CMD="${1}"; shift
+case "${CMD}" in
+  help)        usage; exit 0 ;;
+  version)     printf 'vsp %s (bash-facade)\n' "${VSP_VERSION}"; exit 0 ;;
+  list)        cmd_list "${@+"${@}"}" ;;
+  show)        cmd_show "${@+"${@}"}" ;;
+  detect)      "${BASH}" "${SCRIPTS_DIR}/detect-toolchain.sh" "${@+"${@}"}" ;;
+  doctor)      "${BASH}" "${VSPCLI}" doctor "${@+"${@}"}" ;;
+  open|use)
+    [[ $# -ge 1 ]] || { echo "vsp open: requires <profile> [path]" >&2; exit 4; }
+    [[ "${1}" != "-h" && "${1}" != "--help" ]] || { echo "Usage: vsp open <profile> [path]"; exit 0; }
+    "${BASH}" "${VSPCLI}" open "${@+"${@}"}"
+    ;;
+  export)
+    [[ "${1:-}" != "-h" && "${1:-}" != "--help" ]] || { echo "Usage: vsp export [profile...]"; exit 0; }
+    "${BASH}" "${VSPCLI}" export "${@+"${@}"}"
+    ;;
+  completions) cmd_completions "${@+"${@}"}" ;;
+  sync)        _dispatch_sync_or_diff sync "${@+"${@}"}" ;;
+  diff)        _dispatch_sync_or_diff diff "${@+"${@}"}" ;;
+  dev)         cmd_dev "${@+"${@}"}" ;;
+  self)        cmd_self "${@+"${@}"}" ;;
+  *)           printf 'vsp: unknown command %q (run vsp --help)\n' "${CMD}" >&2; exit 4 ;;
+esac
