@@ -32,12 +32,17 @@
 
 ## Phase 3: Legacy Retirement, Homebrew Launch & Final Cutover (`v3.0.0`)
 
-- [ ] 3.1 Retire legacy Bash compiler internals (`scripts/lib/*.sh`) and finalize `scripts/vspcli` deprecation shim per deprecation policy.
+- [x] 3.1 Deliver the native v3 CLI for packaged installs, add opt-in native delegation to the checkout's `scripts/vspcli`, and retire obsolete shell entry points (`718183e`, `4c8f807`).
   - [x] Implement `vsp init` and load user-only composition defaults from `~/.config/vsp/config.jsonc` (`D1`).
   - [x] Implement and verify native `vsp self install` and `vsp self uninstall`.
   - [x] Implement and test native `vspcli` compatibility dispatch and legacy exit mapping.
-- [ ] 3.2 Publish signed, SLSA-attested `vsp` tag release via `.github/workflows/release.yml` and launch the Homebrew formula (`D4`).
+  - [x] Remove `scripts/.vspcli-completion.zsh`, `scripts/.vspcli-completion.fish`, `scripts/setup-rust-toolchain.sh`, `scripts/setup-cpp-toolchain.sh`, and `profiles/rust/tasks.example.json`.
+- [x] 3.2 Complete release preparation and Round 2 adversarial remediation (`4c8f807`, `35f4915`, `a9b9fe7`).
   - [x] Update README, project overview, changelog, contributor workflow, and OpenSpec context for the v3.0.0 cutover.
   - [x] Document the implemented configuration and compatibility contracts, and verify the CLI interface, composition, supply-chain locking, and user-config deltas with `openspec validate unify-vsp-cli-and-composition --strict`.
-  - [ ] Verify the published tarballs and `SHA256SUMS` attestations and run the Homebrew install and audit gates.
-- [ ] 3.3 Archive superseded OpenSpec changes and sync `openspec/specs/` to reflect the unified `vsp` architecture.
+  - [x] Validate staged index bytes in pre-commit and reject staged generated artifacts. Run Rust checks for relevant staged edits and deletions when Cargo is available.
+  - [x] Prepare the Homebrew formula and remove `--clobber` from GitHub Release uploads to preserve existing assets.
+  - [x] Land Round 2 Rust and shell remediations with regression coverage for validation, path containment, extension verification, sync, and CLI compatibility. Update the README example tests for the v3 CLI.
+- [ ] 3.3 Run final release verification and close out OpenSpec.
+  - [ ] Verify the tag release on all target platforms, check the published tarballs and `SHA256SUMS` attestations, and run the Homebrew install and audit gates.
+  - [ ] Sync `openspec/specs/` and archive the completed change after the final gate passes.
