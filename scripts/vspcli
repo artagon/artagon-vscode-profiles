@@ -80,6 +80,7 @@ if [[ "${VSP_USE_RUST_SHIM:-0}" == "1" ]]; then
       printf 'vspcli: refusing recursive VSP_USE_RUST_SHIM delegation to %s\n' "${_shim_real}" >&2
       exit 4
     fi
+    unset VSP_USE_RUST_SHIM
     VSP_COMPAT_VSPCLI=1 exec "${_shim_cand}" "${@+"${@}"}"
   fi
   unset _vsp_facade_real _shim_cand _shim_real

@@ -6,45 +6,47 @@ set -euo pipefail
 
 VSP_VERSION="3.0.0"
 
-_vsp_self="${BASH_SOURCE[0]:-${0}}"
-if [[ "${_vsp_self}" != */* ]]; then
-  _vsp_self="$(command -v -- "${_vsp_self}" 2>/dev/null || printf './%s' "${_vsp_self}")"
-fi
-_vsp_hops=0
-while [[ -L "${_vsp_self}" ]]; do
-  _vsp_hops=$((_vsp_hops + 1))
-  if [[ "${_vsp_hops}" -gt 40 ]]; then
-    printf 'vsp: symlink loop detected resolving %s\n' "${_vsp_self}" >&2
-    exit 1
-  fi
-  _vsp_dir="$(CDPATH='' cd -P -- "$(dirname -- "${_vsp_self}")" && pwd -P)"
-  _vsp_target="$(readlink "${_vsp_self}")"
-  case "${_vsp_target}" in
-    /*) _vsp_self="${_vsp_target}" ;;
-    *)  _vsp_self="${_vsp_dir}/${_vsp_target}" ;;
-  esac
-done
-_vsp_bin_dir="$(CDPATH='' cd -P -- "$(dirname -- "${_vsp_self}")" && pwd -P)"
-VSP_SELF_PATH="${_vsp_bin_dir}/$(basename -- "${_vsp_self}")"
-REPO_ROOT="$(CDPATH='' cd -P -- "${_vsp_bin_dir}/.." && pwd -P)"
-unset _vsp_self _vsp_hops _vsp_dir _vsp_target _vsp_bin_dir
-
-# Delegate to explicit VSP_BIN or compiled Rust binary unless VSP_FORCE_BASH=1.
-if [[ -n "${VSP_BIN:-}" && -x "${VSP_BIN}" && ! -d "${VSP_BIN}" && "${VSP_BIN}" != "${VSP_SELF_PATH}" ]]; then
-  exec "${VSP_BIN}" "${@+"${@}"}"
-fi
-if [[ "${VSP_FORCE_BASH:-0}" != "1" ]]; then
-  for _cand in "${REPO_ROOT}/target/release/vsp" "${REPO_ROOT}/target/debug/vsp"; do
-    if [[ -x "${_cand}" && ! -d "${_cand}" ]]; then
-      exec "${_cand}" "${@+"${@}"}"
-    fi
+_vsp_resolve_real() {
+  local p="${1}" hops=0 d t
+  if [[ "${p}" != */* ]]; then p="$(command -v -- "${p}" 2>/dev/null || printf './%s' "${p}")"; fi
+  if [[ "${p}" == -* ]]; then p="./${p}"; fi
+  while [[ -L "${p}" ]]; do
+    hops=$((hops + 1))
+    if [[ "${hops}" -gt 40 ]]; then printf 'vsp: symlink loop detected resolving %s\n' "${p}" >&2; return 1; fi
+    d="$(CDPATH='' cd -P -- "$(dirname -- "${p}")" 2>/dev/null && pwd -P)" || return 1
+    t="$(readlink "${p}")" || return 1
+    case "${t}" in /*) p="${t}" ;; *) p="${d}/${t}" ;; esac
   done
-  unset _cand
-fi
-
+  d="$(CDPATH='' cd -P -- "$(dirname -- "${p}")" 2>/dev/null && pwd -P)" || return 1
+  printf '%s/%s\n' "${d}" "$(basename -- "${p}")"
+}
+VSP_SELF_PATH="$(_vsp_resolve_real "${BASH_SOURCE[0]:-${0}}")" || exit 1
+REPO_ROOT="$(CDPATH='' cd -P -- "$(dirname -- "${VSP_SELF_PATH}")/.." && pwd -P)"
 SCRIPTS_DIR="${REPO_ROOT}/scripts"
 VSPCLI="${SCRIPTS_DIR}/vspcli"
 ROOT="${VSPCLI_ROOT:-${REPO_ROOT}}"
+
+# Delegate to explicit VSP_BIN or compiled Rust binary unless VSP_FORCE_BASH=1.
+if [[ -n "${VSP_BIN:-}" ]]; then
+  _vsp_bin_cand="${VSP_BIN}"
+  if [[ "${_vsp_bin_cand}" != */* ]]; then _vsp_bin_cand="$(command -v -- "${_vsp_bin_cand}" 2>/dev/null || true)"; fi
+  if [[ -n "${_vsp_bin_cand}" && -x "${_vsp_bin_cand}" && ! -d "${_vsp_bin_cand}" ]]; then
+    _vsp_bin_real="$(_vsp_resolve_real "${_vsp_bin_cand}")" || { printf 'vsp: failed to resolve VSP_BIN: %s\n' "${VSP_BIN}" >&2; exit 4; }
+    _vsp_cli_real="$(_vsp_resolve_real "${VSPCLI}" 2>/dev/null || printf '%s' "${VSPCLI}")"
+    if [[ "${_vsp_bin_real}" == "${VSP_SELF_PATH}" || "${_vsp_bin_real}" == "${_vsp_cli_real}" ]]; then
+      printf 'vsp: refusing recursive VSP_BIN delegation to %s\n' "${_vsp_bin_real}" >&2; exit 4
+    fi
+    unset VSP_BIN
+    exec "${_vsp_bin_cand}" "${@+"${@}"}"
+  fi
+  unset _vsp_bin_cand
+fi
+if [[ "${VSP_FORCE_BASH:-0}" != "1" ]]; then
+  for _cand in "${REPO_ROOT}/target/release/vsp" "${REPO_ROOT}/target/debug/vsp"; do
+    if [[ -x "${_cand}" && ! -d "${_cand}" ]]; then exec "${_cand}" "${@+"${@}"}"; fi
+  done
+  unset _cand
+fi
 
 usage() {
   cat <<'EOF'
