@@ -1,5 +1,9 @@
 [workspace]
 members = ["crates/vsp"]
+exclude = [
+  "scripts/tests/bats/fixtures/rust-clean-doc",
+  "scripts/tests/bats/fixtures/rust-broken-doc",
+]
 resolver = "2"
 
 [workspace.package]

@@ -91,21 +91,26 @@ log "validate-json.sh + check-ux-symmetry.sh + rust policy + readme matrix"
 "${BASH}" "${ROOT}/scripts/lib/apply-rust-policy.sh" --check >/dev/null
 "${BASH}" "${ROOT}/scripts/generate-readme-matrix.sh" --check >/dev/null
 
-log "vspcli build (compose + export + 22 legacy symlinks + SHA256SUMS)"
-"${BASH}" "${ROOT}/scripts/vspcli" build >/dev/null
+SMOKE_ROOT="${TMP}/smoke-repo"
+mkdir -p "${SMOKE_ROOT}"
+cp -R "${ROOT}/catalog" "${ROOT}/modules" "${ROOT}/profiles" "${SMOKE_ROOT}/"
+rm -f "${SMOKE_ROOT}"/profiles/*/settings.json "${SMOKE_ROOT}"/profiles/*/extensions.json
 
-symlink="${ROOT}/profiles/java-maven/settings.json"
+log "vspcli build (compose + export + 22 legacy symlinks + SHA256SUMS)"
+VSPCLI_ROOT="${SMOKE_ROOT}" "${BASH}" "${ROOT}/scripts/vspcli" build >/dev/null
+
+symlink="${SMOKE_ROOT}/profiles/java-maven/settings.json"
 [[ -L "${symlink}" ]] || fail "Expected symlink at ${symlink}"
-export_file="${ROOT}/exports/java-maven.code-profile"
+export_file="${SMOKE_ROOT}/exports/java-maven.code-profile"
 [[ -s "${export_file}" ]] || fail "Expected export at ${export_file}"
-[[ "$(readlink "${ROOT}/exports/ai-profile-crisp.code-profile")" == "ai-copilot.code-profile" ]] \
+[[ "$(readlink "${SMOKE_ROOT}/exports/ai-profile-crisp.code-profile")" == "ai-copilot.code-profile" ]] \
   || fail "Expected ai-profile-crisp.code-profile -> ai-copilot.code-profile"
-[[ "$(readlink "${ROOT}/exports/ai-profile-retina.code-profile")" == "ai-copilot.code-profile" ]] \
+[[ "$(readlink "${SMOKE_ROOT}/exports/ai-profile-retina.code-profile")" == "ai-copilot.code-profile" ]] \
   || fail "Expected ai-profile-retina.code-profile -> ai-copilot.code-profile"
 
 log "open-profiles.sh (mocked code CLI across all 15 recipes)"
 rm -f "${CODE_LOG}"
-VSCODE_SKIP_EXTENSION_INSTALL=1 "${BASH}" "${ROOT}/scripts/open-profiles.sh" >/dev/null
+VSPCLI_ROOT="${SMOKE_ROOT}" VSCODE_SKIP_EXTENSION_INSTALL=1 "${BASH}" "${ROOT}/scripts/open-profiles.sh" >/dev/null
 
 expected_lines="$(profiles | wc -l | tr -d ' ')"
 [[ "${expected_lines}" -eq 15 ]] || fail "Expected 15 profiles, saw ${expected_lines}"
@@ -118,31 +123,31 @@ done < <(profiles)
 
 log "install-extensions.sh honors --group AI and --without-group AI"
 rm -f "${CODE_LOG}"
-"${BASH}" "${ROOT}/scripts/install-extensions.sh" ai --group AI >/dev/null
+VSPCLI_ROOT="${SMOKE_ROOT}" "${BASH}" "${ROOT}/scripts/install-extensions.sh" ai --group AI >/dev/null
 logged_ai="$( { grep -c 'action=install' "${CODE_LOG}" 2>/dev/null || echo 0; } | tr -d '[:space:]')"
 [[ "${logged_ai}" -eq 4 ]] || fail "Expected 4 AI suite installs for profile 'ai', saw ${logged_ai}"
 
 rm -f "${CODE_LOG}"
-"${BASH}" "${ROOT}/scripts/install-extensions.sh" ai --without-group AI >/dev/null
+VSPCLI_ROOT="${SMOKE_ROOT}" "${BASH}" "${ROOT}/scripts/install-extensions.sh" ai --without-group AI >/dev/null
 if grep -qE 'ext=(google\.google-antigravity|anthropic\.claude-code|openai\.chatgpt|github\.copilot-chat)$' "${CODE_LOG}"; then
   fail "--without-group AI still installed an AI extension"
 fi
 
 log "open-profiles.sh caches installs and invalidates when pin manifest changes"
 rm -f "${CODE_LOG}"
-"${BASH}" "${ROOT}/scripts/open-profiles.sh" ai >/dev/null
+VSPCLI_ROOT="${SMOKE_ROOT}" "${BASH}" "${ROOT}/scripts/open-profiles.sh" ai >/dev/null
 first_installs="$( { grep -c 'action=install' "${CODE_LOG}" 2>/dev/null || echo 0; } | tr -d '[:space:]')"
 [[ "${first_installs}" -gt 0 ]] || fail "Expected initial install actions"
 
 rm -f "${CODE_LOG}"
-"${BASH}" "${ROOT}/scripts/open-profiles.sh" ai >/dev/null
+VSPCLI_ROOT="${SMOKE_ROOT}" "${BASH}" "${ROOT}/scripts/open-profiles.sh" ai >/dev/null
 second_installs="$( { grep -c 'action=install' "${CODE_LOG}" 2>/dev/null || echo 0; } | tr -d '[:space:]')"
 [[ "${second_installs}" -eq 0 ]] || fail "Expected cache hit to skip installs; saw ${second_installs}"
 
 # Mutate pin manifest (with empty extra key change) -> hash must invalidate cache.
 printf '{"version":1,"pins":{},"comment":"bump"}\n' > "${ARTAGON_VSCODE_PINS_FILE}"
 rm -f "${CODE_LOG}"
-"${BASH}" "${ROOT}/scripts/open-profiles.sh" ai >/dev/null
+VSPCLI_ROOT="${SMOKE_ROOT}" "${BASH}" "${ROOT}/scripts/open-profiles.sh" ai >/dev/null
 third_installs="$( { grep -c 'action=install' "${CODE_LOG}" 2>/dev/null || echo 0; } | tr -d '[:space:]')"
 [[ "${third_installs}" -gt 0 ]] || fail "Expected pin-manifest change to invalidate open-profiles cache"
 printf '{"version":1,"pins":{}}\n' > "${ARTAGON_VSCODE_PINS_FILE}"
@@ -189,7 +194,7 @@ out_hex="$(PATH="${STUB_OPENSSL}:${PATH}" "${BASH}" -c "source '${ROOT}/scripts/
 [[ "${out_hex}" =~ ^[0-9a-f]{8}$ ]] || fail "Expected 8-hex fallback from rand_hex_8, got: ${out_hex}"
 
 log "every merged profile satisfies protected VS Code 1.147.0 security/editor invariants"
-for merged in "${ROOT}"/_merged/*.json; do
+for merged in "${SMOKE_ROOT}"/_merged/*.json; do
   jq -e '
     ."security.workspace.trust.untrustedFiles" == "prompt"
     and ."workbench.sideBar.location" == "left"

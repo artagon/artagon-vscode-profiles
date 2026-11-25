@@ -15,6 +15,8 @@ make_mini_valid_repo() {
   cp -R "${REPO_ROOT}/modules/toolchains" "${dir}/modules/"
   cp -R "${REPO_ROOT}/modules/ux" "${dir}/modules/"
   cp -R "${REPO_ROOT}/profiles" "${dir}/"
+  # Strip any locally built generated artifacts so the mini fixture never inherits dangling symlinks.
+  rm -f "${dir}"/profiles/*/settings.json "${dir}"/profiles/*/extensions.json
 }
 
 @test "validate-security: detects publisher allowlist drift, orphan active catalog row, and publisher prefix mismatch" {
