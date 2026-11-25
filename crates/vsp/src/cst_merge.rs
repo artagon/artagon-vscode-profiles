@@ -5,7 +5,7 @@
 //! clobbering user sub-keys, merges set-like union arrays without losing comments, and retires
 //! obsolete VSP-managed keys cleanly. Permanently retires `--allow-comment-loss`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use jsonc_parser::cst::{CstArray, CstInputValue, CstNode, CstObject, CstObjectProp, CstRootNode};
 use jsonc_parser::ParseOptions;
@@ -340,15 +340,47 @@ pub fn merge_workspace_tasks_jsonc(existing_text: &str, desired_doc: &Value) -> 
             })?
         };
 
+        // Snapshot pre-existing CST elements once before appending new nodes: newly appended
+        // synthetic CST nodes must not be re-parsed via `cst_node_to_value` before root
+        // serialization.
+        let mut existing_tasks: Vec<(Option<String>, Value, Option<CstNode>)> = Vec::new();
+        for elem in tasks_arr.elements() {
+            let elem_val = cst_node_to_value(&elem)?;
+            let label = elem_val
+                .get("label")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            existing_tasks.push((label, elem_val, Some(elem)));
+        }
+
+        // Collapse duplicate labels within `desired_tasks` (last occurrence wins, preserving
+        // first-seen order) so each existing CST node is replaced at most once and each new
+        // labeled task is appended at most once.
+        let mut collapsed_desired: Vec<&Value> = Vec::with_capacity(desired_tasks.len());
+        let mut seen_desired_labels: BTreeMap<&str, usize> = BTreeMap::new();
         for desired_task in desired_tasks {
+            if let Some(label) = desired_task.get("label").and_then(Value::as_str) {
+                if let Some(&idx) = seen_desired_labels.get(label) {
+                    collapsed_desired[idx] = desired_task;
+                } else {
+                    seen_desired_labels.insert(label, collapsed_desired.len());
+                    collapsed_desired.push(desired_task);
+                }
+            } else {
+                collapsed_desired.push(desired_task);
+            }
+        }
+
+        for desired_task in collapsed_desired {
             let desired_label = desired_task.get("label").and_then(Value::as_str);
             let mut updated = false;
             if let Some(label) = desired_label {
-                for elem in tasks_arr.elements() {
-                    let elem_val = cst_node_to_value(&elem)?;
-                    if elem_val.get("label").and_then(Value::as_str) == Some(label) {
-                        if elem_val != *desired_task {
-                            replace_cst_node_safe(elem, desired_task)?;
+                for (existing_label, existing_val, existing_node) in &mut existing_tasks {
+                    if existing_label.as_deref() == Some(label) {
+                        if *existing_val != *desired_task {
+                            if let Some(node) = existing_node.take() {
+                                replace_cst_node_safe(node, desired_task)?;
+                            }
                         }
                         updated = true;
                         break;
@@ -851,5 +883,43 @@ mod tests {
         assert_eq!(arr[0]["label"], "user: lint");
         assert_eq!(arr[1]["command"], "cargo doc");
         assert_eq!(arr[2]["label"], "rust: doc strict");
+    }
+
+    #[test]
+    fn appends_multiple_new_tasks_to_existing_tasks_jsonc() {
+        let tasks_in = r#"{
+  // Keep user workspace banner
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // User custom task
+      "label": "user: build",
+      "type": "shell",
+      "command": "make build"
+    }
+  ]
+}
+"#;
+        let tasks_desired = json!({
+            "version": "2.0.0",
+            "tasks": [
+                { "label": "rust: doc", "type": "shell", "command": "cargo doc" },
+                { "label": "rust: doc strict", "type": "shell", "command": "cargo doc --no-deps" },
+                { "label": "rust: test", "type": "shell", "command": "cargo test" },
+                { "label": "rust: doc", "type": "shell", "command": "cargo doc --workspace" }
+            ]
+        });
+        let tasks_out =
+            merge_workspace_tasks_jsonc(tasks_in, &tasks_desired).expect("multi-task append");
+        assert!(tasks_out.contains("// Keep user workspace banner"));
+        assert!(tasks_out.contains("// User custom task"));
+        let tp = parse_jsonc_value(&tasks_out, "tasks").expect("valid merged tasks");
+        let arr = tp["tasks"].as_array().expect("tasks array");
+        assert_eq!(arr.len(), 4);
+        assert_eq!(arr[0]["label"], "user: build");
+        assert_eq!(arr[1]["label"], "rust: doc");
+        assert_eq!(arr[1]["command"], "cargo doc --workspace");
+        assert_eq!(arr[2]["label"], "rust: doc strict");
+        assert_eq!(arr[3]["label"], "rust: test");
     }
 }
