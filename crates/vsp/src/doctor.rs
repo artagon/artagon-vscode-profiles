@@ -1,5 +1,5 @@
-//! Read-only environment, catalog, Default-profile security, and live VS Code auditor
-//! powering `vsp doctor [--strict]`.
+//! Read-only environment, catalog, Default-profile security, user-configuration, and live
+//! VS Code auditor powering `vsp doctor [--strict]`.
 
 use std::collections::BTreeMap;
 use std::env;
@@ -17,6 +17,7 @@ use crate::provenance::load_profile_provenance;
 use crate::schema_loader::{
     embedded_snapshot_files, LockEntryStatus, LockfileManifest, EMBEDDED_ROOT_LABEL,
 };
+use crate::user_config::{ExtensionTrustTier, UserConfig, UserOverlay, USER_UNLOCKED_LABEL};
 use crate::vscode::{
     find_code_binary, list_installed_extensions, list_storage_profiles, resolve_vscode_store,
     resolve_xdg_config_home,
@@ -60,6 +61,10 @@ pub struct DoctorReport {
     pub incomplete_observation: bool,
     /// Whether `--strict` mode was requested.
     pub strict: bool,
+    /// Catalog-external extensions that the user configuration enables by exact ID
+    /// (Tier 3 `user-unlocked`), sorted and unique. Omitted from JSON when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub user_unlocked_extensions: Vec<String>,
 }
 
 impl DoctorReport {
@@ -118,6 +123,7 @@ pub fn run_doctor(
         fails: 0,
         incomplete_observation: false,
         strict,
+        user_unlocked_extensions: Vec::new(),
     };
 
     // 1. Catalog & repository integrity.
@@ -297,6 +303,64 @@ pub fn run_doctor(
     }
 
     report
+}
+
+/// Adds the personal user configuration findings to `report`.
+///
+/// - `PASS` when no user configuration exists, or when the loaded configuration is valid.
+/// - `WARN` for each catalog-external extension that a custom profile enables by exact ID
+///   (Tier 3 `user-unlocked`). These IDs are also recorded in
+///   [`DoctorReport::user_unlocked_extensions`]. With `--strict`, a warning fails the audit.
+///
+/// `config` must be the configuration that produced `overlay`. An invalid configuration is
+/// rejected before this function runs (exit `4` or `5`), so it is not reported here.
+pub fn audit_user_config(
+    report: &mut DoctorReport,
+    config_path: &Path,
+    config: Option<&UserConfig>,
+    overlay: &UserOverlay,
+) {
+    let Some(cfg) = config else {
+        report.record(
+            CheckSeverity::Pass,
+            "user-config",
+            format!(
+                "no user config at {} (built-in defaults in use)",
+                config_path.display()
+            ),
+        );
+        return;
+    };
+
+    report.record(
+        CheckSeverity::Pass,
+        "user-config",
+        format!(
+            "user config valid: {} ({} custom profile(s))",
+            cfg.path.display(),
+            cfg.profiles.len()
+        ),
+    );
+
+    let mut unlocked: Vec<String> = Vec::new();
+    for (name, profile) in &overlay.profiles {
+        for extra in &profile.extra_extensions {
+            if extra.tier == ExtensionTrustTier::UserUnlocked {
+                report.record(
+                    CheckSeverity::Warn,
+                    "user-config",
+                    format!(
+                        "{USER_UNLOCKED_LABEL} (Tier 3): profile '{name}' enables catalog-external extension '{}' by exact ID (no publisher allowlist entry and no VSIX pin verification)",
+                        extra.id
+                    ),
+                );
+                unlocked.push(extra.id.clone());
+            }
+        }
+    }
+    unlocked.sort();
+    unlocked.dedup();
+    report.user_unlocked_extensions = unlocked;
 }
 
 fn load_verified_lock_versions(catalog: &WorkspaceCatalog) -> BTreeMap<String, String> {

@@ -465,15 +465,15 @@ fn repo_dev_validate_passes_cleanly() {
 fn cli_embedded_default_works_from_empty_cwd_ignores_untrusted_cwd_and_never_falls_back() {
     let oracle = load_golden_oracle();
 
-    // 1. Version is bumped to 2.2.0.
+    // 1. Version is bumped to 3.0.0.
     let ver = Command::new(vsp_bin())
         .arg("--version")
         .output()
         .expect("run --version");
     assert_eq!(ver.status.code(), Some(0));
     assert!(
-        String::from_utf8_lossy(&ver.stdout).contains("2.2.0"),
-        "expected version 2.2.0, got: {}",
+        String::from_utf8_lossy(&ver.stdout).contains("3.0.0"),
+        "expected version 3.0.0, got: {}",
         String::from_utf8_lossy(&ver.stdout)
     );
 

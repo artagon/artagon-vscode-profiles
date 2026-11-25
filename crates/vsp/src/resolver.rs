@@ -5,7 +5,7 @@
 //! `scripts/export-profiles.sh` so resolved profiles and bundles achieve 100%
 //! byte-for-byte parity with tracked artifacts.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -65,6 +65,15 @@ pub struct DistReport {
     pub sha256sums_path: PathBuf,
     /// Ordered `(sha256_hex, filename)` entries recorded in `SHA256SUMS`.
     pub checksums: Vec<(String, String)>,
+}
+
+/// Personal additions that [`export_profiles_with_additions`] applies to one profile bundle.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BundleAdditions {
+    /// Settings merged into the bundle as the last layer.
+    pub settings: Map<String, Value>,
+    /// Extension IDs appended to the bundle `extensions.enabled` list.
+    pub extensions: Vec<String>,
 }
 
 /// Resolves a module selection into a deterministic, parent-first ordered list of module IDs.
@@ -667,6 +676,34 @@ pub fn export_profiles(
     out_dir: &Path,
     include_legacy_aliases: bool,
 ) -> VspResult<DistReport> {
+    export_profiles_with_additions(
+        catalog,
+        names,
+        out_dir,
+        include_legacy_aliases,
+        &BTreeMap::new(),
+    )
+}
+
+/// Same as [`export_profiles`], and also applies [`BundleAdditions`] to the bundle of each
+/// profile named in `additions` (profile name -> additions).
+///
+/// The personal user configuration supplies `additions` for custom user profiles. Settings
+/// are merged as the last layer, so a personal override of a managed UX key is kept in the
+/// bundle. Extension IDs that the resolved packs already provide are not duplicated
+/// (case-insensitive).
+///
+/// # Errors
+///
+/// Returns [`VspError::TargetMissing`] if a requested profile name does not exist, or
+/// [`VspError::Operational`] on filesystem errors.
+pub fn export_profiles_with_additions(
+    catalog: &WorkspaceCatalog,
+    names: &[String],
+    out_dir: &Path,
+    include_legacy_aliases: bool,
+    additions: &BTreeMap<String, BundleAdditions>,
+) -> VspResult<DistReport> {
     fs::create_dir_all(out_dir).map_err(|err| {
         VspError::Operational(format!(
             "failed to create output directory {}: {err}",
@@ -697,7 +734,20 @@ pub fn export_profiles(
     let mut alias_bundles = Vec::new();
 
     for profile in &target_profiles {
-        let bundle = compile_code_profile_bundle(catalog, profile)?;
+        let mut bundle = compile_code_profile_bundle(catalog, profile)?;
+        if let Some(extra) = additions.get(profile) {
+            merge_json_object_into(&mut bundle.settings, extra.settings.clone());
+            for id in &extra.extensions {
+                if !bundle
+                    .extensions
+                    .enabled
+                    .iter()
+                    .any(|e| e.eq_ignore_ascii_case(id))
+                {
+                    bundle.extensions.enabled.push(id.clone());
+                }
+            }
+        }
         let json = to_canonical_json_string(&bundle)?;
         let bytes = json.into_bytes();
         let fname = format!("{profile}.code-profile");

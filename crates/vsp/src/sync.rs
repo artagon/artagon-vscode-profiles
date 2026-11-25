@@ -47,6 +47,7 @@ use crate::resolver::{
 use crate::storage::{
     acquire_advisory_lock, effective_lock_timeout, ensure_storage_profile, is_vscode_running,
 };
+use crate::user_config::{ExtensionTrustTier, UserOverlay};
 use crate::vscode::{
     find_code_binary, find_storage_profile_location, home_dir, list_installed_extensions,
     list_storage_profiles, resolve_vscode_store, resolve_xdg_config_home, InstalledExtension,
@@ -109,6 +110,8 @@ pub struct SyncOptions {
     pub no_rtk: bool,
     /// Override VS Code user data directory (`--vscode-data-dir`).
     pub vscode_data_dir: Option<PathBuf>,
+    /// Resolved user-profile data from the personal user configuration (empty by default).
+    pub user_overlay: UserOverlay,
 }
 
 /// Structured execution summary returned by [`run_sync`].
@@ -476,6 +479,15 @@ fn run_user_default_sync(
     if let Some(ux) = effective_ux {
         apply_ux_to_map(catalog, ux, &mut desired_settings, &mut delete_keys);
     }
+    // Personal overrides are the last settings layer (they win over the UX preset). The
+    // autonomy gate below still checks the final map.
+    if let Some(p_name) = &preset_name {
+        opts.user_overlay
+            .apply_final_overrides(p_name, &mut desired_settings, &mut delete_keys);
+    }
+    // A personal override cannot re-enable extension auto-update in the Default profile:
+    // auto-update would move installed extensions past their verified VSIX pins.
+    desired_settings.insert("extensions.autoUpdate".to_string(), Value::Bool(false));
 
     // If rtk-terminal is active, install XDG RTK wrappers and merge terminal settings.
     if !opts.no_rtk && resolved_modules.iter().any(|m| m == "rtk-terminal") {
@@ -659,15 +671,62 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
     if let Some(ux) = effective_ux {
         apply_ux_to_map(catalog, ux, &mut desired_settings, &mut delete_keys);
     }
+    // Personal overrides are the last settings layer (they win over the UX preset). The
+    // autonomy gate below still checks the final map.
+    if let Some(p_name) = &preset_name {
+        opts.user_overlay
+            .apply_final_overrides(p_name, &mut desired_settings, &mut delete_keys);
+    }
 
     let desired_ext_entries = compile_profile_extensions(catalog, &resolved_modules)?;
-    let desired_ext_ids: Vec<String> = order_extensions_by_group(
+    let mut desired_ext_ids: Vec<String> = order_extensions_by_group(
         catalog,
         &desired_ext_entries
             .into_iter()
             .map(|e| e.identifier.id)
             .collect::<Vec<_>>(),
     );
+
+    // Exact-ID extra extensions from a custom user profile (personal user configuration).
+    // Catalog-known IDs join the normal allowlist + VSIX pin path. Catalog-external IDs are
+    // Tier 3 "user-unlocked": trusted by exact ID only and installed without a catalog pin.
+    let mut user_unlocked_ids: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    if let Some(p_name) = &preset_name {
+        for extra in opts.user_overlay.extras_for(p_name) {
+            match extra.tier {
+                ExtensionTrustTier::Catalog => {
+                    if !desired_ext_ids
+                        .iter()
+                        .any(|d| d.eq_ignore_ascii_case(&extra.id))
+                    {
+                        desired_ext_ids.push(extra.id.clone());
+                    }
+                }
+                ExtensionTrustTier::UserUnlocked => {
+                    // Fail closed: check the claim again against the active catalog.
+                    if !is_valid_extension_id_syntax(&extra.id)
+                        || catalog.extension_record(&extra.id).is_some()
+                    {
+                        return Err(VspError::SafetyRefusal(format!(
+                            "user-unlocked extension '{}' is not a valid catalog-external exact ID",
+                            extra.id
+                        )));
+                    }
+                    if !user_unlocked_ids
+                        .iter()
+                        .any(|u| u.eq_ignore_ascii_case(&extra.id))
+                    {
+                        user_unlocked_ids.push(extra.id.clone());
+                        warnings.push(format!(
+                            "user-unlocked (Tier 3): extension '{}' is catalog-external and installs by exact ID without VSIX pin verification",
+                            extra.id
+                        ));
+                    }
+                }
+            }
+        }
+    }
 
     // Pre-flight gates (ZERO mutation before all pass!).
     enforce_autonomy_gate(&desired_settings, &profile_name, opts.allow_unsafe_settings)?;
@@ -750,34 +809,48 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
         .cloned()
         .collect();
 
+    let missing_unlocked_ids: Vec<String> = user_unlocked_ids
+        .iter()
+        .filter(|id| !installed_lc.contains(&id.to_ascii_lowercase()))
+        .cloned()
+        .collect();
+
     let mut installed_now = Vec::new();
     let mut failed_install_ids = Vec::new();
     let mut unlocked_bypass = false;
     let mut had_vsix_safety_refusal = false;
 
-    if !missing_ids.is_empty() {
-        let resolved_targets = resolve_and_verify_batch(
-            catalog,
-            &missing_ids,
-            &VsixVerifyOptions {
-                allow_unlocked: opts.allow_unlocked,
-                cache_dir: None,
-            },
-        )?;
-        unlocked_bypass = resolved_targets.unlocked_bypass;
-        for failure in resolved_targets.failures {
-            if failure.is_safety_refusal {
-                had_vsix_safety_refusal = true;
+    if !missing_ids.is_empty() || !missing_unlocked_ids.is_empty() {
+        let mut install_targets: Vec<(String, String)> = Vec::new();
+        if !missing_ids.is_empty() {
+            let resolved_targets = resolve_and_verify_batch(
+                catalog,
+                &missing_ids,
+                &VsixVerifyOptions {
+                    allow_unlocked: opts.allow_unlocked,
+                    cache_dir: None,
+                },
+            )?;
+            unlocked_bypass = resolved_targets.unlocked_bypass;
+            for failure in resolved_targets.failures {
+                if failure.is_safety_refusal {
+                    had_vsix_safety_refusal = true;
+                }
+                failed_install_ids.push(failure.id.clone());
+                ext_errors.push(format!("{}: {}", failure.id, failure.message));
             }
-            failed_install_ids.push(failure.id.clone());
-            ext_errors.push(format!("{}: {}", failure.id, failure.message));
+            install_targets = resolved_targets.targets;
+        }
+        // Tier 3 user-unlocked extensions have no catalog pin: install by exact ID.
+        for id in &missing_unlocked_ids {
+            install_targets.push((id.clone(), id.clone()));
         }
 
         let (ok_ids, fail_ids) = install_extensions_batched_with_fallback(
             &code_bin,
             &store,
             &profile_name,
-            &resolved_targets.targets,
+            &install_targets,
             !opts.no_batch,
         );
         for ok in ok_ids {
@@ -789,6 +862,10 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
             ext_errors.push(format!("failed to install {fail}"));
         }
     }
+
+    // From here on, user-unlocked extensions are managed like the other desired extensions
+    // (never pruned as unmanaged, and recorded in provenance).
+    desired_ext_ids.extend(user_unlocked_ids);
 
     // STEP 3: Prune superseded/retired/opt-in unmanaged extensions + optional `--repair-pins`.
     let mut pruned = Vec::new();
@@ -910,8 +987,78 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
         repaired_pins,
         storage_mutated: ensure_outcome.created,
         unlocked_bypass,
-        warnings: Vec::new(),
+        warnings,
     })
+}
+
+/// Installs one extension into a VS Code profile with the same gates as `vsp sync`:
+/// extension ID syntax, catalog lifecycle status, publisher allowlist, and fail-closed VSIX
+/// pin verification. This backs the legacy `vspcli install-ext <profile> <id>` command.
+///
+/// # Errors
+///
+/// - [`VspError::SafetyRefusal`] (exit `5`): invalid ID syntax, a compromised, removed, or
+///   unrecognized catalog status, a publisher outside the allowlist, or a VSIX pin refusal.
+/// - [`VspError::IncompleteObservation`] (exit `7`): the `code` CLI is not on `PATH`.
+/// - [`VspError::Operational`] (exit `1`): VSIX download failure or `code` install failure.
+pub fn install_single_extension(
+    catalog: &WorkspaceCatalog,
+    profile_name: &str,
+    ext_id: &str,
+    vscode_data_dir: Option<&Path>,
+    allow_unlocked: bool,
+) -> VspResult<()> {
+    if !is_valid_extension_id_syntax(ext_id) {
+        return Err(VspError::SafetyRefusal(format!(
+            "invalid extension id syntax: '{ext_id}'"
+        )));
+    }
+    if let Some(rec) = catalog.extension_record(ext_id) {
+        if matches!(
+            rec.status,
+            ExtensionStatus::Compromised | ExtensionStatus::Removed | ExtensionStatus::Unknown(_)
+        ) {
+            return Err(VspError::SafetyRefusal(format!(
+                "extension '{ext_id}' has catalog status '{}' and cannot be installed",
+                rec.status.as_str()
+            )));
+        }
+    }
+    let ids = vec![ext_id.to_string()];
+    enforce_publisher_allowlist(catalog, &ids)?;
+
+    let store = resolve_vscode_store(vscode_data_dir, true)?;
+    let code_bin = require_code_binary()?;
+    let lock_path = profile_sync_lock_path(&store.user_dir, profile_name);
+    let _lock = acquire_advisory_lock(&lock_path, effective_lock_timeout())?;
+
+    let resolved = resolve_and_verify_batch(
+        catalog,
+        &ids,
+        &VsixVerifyOptions {
+            allow_unlocked,
+            cache_dir: None,
+        },
+    )?;
+    if let Some(failure) = resolved.failures.first() {
+        let msg = format!("{}: {}", failure.id, failure.message);
+        return Err(if failure.is_safety_refusal {
+            VspError::SafetyRefusal(msg)
+        } else {
+            VspError::Operational(msg)
+        });
+    }
+    let Some((_, install_arg)) = resolved.targets.first() else {
+        return Err(VspError::Operational(format!(
+            "no install target resolved for '{ext_id}'"
+        )));
+    };
+    if !run_code_install_single(&code_bin, &store, profile_name, install_arg, false) {
+        return Err(VspError::Operational(format!(
+            "failed to install {ext_id} into profile '{profile_name}'"
+        )));
+    }
+    Ok(())
 }
 
 fn run_bundle_import_sync(

@@ -22,6 +22,7 @@ use crate::resolver::{
     compile_workspace_extensions, recursive_object_multiply, resolve_modules,
     resolve_profile_recipe, ResolveRequest, RtkTaskMode, SettingsScope,
 };
+use crate::user_config::{ExtensionTrustTier, UserOverlay};
 use crate::vscode::{find_storage_profile_location, resolve_vscode_store};
 
 /// Canonical schema identifier emitted by `vsp diff --json` and `vsp sync --dry-run --json`.
@@ -60,6 +61,8 @@ pub struct PlanOptions {
     pub ai: Option<AiMode>,
     /// Optional `--vscode-data-dir` override.
     pub vscode_data_dir: Option<PathBuf>,
+    /// Resolved user-profile data from the personal user configuration (empty by default).
+    pub user_overlay: UserOverlay,
 }
 
 /// Target metadata included in [`Plan`].
@@ -413,6 +416,10 @@ fn compute_profile_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspRe
     if let Some(ux) = effective_ux {
         apply_ux_to_map(catalog, ux, &mut desired_settings, &mut delete_keys);
     }
+    if let Some(p_name) = &preset_name {
+        opts.user_overlay
+            .apply_final_overrides(p_name, &mut desired_settings, &mut delete_keys);
+    }
 
     let mut warnings = Vec::new();
     let store = resolve_vscode_store(opts.vscode_data_dir.as_deref(), false)?;
@@ -458,13 +465,34 @@ fn compute_profile_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspRe
     );
 
     let desired_exts = compile_profile_extensions(catalog, &resolved_modules)?;
-    let extension_changes: Vec<ExtensionChange> = desired_exts
+    let mut extension_changes: Vec<ExtensionChange> = desired_exts
         .into_iter()
         .map(|entry| ExtensionChange {
             id: entry.identifier.id,
             action: ExtensionChangeKind::EnsureInstalled,
         })
         .collect();
+
+    // Exact-ID extra extensions from a custom user profile (personal user configuration).
+    if let Some(p_name) = &preset_name {
+        for extra in opts.user_overlay.extras_for(p_name) {
+            if !extension_changes
+                .iter()
+                .any(|c| c.id.eq_ignore_ascii_case(&extra.id))
+            {
+                extension_changes.push(ExtensionChange {
+                    id: extra.id.clone(),
+                    action: ExtensionChangeKind::EnsureInstalled,
+                });
+            }
+            if extra.tier == ExtensionTrustTier::UserUnlocked {
+                warnings.push(format!(
+                    "user-unlocked (Tier 3): extension '{}' is catalog-external and installs by exact ID without VSIX pin verification",
+                    extra.id
+                ));
+            }
+        }
+    }
 
     let has_drift = !settings_changes.is_empty();
 
@@ -541,6 +569,10 @@ fn compute_user_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspResul
     apply_ai_overrides(opts.ai, &resolved_modules, &mut desired_settings, &mut delete_keys);
     if let Some(ux) = effective_ux {
         apply_ux_to_map(catalog, ux, &mut desired_settings, &mut delete_keys);
+    }
+    if let Some(p_name) = &preset_name {
+        opts.user_overlay
+            .apply_final_overrides(p_name, &mut desired_settings, &mut delete_keys);
     }
 
     let mut warnings = Vec::new();

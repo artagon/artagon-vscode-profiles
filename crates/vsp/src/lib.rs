@@ -20,13 +20,17 @@
 //! - [`plan`]: Unified `vsp-plan/v1` read-only planner shared by `vsp diff` and `vsp sync --dry-run`.
 //! - [`sync`]: Unified mutating `vsp sync` engine for profiles, workspaces, Default user settings, bundle imports, and emergency sweeps.
 //! - [`open`]: Single-window `--user-data-dir`-aware `vsp open` (alias `use`) launcher with `--sync` convergence.
-//! - [`doctor`]: Read-only environment, catalog, Default-profile security, provenance, and live VS Code auditor.
+//! - [`doctor`]: Read-only environment, catalog, Default-profile security, provenance, user-config, and live VS Code auditor.
 //! - [`dev_ops`]: Maintainer workflows (`dev pins`, `dev compat`, `dev docs`, `dev hooks`).
+//! - [`user_config`]: Personal `${XDG_CONFIG_HOME:-~/.config}/vsp/config.jsonc` loader (defaults, custom profiles, exact-ID extra extensions) and `vsp init` starter writer.
+//! - [`self_ops`]: `vsp self {path, install, uninstall, update}` symbolic-link installer and offline upgrade guidance.
+//! - [`compat_vspcli`]: Legacy `vspcli` command-line translation with legacy exit codes.
 //! - [`cli`]: `clap` Derive CLI definitions and command dispatch.
 
 #![warn(missing_docs)]
 
 pub mod cli;
+pub mod compat_vspcli;
 pub mod cst_merge;
 pub mod detect;
 pub mod dev_ops;
@@ -40,7 +44,9 @@ pub mod policy;
 pub mod provenance;
 pub mod resolver;
 pub mod schema_loader;
+pub mod self_ops;
 pub mod storage;
 pub mod sync;
+pub mod user_config;
 pub mod vscode;
 pub mod vsix;
