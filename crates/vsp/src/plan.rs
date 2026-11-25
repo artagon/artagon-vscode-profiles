@@ -14,8 +14,9 @@ use crate::detect::detect_workspace;
 use crate::exit_codes::{VspError, VspResult};
 use crate::legacy_loader::parse_jsonc_value;
 use crate::model::{
-    resolve_legacy_profile_name, AiMode, UxPreset, WorkspaceCatalog,
+    resolve_legacy_profile_name, AiMode, UxPreset, WorkspaceCatalog, COMPILER_UNION_KEYS,
 };
+use crate::provenance::{load_profile_provenance, load_workspace_provenance};
 use crate::resolver::{
     apply_ai_mode_to_lists, compile_profile_extensions, compile_settings, compile_tasks,
     compile_workspace_extensions, recursive_object_multiply, resolve_modules,
@@ -285,11 +286,20 @@ fn compute_workspace_plan(
 
     let settings_file = ws_canon.join(".vscode/settings.json");
     let current_settings = read_optional_jsonc_object(&settings_file, &mut warnings);
+    if let Some(prev) = load_workspace_provenance(&ws_canon) {
+        for old_k in &prev.managed_settings_keys {
+            if !desired_settings.contains_key(old_k) && !delete_keys.contains(old_k) {
+                delete_keys.push(old_k.clone());
+            }
+        }
+    }
+    let delete_paths = compute_formatter_delete_paths(&resolved_modules);
     let settings_changes = diff_settings_maps(
         &settings_file.display().to_string(),
         &current_settings,
         &desired_settings,
         &delete_keys,
+        &delete_paths,
     );
 
     let desired_exts = compile_workspace_extensions(catalog, &resolved_modules)?;
@@ -423,11 +433,28 @@ fn compute_profile_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspRe
             }
         };
 
+    if opts.ai == Some(AiMode::Off) {
+        for k in retired_ai_off_keys(catalog, &current_settings) {
+            if !delete_keys.contains(&k) {
+                delete_keys.push(k);
+            }
+        }
+    }
+    if let Some(prev) = load_profile_provenance(&store.user_dir, &profile_name) {
+        for old_k in &prev.managed_settings_keys {
+            if !desired_settings.contains_key(old_k) && !delete_keys.contains(old_k) {
+                delete_keys.push(old_k.clone());
+            }
+        }
+    }
+    let delete_paths = compute_formatter_delete_paths(&resolved_modules);
+
     let settings_changes = diff_settings_maps(
         &settings_path.display().to_string(),
         &current_settings,
         &desired_settings,
         &delete_keys,
+        &delete_paths,
     );
 
     let desired_exts = compile_profile_extensions(catalog, &resolved_modules)?;
@@ -520,11 +547,28 @@ fn compute_user_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspResul
     let store = resolve_vscode_store(opts.vscode_data_dir.as_deref(), false)?;
     let settings_path = store.user_dir.join("settings.json");
     let current_settings = read_optional_jsonc_object(&settings_path, &mut warnings);
+    if opts.ai == Some(AiMode::Off) {
+        for k in retired_ai_off_keys(catalog, &current_settings) {
+            if !delete_keys.contains(&k) {
+                delete_keys.push(k);
+            }
+        }
+    }
+    if let Some(prev) = load_profile_provenance(&store.user_dir, "default") {
+        for old_k in &prev.managed_settings_keys {
+            if !desired_settings.contains_key(old_k) && !delete_keys.contains(old_k) {
+                delete_keys.push(old_k.clone());
+            }
+        }
+    }
+    let delete_paths = compute_formatter_delete_paths(&resolved_modules);
+
     let settings_changes = diff_settings_maps(
         &settings_path.display().to_string(),
         &current_settings,
         &desired_settings,
         &delete_keys,
+        &delete_paths,
     );
 
     let has_drift = !settings_changes.is_empty();
@@ -549,7 +593,14 @@ fn compute_user_plan(catalog: &WorkspaceCatalog, opts: &PlanOptions) -> VspResul
     })
 }
 
-fn resolve_preset_name(
+/// Resolves a canonical or legacy preset name (such as `ai-profile-retina`) into
+/// `(canonical_preset_name, optional_legacy_ux)`.
+///
+/// # Errors
+///
+/// Returns [`VspError::TargetMissing`] (exit `2`) when `raw` does not match any canonical or
+/// legacy preset in `catalog`.
+pub fn resolve_preset_name(
     catalog: &WorkspaceCatalog,
     raw: &str,
 ) -> VspResult<(String, Option<UxPreset>)> {
@@ -564,7 +615,8 @@ fn resolve_preset_name(
     Err(VspError::TargetMissing(format!("unknown preset '{raw}'")))
 }
 
-fn apply_ai_overrides(
+/// Applies `--ai full|copilot|off` settings mutations and key deletions to `desired_settings`.
+pub fn apply_ai_overrides(
     ai_mode: Option<AiMode>,
     resolved_modules: &[String],
     desired_settings: &mut Map<String, Value>,
@@ -577,11 +629,15 @@ fn apply_ai_overrides(
         desired_settings.insert("chat.disableAIFeatures".to_string(), Value::Bool(true));
     } else if has_ai_mod {
         desired_settings.remove("chat.disableAIFeatures");
-        delete_keys.push("chat.disableAIFeatures".to_string());
+        if !delete_keys.iter().any(|k| k == "chat.disableAIFeatures") {
+            delete_keys.push("chat.disableAIFeatures".to_string());
+        }
     }
 }
 
-fn apply_ux_to_map(
+/// Applies a UX preset (`crisp`, `retina`, or `default`) to `desired_settings` and records
+/// retired UX keys in `delete_keys` when switching to `default`.
+pub fn apply_ux_to_map(
     catalog: &WorkspaceCatalog,
     ux: UxPreset,
     desired_settings: &mut Map<String, Value>,
@@ -608,6 +664,88 @@ fn apply_ux_to_map(
             }
         }
     }
+}
+
+/// Returns nested key paths to delete when switching between mutually exclusive JS/TS
+/// formatter packs (`biome` <-> `ts-eslint-prettier`) so stale `editor.codeActionsOnSave`
+/// entries inside `[language]` blocks are retired cleanly.
+#[must_use]
+pub fn compute_formatter_delete_paths(resolved_modules: &[String]) -> Vec<Vec<String>> {
+    let has_biome = resolved_modules.iter().any(|m| m == "biome");
+    let has_eslint = resolved_modules.iter().any(|m| m == "ts-eslint-prettier");
+    let langs = [
+        "[javascript]",
+        "[typescript]",
+        "[javascriptreact]",
+        "[typescriptreact]",
+    ];
+
+    let mut out = Vec::new();
+    if has_biome && !has_eslint {
+        for lang in langs {
+            out.push(vec![
+                lang.to_string(),
+                "editor.codeActionsOnSave".to_string(),
+                "source.fixAll.eslint".to_string(),
+            ]);
+        }
+    } else if has_eslint && !has_biome {
+        for lang in langs {
+            for action in ["source.fixAll.biome", "source.organizeImports.biome"] {
+                out.push(vec![
+                    lang.to_string(),
+                    "editor.codeActionsOnSave".to_string(),
+                    action.to_string(),
+                ]);
+            }
+        }
+    }
+    out
+}
+
+/// Returns existing AI vendor, chat, inlineChat, and AI-only inlineSuggest keys that should
+/// be retired when switching to `--ai off` while preserving shared `core-editor` settings.
+#[must_use]
+pub fn retired_ai_off_keys(
+    catalog: &WorkspaceCatalog,
+    existing: &Map<String, Value>,
+) -> Vec<String> {
+    let mut ai_module_keys: BTreeSet<String> = BTreeSet::new();
+    for mod_id in ["ai-agents", "ai-copilot"] {
+        if let Some(prof_map) = catalog
+            .modules
+            .get(mod_id)
+            .and_then(|m| m.profile_settings.as_ref())
+        {
+            for k in prof_map.keys() {
+                if k != "editor.quickSuggestions" && k != "editor.inlineSuggest.enabled" {
+                    ai_module_keys.insert(k.clone());
+                }
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for key in existing.keys() {
+        if key == "chat.disableAIFeatures" {
+            continue;
+        }
+        let matches_prefix = key.starts_with("antigravity.")
+            || key.starts_with("claudeCode.")
+            || key.starts_with("chatgpt.")
+            || key.starts_with("github.copilot.")
+            || key.starts_with("geminicodeassist.")
+            || key.starts_with("chat.")
+            || key.starts_with("inlineChat.")
+            || key == "editor.inlineSuggest.fontFamily"
+            || key.starts_with("editor.inlineSuggest.edits.");
+        if matches_prefix || ai_module_keys.contains(key) {
+            out.push(key.clone());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 fn read_optional_jsonc_object(path: &Path, warnings: &mut Vec<String>) -> Map<String, Value> {
@@ -647,6 +785,7 @@ fn diff_settings_maps(
     current: &Map<String, Value>,
     desired: &Map<String, Value>,
     delete_keys: &[String],
+    delete_paths: &[Vec<String>],
 ) -> Vec<SettingChange> {
     let mut changes = Vec::new();
     for (k, desired_val) in desired {
@@ -658,14 +797,22 @@ fn diff_settings_maps(
                 current: None,
                 desired: Some(desired_val.clone()),
             }),
-            Some(cur_val) if cur_val != desired_val => changes.push(SettingChange {
-                file: file_label.to_string(),
-                key: k.clone(),
-                action: SettingChangeKind::Update,
-                current: Some(cur_val.clone()),
-                desired: Some(desired_val.clone()),
-            }),
-            Some(_) => {}
+            Some(cur_val) => {
+                let has_retired_subpath = delete_paths.iter().any(|path| {
+                    path.first().map(String::as_str) == Some(k.as_str())
+                        && path_exists_in_map(current, path)
+                });
+                let converged = !has_retired_subpath && setting_value_converged(k, cur_val, desired_val, true);
+                if !converged {
+                    changes.push(SettingChange {
+                        file: file_label.to_string(),
+                        key: k.clone(),
+                        action: SettingChangeKind::Update,
+                        current: Some(cur_val.clone()),
+                        desired: Some(desired_val.clone()),
+                    });
+                }
+            }
         }
     }
 
@@ -687,6 +834,38 @@ fn diff_settings_maps(
     }
 
     changes
+}
+
+fn setting_value_converged(key: &str, current: &Value, desired: &Value, is_top_level: bool) -> bool {
+    match (current, desired) {
+        (Value::Object(cur_obj), Value::Object(des_obj)) => des_obj.iter().all(|(sk, sv)| {
+            cur_obj
+                .get(sk)
+                .is_some_and(|cv| setting_value_converged(sk, cv, sv, false))
+        }),
+        (Value::Array(cur_arr), Value::Array(des_arr))
+            if is_top_level && COMPILER_UNION_KEYS.contains(&key) =>
+        {
+            des_arr.iter().all(|item| cur_arr.contains(item))
+        }
+        _ => current == desired,
+    }
+}
+
+fn path_exists_in_map(map: &Map<String, Value>, path: &[String]) -> bool {
+    let Some((first, rest)) = path.split_first() else {
+        return false;
+    };
+    let Some(val) = map.get(first) else {
+        return false;
+    };
+    if rest.is_empty() {
+        return true;
+    }
+    match val {
+        Value::Object(sub) => path_exists_in_map(sub, rest),
+        _ => false,
+    }
 }
 
 fn diff_workspace_extensions(

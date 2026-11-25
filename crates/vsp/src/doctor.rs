@@ -11,6 +11,7 @@ use crate::exit_codes::ExitCode;
 use crate::legacy_loader::parse_jsonc_value;
 use crate::model::{ExtensionStatus, WorkspaceCatalog};
 use crate::policy::validate_repository;
+use crate::provenance::load_profile_provenance;
 use crate::vscode::{
     find_code_binary, list_installed_extensions, list_storage_profiles, resolve_vscode_store,
     resolve_xdg_config_home,
@@ -136,22 +137,32 @@ pub fn run_doctor(
         );
     }
 
-    // 2. XDG RTK wrappers presence.
-    let xdg_rtk = resolve_xdg_config_home().join("artagon-vscode/rtk");
-    if xdg_rtk.join("rtk-init.bash").is_file()
-        && xdg_rtk.join("rtk-init.fish").is_file()
-        && xdg_rtk.join("rtk-init.zsh").is_file()
-    {
+    // 2. XDG RTK wrappers presence (supports both v2.2 `vsp/rtk` and legacy `artagon-vscode/rtk`).
+    let xdg_base = resolve_xdg_config_home();
+    let vsp_rtk = xdg_base.join("vsp/rtk");
+    let legacy_rtk = xdg_base.join("artagon-vscode/rtk");
+    let has_rtk = |dir: &Path| {
+        dir.join("rtk-init.bash").is_file()
+            && dir.join("rtk-init.fish").is_file()
+            && dir.join("rtk-init.zsh").is_file()
+    };
+    if has_rtk(&vsp_rtk) {
         report.record(
             CheckSeverity::Pass,
             "rtk",
-            format!("XDG RTK wrappers installed at {}", xdg_rtk.display()),
+            format!("XDG RTK wrappers installed at {}", vsp_rtk.display()),
+        );
+    } else if has_rtk(&legacy_rtk) {
+        report.record(
+            CheckSeverity::Pass,
+            "rtk",
+            format!("XDG RTK wrappers installed at {}", legacy_rtk.display()),
         );
     } else {
         report.record(
             CheckSeverity::Warn,
             "rtk",
-            format!("XDG RTK wrappers not yet installed at {}", xdg_rtk.display()),
+            format!("XDG RTK wrappers not yet installed at {}", vsp_rtk.display()),
         );
     }
 
@@ -206,6 +217,18 @@ pub fn run_doctor(
                 }
 
                 for prof in scan_profiles {
+                    if let Some(prov) = load_profile_provenance(&st.user_dir, &prof) {
+                        if prov.unlocked_bypass {
+                            report.record(
+                                CheckSeverity::Warn,
+                                "provenance",
+                                format!(
+                                    "profile '{}' was last synced with --allow-unlocked (unverified VSIX state recorded at {})",
+                                    prof, prov.last_sync_at
+                                ),
+                            );
+                        }
+                    }
                     match list_installed_extensions(&code_bin, st, &prof) {
                         Err(err) => {
                             report.incomplete_observation = true;

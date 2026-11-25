@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use crate::exit_codes::{VspError, VspResult};
 use crate::legacy_loader::read_strict_json_value;
+use crate::provenance::check_path_contained;
 
 /// Resolved VS Code user-data store paths.
 #[derive(Debug, Clone)]
@@ -54,20 +55,26 @@ pub fn default_vscode_user_dir() -> PathBuf {
 }
 
 /// Resolves the VS Code store honoring `--vscode-data-dir`, `VSCODE_USER_DATA_DIR`,
-/// `VSCODE_USER_DIR`, and OS defaults while detecting split-brain misconfiguration.
+/// `VSCODE_USER_DIR`, and OS defaults while detecting split-brain misconfiguration and
+/// symlink escapes out of the data directory root.
 ///
 /// # Errors
 ///
-/// Returns [`VspError::UsageOrConfig`] if `VSCODE_USER_DIR` disagrees with
-/// `VSCODE_USER_DATA_DIR/User` or does not end in `/User` when `require_data_root` is set.
+/// - [`VspError::UsageOrConfig`] (exit `4`) if `VSCODE_USER_DIR` disagrees with
+///   `VSCODE_USER_DATA_DIR/User` or does not end in `/User` when `require_data_root` is set.
+/// - [`VspError::SafetyRefusal`] (exit `5`) if `<data_root>/User` escapes `<data_root>` via symlink.
 pub fn resolve_vscode_store(
     cli_data_dir: Option<&Path>,
     require_data_root: bool,
 ) -> VspResult<VsCodeStore> {
     if let Some(dir) = cli_data_dir {
-        let clean = PathBuf::from(dir.to_string_lossy().trim_end_matches('/'));
+        let raw = dir.to_string_lossy();
+        let trimmed = raw.trim_end_matches('/');
+        let clean = PathBuf::from(if trimmed.is_empty() { "/" } else { trimmed });
+        let user_dir = clean.join("User");
+        check_path_contained(&clean, &user_dir)?;
         return Ok(VsCodeStore {
-            user_dir: clean.join("User"),
+            user_dir,
             data_root: Some(clean),
         });
     }
@@ -84,6 +91,7 @@ pub fn resolve_vscode_store(
     if let Some(data_str) = env_data {
         let data_root = PathBuf::from(&data_str);
         let expected_user = data_root.join("User");
+        check_path_contained(&data_root, &expected_user)?;
         if let Some(user_str) = env_user {
             let actual_user = PathBuf::from(&user_str);
             let c_exp = fs::canonicalize(&expected_user).unwrap_or_else(|_| expected_user.clone());
@@ -95,6 +103,7 @@ pub fn resolve_vscode_store(
                     expected_user.display()
                 )));
             }
+            check_path_contained(&data_root, &actual_user)?;
             return Ok(VsCodeStore {
                 user_dir: actual_user,
                 data_root: Some(data_root),
@@ -110,6 +119,9 @@ pub fn resolve_vscode_store(
         let user_dir = PathBuf::from(&user_str);
         if user_dir.file_name().and_then(|n| n.to_str()) == Some("User") {
             let data_root = user_dir.parent().map(Path::to_path_buf);
+            if let Some(ref dr) = data_root {
+                check_path_contained(dr, &user_dir)?;
+            }
             return Ok(VsCodeStore {
                 user_dir,
                 data_root,

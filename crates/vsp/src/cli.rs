@@ -8,18 +8,23 @@ use clap_complete::Shell;
 use serde::Serialize;
 
 use crate::detect::detect_workspace;
+use crate::dev_ops::{
+    run_dev_compat, run_dev_docs, run_dev_hooks, run_dev_pins, CompatOptions,
+};
 use crate::doctor::{run_doctor, CheckSeverity};
 use crate::exit_codes::{ExitCode, VspError, VspResult};
 use crate::legacy_loader::{load_legacy_catalog, resolve_catalog_root};
 use crate::model::{
-    resolve_legacy_profile_name, AiMode, ModuleKind, PinsLoadState, UxPreset, WorkspaceCatalog,
+    resolve_legacy_profile_name, AiMode, ModuleKind, UxPreset, WorkspaceCatalog,
 };
+use crate::open::{run_open, OpenOptions};
 use crate::plan::{compute_plan, Plan, PlanOptions};
 use crate::policy::validate_repository;
 use crate::resolver::{
     build_dist, compile_canonical_profile_settings, compile_profile_extensions, export_profiles,
     resolve_profile_recipe, to_canonical_json_string,
 };
+use crate::sync::{run_sync, PruneMode, SyncOptions, SyncReport};
 use crate::vscode::{list_storage_profiles, resolve_vscode_store};
 
 /// Unified CLI for Artagon VS Code profiles, capability packs, and workspace plans.
@@ -320,6 +325,26 @@ pub struct DiffArgs {
     pub check: bool,
 }
 
+/// Extension pruning scope accepted by `vsp sync --prune[=MODE]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PruneArg {
+    /// Prune retired (plus superseded/removed) catalog extensions.
+    Retired,
+    /// Prune retired AND catalog-known unmanaged extensions (requires `--yes` in non-TTY).
+    Unmanaged,
+    /// Alias for `unmanaged` (prunes retired and unmanaged catalog-known extensions).
+    All,
+}
+
+impl From<PruneArg> for PruneMode {
+    fn from(arg: PruneArg) -> Self {
+        match arg {
+            PruneArg::Retired => Self::Retired,
+            PruneArg::Unmanaged | PruneArg::All => Self::Unmanaged,
+        }
+    }
+}
+
 /// Arguments for `vsp sync`.
 #[derive(Debug, Clone, Args)]
 pub struct SyncArgs {
@@ -327,29 +352,75 @@ pub struct SyncArgs {
     #[command(flatten)]
     pub selector: SelectorArgs,
 
-    /// Import a `.code-profile` bundle file (Phase 2).
+    /// Import a `.code-profile` bundle file.
     #[arg(long = "from", value_name = "BUNDLE")]
     pub from: Option<PathBuf>,
 
-    /// Reconcile all registered VS Code profiles (Phase 2).
+    /// Reconcile all registered VS Code profiles plus Default.
     #[arg(long = "all")]
     pub all: bool,
 
-    /// Only execute Step 0 compromised extension remediation (Phase 2).
+    /// Only execute Step 0 compromised/removed extension remediation.
     #[arg(long = "compromised-only")]
     pub compromised_only: bool,
 
-    /// Prune retired or unmanaged extensions during profile sync (Phase 2).
-    #[arg(long = "prune")]
-    pub prune: bool,
+    /// Prune retired (`--prune` / `--prune=retired`) or unmanaged (`--prune=unmanaged`) extensions.
+    #[arg(
+        long = "prune",
+        value_enum,
+        num_args = 0..=1,
+        default_missing_value = "retired"
+    )]
+    pub prune: Option<PruneArg>,
 
-    /// Re-verify and repair drifted pinned extensions (Phase 2).
+    /// Legacy compatibility flag equivalent to `--prune=retired`.
+    #[arg(long = "prune-retired", hide = true)]
+    pub prune_retired: bool,
+
+    /// Legacy compatibility flag equivalent to `--prune=unmanaged`.
+    #[arg(long = "prune-unmanaged", hide = true)]
+    pub prune_unmanaged: bool,
+
+    /// Re-verify and repair drifted pinned extensions.
     #[arg(long = "repair-pins")]
     pub repair_pins: bool,
 
-    /// Allow mutating VS Code storage while VS Code is running (Phase 2).
+    /// Bypass fail-closed VSIX pin checks (prints warning & records unverified state).
+    #[arg(long = "allow-unlocked")]
+    pub allow_unlocked: bool,
+
+    /// Allow bundle settings matching the autonomy/exec deny-list.
+    #[arg(long = "allow-unsafe-settings")]
+    pub allow_unsafe_settings: bool,
+
+    /// Allow mutating VS Code `storage.json` while VS Code is running.
     #[arg(long = "force")]
     pub force: bool,
+
+    /// Install extensions serially instead of batched.
+    #[arg(long = "no-batch")]
+    pub no_batch: bool,
+
+    /// Skip XDG RTK shell wrapper installation.
+    #[arg(long = "no-rtk")]
+    pub no_rtk: bool,
+}
+
+impl SyncArgs {
+    /// Resolves the effective [`PruneMode`] combining `--prune`, `--prune-retired`, and `--prune-unmanaged`.
+    #[must_use]
+    pub fn effective_prune(&self) -> Option<PruneMode> {
+        if self.prune_unmanaged {
+            return Some(PruneMode::Unmanaged);
+        }
+        if let Some(p) = self.prune {
+            return Some(p.into());
+        }
+        if self.prune_retired {
+            return Some(PruneMode::Retired);
+        }
+        None
+    }
 }
 
 /// Arguments for `vsp open` (alias `use`).
@@ -362,9 +433,13 @@ pub struct OpenArgs {
     #[arg(short = 'p', long = "profile", value_name = "NAME")]
     pub profile: Option<String>,
 
-    /// Synchronize before opening (Phase 2).
+    /// Synchronize target before opening (aborts launch on sync failure).
     #[arg(long = "sync")]
     pub sync: bool,
+
+    /// Allow mutating VS Code `storage.json` while VS Code is running during `--sync`.
+    #[arg(long = "force")]
+    pub force: bool,
 }
 
 /// Maintainer subcommands under `vsp dev`.
@@ -380,20 +455,51 @@ pub enum DevCommand {
         out: PathBuf,
     },
 
-    /// Inspect or refresh `catalog/extension-pins.json`.
-    Pins,
-
-    /// Check extension engine compatibility (full Marketplace client in Phase 2).
-    Compat,
-
-    /// Check or regenerate repository documentation matrices.
-    Docs {
-        /// Verify docs are in sync without modifying files.
+    /// Validate (`--check`) or refresh (`--refresh`) `catalog/extension-pins.json`.
+    Pins {
+        /// Verify pin manifest digests, semver versions, and Marketplace URLs.
         #[arg(long)]
         check: bool,
+
+        /// Refresh pins from the VS Code Marketplace and rewrite `catalog/extension-pins.json`.
+        #[arg(long)]
+        refresh: bool,
     },
 
-    /// Manage repository git hooks.
+    /// Audit VS Code Marketplace engine compatibility across profiles or an extensions file.
+    Compat {
+        /// Audit all canonical profiles in the catalog.
+        #[arg(long)]
+        all: bool,
+
+        /// Path to newline-separated or JSON array extensions file.
+        #[arg(long = "extensions-file", value_name = "PATH")]
+        extensions_file: Option<PathBuf>,
+
+        /// Override target VS Code semver version (e.g. `1.147.0`).
+        #[arg(long = "vscode-version", value_name = "VER")]
+        vscode_version: Option<String>,
+
+        /// Query Marketplace engine constraints without requiring locally installed extensions.
+        #[arg(long = "marketplace-only")]
+        marketplace_only: bool,
+
+        /// Specific profile names to audit.
+        profiles: Vec<String>,
+    },
+
+    /// Check (`--check`) or synchronize (`--write`) Rust docs policy markers and `README.md` matrix.
+    Docs {
+        /// Verify agent doc policy markers and README matrix are in sync without modifying files.
+        #[arg(long)]
+        check: bool,
+
+        /// Rewrite agent doc policy markers and README matrix atomically.
+        #[arg(long)]
+        write: bool,
+    },
+
+    /// Configure repository git hooks (`core.hooksPath = scripts/git-hooks`).
     Hooks,
 
     /// Show repository test suite entrypoints.
@@ -433,6 +539,7 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
     let Cli {
         dry_run,
         json,
+        yes,
         quiet,
         catalog: catalog_override,
         vscode_data_dir,
@@ -521,8 +628,8 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
                         .to_string(),
                 ));
             }
-            let _ = args.selector.effective_ai()?;
-            let _ = args.selector.effective_workspace()?;
+            let effective_ai = args.selector.effective_ai()?;
+            let effective_ws = args.selector.effective_workspace()?;
             if let Some(ref bundle) = args.from {
                 if !bundle.is_file() {
                     return Err(VspError::TargetMissing(format!(
@@ -532,17 +639,67 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
                 }
             }
 
-            if dry_run && has_std_selector {
-                let catalog = load_catalog(catalog_override.as_deref())?;
+            let catalog = load_catalog(catalog_override.as_deref())?;
+
+            // Unified read-only planner path: `vsp sync --dry-run` emits the EXACT same
+            // `vsp-plan/v1` JSON and text output as `vsp diff`!
+            if dry_run && has_std_selector && args.from.is_none() && !args.all && !args.compromised_only {
                 let opts = args.selector.to_plan_options(vscode_data_dir)?;
                 let plan = compute_plan(&catalog, &opts)?;
                 print_plan(&plan, json, quiet)?;
                 return Ok(ExitCode::Ok);
             }
 
-            Err(VspError::Operational(
-                "mutating 'vsp sync' is scheduled for Phase 2 (v2.2.0); pass --dry-run (-n) for read-only planning or use scripts/vspcli for legacy mutation".to_string(),
-            ))
+            if dry_run {
+                if json {
+                    let payload = serde_json::json!({
+                        "dry_run": true,
+                        "all": args.all,
+                        "compromised_only": args.compromised_only,
+                        "from": args.from.as_ref().map(|p| p.display().to_string()),
+                        "profile": args.selector.profile,
+                    });
+                    print!("{}", to_canonical_json_string(&payload)?);
+                } else if !quiet {
+                    println!(
+                        "DRY-RUN sync: all={} compromised_only={} from={} profile={}",
+                        args.all,
+                        args.compromised_only,
+                        args.from
+                            .as_deref()
+                            .map_or_else(|| "none".to_string(), |p| p.display().to_string()),
+                        args.selector.profile.as_deref().unwrap_or("none")
+                    );
+                }
+                return Ok(ExitCode::Ok);
+            }
+
+            let sync_opts = SyncOptions {
+                workspace_path: effective_ws,
+                profile: args.selector.profile.clone(),
+                preset: args.selector.preset.clone(),
+                from_bundle: args.from.clone(),
+                user: args.selector.user,
+                all: args.all,
+                compromised_only: args.compromised_only,
+                with_modules: args.selector.with.clone(),
+                without_modules: args.selector.without.clone(),
+                ux: args.selector.ux.map(Into::into),
+                ai: effective_ai,
+                prune: args.effective_prune(),
+                repair_pins: args.repair_pins,
+                allow_unlocked: args.allow_unlocked,
+                allow_unsafe_settings: args.allow_unsafe_settings,
+                force: args.force,
+                yes,
+                no_batch: args.no_batch,
+                no_rtk: args.no_rtk,
+                vscode_data_dir,
+            };
+
+            let report = run_sync(&catalog, &sync_opts)?;
+            print_sync_report(&report, json, quiet)?;
+            Ok(ExitCode::Ok)
         }
         Command::Open(args) => {
             if args.profile.is_none() && args.path.is_none() {
@@ -550,29 +707,21 @@ pub fn execute(cli: Cli) -> VspResult<ExitCode> {
                     "vsp open requires -p/--profile <NAME> or <PATH>".to_string(),
                 ));
             }
-            if let Some(ref p) = args.path {
-                if !p.exists() {
-                    return Err(VspError::TargetMissing(format!(
-                        "path does not exist: {}",
-                        p.display()
-                    )));
-                }
-            }
-            if dry_run {
-                if !quiet {
-                    println!(
-                        "DRY-RUN: would open profile={} path={}",
-                        args.profile.as_deref().unwrap_or("default"),
-                        args.path
-                            .as_deref()
-                            .map_or_else(|| ".".to_string(), |p| p.display().to_string())
-                    );
-                }
-                return Ok(ExitCode::Ok);
-            }
-            Err(VspError::Operational(
-                "launching VS Code via 'vsp open' is scheduled for Phase 2 (v2.2.0); pass --dry-run (-n) to preview or use scripts/vspcli open".to_string(),
-            ))
+            let catalog = load_catalog(catalog_override.as_deref())?;
+            run_open(
+                &catalog,
+                &OpenOptions {
+                    path: args.path,
+                    profile: args.profile,
+                    sync_first: args.sync,
+                    dry_run,
+                    json,
+                    quiet,
+                    vscode_data_dir,
+                    yes,
+                    force: args.force,
+                },
+            )
         }
         Command::Dev { command } => run_dev(catalog_override.as_deref(), json, quiet, command),
     }
@@ -888,6 +1037,30 @@ fn print_plan(plan: &Plan, json: bool, quiet: bool) -> VspResult<()> {
     Ok(())
 }
 
+fn print_sync_report(report: &SyncReport, json: bool, quiet: bool) -> VspResult<()> {
+    if json {
+        print!("{}", to_canonical_json_string(report)?);
+        return Ok(());
+    }
+    if quiet {
+        return Ok(());
+    }
+    println!(
+        "Synced {} ({}): files={}, step0_removed={}, installed={}, pruned={}, repaired_pins={}",
+        report.kind,
+        report.target,
+        report.files_written.len(),
+        report.step0_uninstalled.len(),
+        report.installed.len(),
+        report.pruned.len(),
+        report.repaired_pins.len()
+    );
+    for w in &report.warnings {
+        eprintln!("warning: {w}");
+    }
+    Ok(())
+}
+
 fn print_dist_report(
     report: &crate::resolver::DistReport,
     json: bool,
@@ -956,52 +1129,38 @@ fn run_dev(
             print_dist_report(&report, json, quiet)?;
             Ok(ExitCode::Ok)
         }
-        DevCommand::Pins => {
+        DevCommand::Pins { check, refresh } => {
             let catalog = load_catalog(catalog_override)?;
-            match &catalog.pins {
-                PinsLoadState::Loaded(manifest) => {
-                    if json {
-                        let payload = serde_json::json!({
-                            "status": "loaded",
-                            "count": manifest.pins.len(),
-                            "pinRequired": manifest.pin_required,
-                        });
-                        print!("{}", to_canonical_json_string(&payload)?);
-                    } else if !quiet {
-                        println!(
-                            "catalog/extension-pins.json: {} pinned extension(s) (refresh automation arrives in Phase 2)",
-                            manifest.pins.len()
-                        );
-                    }
-                    Ok(ExitCode::Ok)
-                }
-                PinsLoadState::Missing(p) => Err(VspError::Operational(format!(
-                    "missing extension pins manifest: {}",
-                    p.display()
-                ))),
-                PinsLoadState::Invalid { path, error } => Err(VspError::Operational(format!(
-                    "invalid extension pins manifest {}: {error}",
-                    path.display()
-                ))),
-            }
+            run_dev_pins(&catalog, check, refresh, json, quiet)
         }
-        DevCommand::Compat => Err(VspError::Operational(
-            "'vsp dev compat' is scheduled for Phase 2 (v2.2.0); run scripts/check-extension-compatibility.sh in Phase 1".to_string(),
-        )),
-        DevCommand::Docs { check } => {
-            if check {
-                Err(VspError::Operational(
-                    "'vsp dev docs --check' native parity is scheduled for Phase 2 (v2.2.0); run scripts/generate-readme-matrix.sh --check in Phase 1".to_string(),
-                ))
-            } else {
-                Err(VspError::Operational(
-                    "'vsp dev docs' is scheduled for Phase 2 (v2.2.0); run scripts/generate-readme-matrix.sh in Phase 1".to_string(),
-                ))
-            }
+        DevCommand::Compat {
+            all,
+            extensions_file,
+            vscode_version,
+            marketplace_only: _,
+            profiles,
+        } => {
+            let catalog = load_catalog(catalog_override)?;
+            run_dev_compat(
+                &catalog,
+                &CompatOptions {
+                    all,
+                    extensions_file,
+                    vscode_version,
+                    profiles,
+                },
+                json,
+                quiet,
+            )
         }
-        DevCommand::Hooks => Err(VspError::Operational(
-            "'vsp dev hooks' is scheduled for Phase 2 (v2.2.0); run scripts/install-hooks.sh in Phase 1".to_string(),
-        )),
+        DevCommand::Docs { check, write } => {
+            let catalog = load_catalog(catalog_override)?;
+            run_dev_docs(&catalog, check, write, json, quiet)
+        }
+        DevCommand::Hooks => {
+            let root = resolve_catalog_root(catalog_override)?;
+            run_dev_hooks(&root, json, quiet)
+        }
         DevCommand::Test => {
             if !quiet {
                 println!("Run Rust suite: cargo test --workspace");
