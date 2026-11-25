@@ -256,4 +256,62 @@ STUB
     [[ "${status}" -eq 4 ]]
     [[ "${stderr}" == *"refusing recursive"* ]]
   done
+
+  # VSP_USE_RUST_SHIM is unset before exec so a wrapper VSP_BIN invoking vspcli cannot loop.
+  wrapper="${TEST_TMP}/vsp-shim-wrapper"
+  cat > "${wrapper}" <<WRAP
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'WRAP shim=%s compat=%s\n' "\${VSP_USE_RUST_SHIM:-unset}" "\${VSP_COMPAT_VSPCLI:-unset}"
+exec "${SCRIPTS_DIR}/vspcli" list
+WRAP
+  chmod 0755 "${wrapper}"
+
+  run env VSP_USE_RUST_SHIM=1 VSP_BIN="${wrapper}" "${SCRIPTS_DIR}/vspcli" list
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == *"WRAP shim=unset compat=1"* ]]
+  [[ "${output}" == *"rust"* ]]
+}
+
+@test "facade: bin/vsp resolves relative and symlinked VSP_BIN and refuses recursive delegation cleanly" {
+  hop_dir="${TEST_TMP}/hop dir"
+  bin_dir="${TEST_TMP}/my bin"
+  mkdir -p "${hop_dir}" "${bin_dir}"
+  hop_phys="$(CDPATH='' cd -P -- "${hop_dir}" && pwd -P)"
+  repo_phys="$(CDPATH='' cd -P -- "${REPO_ROOT}" && pwd -P)"
+  up_prefix="$(printf '%s' "${hop_phys#/}" | awk -F/ '{for (i=1; i<=NF; i++) printf "../"}')"
+  ln -s "${up_prefix}${repo_phys#/}/bin/vsp" "${hop_dir}/vsp-rel-link"
+  ln -s "../hop dir/vsp-rel-link" "${bin_dir}/vsp"
+  ln -s "${SCRIPTS_DIR}/vspcli" "${bin_dir}/vspcli-link"
+
+  # Relative path to bin/vsp from repo root must be refused cleanly (exit 4, no loop).
+  run --separate-stderr bash -c 'cd "$1" && exec env VSP_BIN="./bin/vsp" "./bin/vsp" --version' _ "${REPO_ROOT}"
+  [[ "${status}" -eq 4 ]]
+  [[ "${stderr}" == *"refusing recursive VSP_BIN"* ]]
+
+  # Direct path, relative symlink chain (with spaces), PATH-resolved bare name, and vspcli targets must all be refused.
+  for bad_target in "${REPO_ROOT}/bin/vsp" "${bin_dir}/vsp" "${SCRIPTS_DIR}/vspcli" "${bin_dir}/vspcli-link"; do
+    run --separate-stderr env VSP_BIN="${bad_target}" "${REPO_ROOT}/bin/vsp" --version
+    [[ "${status}" -eq 4 ]]
+    [[ "${stderr}" == *"refusing recursive VSP_BIN"* ]]
+  done
+
+  run --separate-stderr env PATH="${bin_dir}:${PATH}" VSP_BIN="vsp" "${REPO_ROOT}/bin/vsp" --version
+  [[ "${status}" -eq 4 ]]
+  [[ "${stderr}" == *"refusing recursive VSP_BIN"* ]]
+
+  # Wrapper VSP_BIN calling bin/vsp must not loop because VSP_BIN is unset before exec.
+  wrapper="${TEST_TMP}/vsp-facade-wrapper"
+  cat > "${wrapper}" <<WRAP
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'FACADE_WRAP vsp_bin=%s\n' "\${VSP_BIN:-unset}"
+exec "${REPO_ROOT}/bin/vsp" --version
+WRAP
+  chmod 0755 "${wrapper}"
+
+  run env VSP_BIN="${wrapper}" "${REPO_ROOT}/bin/vsp" --version
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == *"FACADE_WRAP vsp_bin=unset"* ]]
+  [[ "${output}" == *"vsp 3.0.0"* ]]
 }

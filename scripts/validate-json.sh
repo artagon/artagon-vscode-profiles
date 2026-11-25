@@ -559,40 +559,132 @@ fi
 
 # Check forbidden security-bypass paths unconditionally (works in git worktrees & non-git copies).
 for bad_path in agents .agents/settings.local.json; do
-  if [[ -e "${ROOT}/${bad_path}" ]]; then
+  if [[ -e "${ROOT}/${bad_path}" || -L "${ROOT}/${bad_path}" ]]; then
     err "forbidden security-bypass file exists in repo: ${bad_path}"
   fi
 done
 
+_scan_autonomy_config_file() {
+  local root_canon="${1}"
+  local abs_cfg="${2}"
+  local cfg_label="${3}"
+  local scan_target="${abs_cfg}"
+
+  if [[ -L "${abs_cfg}" ]]; then
+    if ! scan_target="$(canonical_path "${abs_cfg}" 2>"${TMP_WORK}/cfg.err")" \
+       || ! check_path_contained "${root_canon}" "${abs_cfg}" 2>>"${TMP_WORK}/cfg.err"; then
+      err "${cfg_label}: symlink escapes repository root or cannot be resolved: $(cat "${TMP_WORK}/cfg.err")"
+      return 0
+    fi
+    if [[ ! -e "${scan_target}" ]]; then
+      err "${cfg_label}: dangling symlink under config directory (fail-closed)"
+      return 0
+    fi
+    if [[ ! -f "${scan_target}" ]]; then
+      err "${cfg_label}: symlink target under config directory is not a regular file (fail-closed)"
+      return 0
+    fi
+  elif [[ ! -f "${abs_cfg}" ]]; then
+    return 0
+  fi
+
+  local parsed_cfg=""
+  if parsed_cfg="$(compiler_parse_jsonc_object "${ROOT}" "${scan_target}" 2>"${TMP_WORK}/cfg.err")"; then
+    printf '%s\n' "${parsed_cfg}" | check_autonomy_denylist_json "${cfg_label}" || FAILED=1
+  else
+    err "${cfg_label}: failed JSON/JSONC parse during autonomy scan: $(cat "${TMP_WORK}/cfg.err")"
+  fi
+}
+
 # Parsed-config autonomy scan on tracked .agents/.vscode/.claude JSON/JSONC (supports git worktrees and staged checkout-index copies).
-if [[ -e "${ROOT}/.git" ]] && command -v git >/dev/null 2>&1; then
+if ! ROOT_CANON="$(canonical_path "${ROOT}" 2>"${TMP_WORK}/cfg.err")"; then
+  err "failed to resolve canonical repository root '${ROOT}': $(cat "${TMP_WORK}/cfg.err")"
+elif [[ -e "${ROOT}/.git" ]] && command -v git >/dev/null 2>&1; then
   while IFS= read -r cfg; do
-    [[ -n "${cfg}" && -f "${ROOT}/${cfg}" ]] || continue
+    [[ -n "${cfg}" && ( -f "${ROOT}/${cfg}" || -L "${ROOT}/${cfg}" ) ]] || continue
     case "${cfg}" in
       .agents/*.json|.agents/*.jsonc|.vscode/*.json|.vscode/*.jsonc|.claude/*.json|.claude/*.jsonc)
-        if parsed_cfg="$(compiler_parse_jsonc_object "${ROOT}" "${ROOT}/${cfg}" 2>"${TMP_WORK}/cfg.err")"; then
-          printf '%s\n' "${parsed_cfg}" | check_autonomy_denylist_json "${cfg}" || FAILED=1
-        else
-          err "${cfg}: failed JSON/JSONC parse during autonomy scan: $(cat "${TMP_WORK}/cfg.err")"
-        fi
+        _scan_autonomy_config_file "${ROOT_CANON}" "${ROOT}/${cfg}" "${cfg}"
         ;;
     esac
   done < <(git -C "${ROOT}" ls-files)
 elif [[ "${VSPCLI_STAGED_TREE:-0}" == "1" ]]; then
-  while IFS= read -r abs_cfg; do
-    [[ -n "${abs_cfg}" && -f "${abs_cfg}" ]] || continue
-    cfg="${abs_cfg#"${ROOT}/"}"
-    if parsed_cfg="$(compiler_parse_jsonc_object "${ROOT}" "${abs_cfg}" 2>"${TMP_WORK}/cfg.err")"; then
-      printf '%s\n' "${parsed_cfg}" | check_autonomy_denylist_json "${cfg}" || FAILED=1
-    else
-      err "${cfg}: failed JSON/JSONC parse during autonomy scan: $(cat "${TMP_WORK}/cfg.err")"
+  staged_dir_queue=()
+  staged_visited_dirs=""
+  for cfg_dir in .agents .vscode .claude; do
+    cfg_base="${ROOT}/${cfg_dir}"
+    if [[ -L "${cfg_base}" ]]; then
+      if ! dir_canon="$(canonical_path "${cfg_base}" 2>"${TMP_WORK}/cfg.err")" \
+         || ! check_path_contained "${ROOT_CANON}" "${cfg_base}" 2>>"${TMP_WORK}/cfg.err"; then
+        err "${cfg_dir}: symlink escapes staged root or cannot be resolved: $(cat "${TMP_WORK}/cfg.err")"
+        continue
+      fi
+      if [[ ! -d "${dir_canon}" ]]; then
+        err "${cfg_dir}: symlink under staged tree is dangling or not a directory (fail-closed)"
+        continue
+      fi
+      staged_dir_queue+=("${dir_canon}")
+    elif [[ -d "${cfg_base}" ]]; then
+      if dir_canon="$(canonical_path "${cfg_base}" 2>"${TMP_WORK}/cfg.err")"; then
+        staged_dir_queue+=("${dir_canon}")
+      else
+        err "${cfg_dir}: failed to resolve directory: $(cat "${TMP_WORK}/cfg.err")"
+      fi
     fi
-  done < <(
-    for cfg_dir in .agents .vscode .claude; do
-      [[ -d "${ROOT}/${cfg_dir}" ]] || continue
-      LC_ALL=C find "${ROOT}/${cfg_dir}" -type f \( -name '*.json' -o -name '*.jsonc' \) -print
-    done | LC_ALL=C sort
-  )
+  done
+
+  q_idx=0
+  while [[ "${q_idx}" -lt "${#staged_dir_queue[@]}" ]]; do
+    cur_dir="${staged_dir_queue[${q_idx}]}"
+    q_idx=$((q_idx + 1))
+    case $'\n'"${staged_visited_dirs}"$'\n' in
+      *$'\n'"${cur_dir}"$'\n'*) continue ;;
+    esac
+    staged_visited_dirs="${staged_visited_dirs}"$'\n'"${cur_dir}"
+
+    while IFS= read -r abs_cfg; do
+      [[ -n "${abs_cfg}" ]] || continue
+      cfg="${abs_cfg#"${ROOT_CANON}/"}"
+      if [[ -L "${abs_cfg}" ]]; then
+        if ! link_canon="$(canonical_path "${abs_cfg}" 2>"${TMP_WORK}/cfg.err")" \
+           || ! check_path_contained "${ROOT_CANON}" "${abs_cfg}" 2>>"${TMP_WORK}/cfg.err"; then
+          err "${cfg}: symlink escapes staged root or cannot be resolved: $(cat "${TMP_WORK}/cfg.err")"
+          continue
+        fi
+        if [[ ! -e "${link_canon}" ]]; then
+          err "${cfg}: dangling symlink under staged config directory (fail-closed)"
+          continue
+        fi
+        if [[ -d "${link_canon}" ]]; then
+          case "${abs_cfg}" in
+            *.json|*.jsonc)
+              err "${cfg}: config symlink resolves to directory (fail-closed)"
+              ;;
+            *)
+              staged_dir_queue+=("${link_canon}")
+              ;;
+          esac
+          continue
+        fi
+        case "${abs_cfg}" in
+          *.json|*.jsonc)
+            _scan_autonomy_config_file "${ROOT_CANON}" "${abs_cfg}" "${cfg}"
+            ;;
+          *)
+            case "${link_canon}" in
+              *.json|*.jsonc)
+                _scan_autonomy_config_file "${ROOT_CANON}" "${abs_cfg}" "${cfg}"
+                ;;
+            esac
+            ;;
+        esac
+      elif [[ -f "${abs_cfg}" ]]; then
+        _scan_autonomy_config_file "${ROOT_CANON}" "${abs_cfg}" "${cfg}"
+      fi
+    done < <(
+      LC_ALL=C find "${cur_dir}" \( \( -type f \( -name '*.json' -o -name '*.jsonc' \) \) -o -type l \) -print | LC_ALL=C sort
+    )
+  done
 fi
 
 # Check for broken symlinks anywhere in repo (excluding .git, .cache, target, dist).
