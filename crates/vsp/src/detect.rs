@@ -7,7 +7,9 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use serde::Serialize;
 
@@ -19,6 +21,16 @@ const GLOB_PRUNE_DIRS: &[&str] = &[".git", "node_modules", "target", "build", ".
 
 /// Directories pruned during `file_and_grep` searches.
 const GREP_PRUNE_DIRS: &[&str] = &[".git", "node_modules", "target", "build", ".venv"];
+
+/// Maximum directory depth searched by `file_and_grep` detection rules.
+const MAX_GREP_DEPTH: usize = 8;
+
+/// Maximum number of bytes read from any single candidate file during `file_and_grep`
+/// detection (`1 MiB`). Prevents unbounded memory allocation on huge generated files.
+pub const MAX_DETECT_READ_BYTES: u64 = 1024 * 1024;
+
+/// Maximum number of unique directory listings cached during a single workspace detection pass.
+pub const MAX_DETECT_DIRS: usize = 10_000;
 
 /// Explanation record for a single superseded module.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -97,6 +109,9 @@ pub fn detect_workspace(
         .collect();
     candidates.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(b.2)));
 
+    // Share a single bounded directory listing cache across every detection rule in this workspace.
+    let mut cache = WorkspaceTreeCache::default();
+
     let mut primary_matches: Vec<String> = Vec::new();
     let mut fallback_matches: Vec<String> = Vec::new();
     let mut primary_signals: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -117,7 +132,7 @@ pub fn detect_workspace(
         let mut matched_all = true;
 
         for rule in &det.rules {
-            match eval_rule(&ws_root, rule)? {
+            match eval_rule_with_cache(&ws_root, rule, &mut cache)? {
                 Some(sig) => {
                     matched_any = true;
                     mod_signals.push(sig);
@@ -182,10 +197,145 @@ pub fn detect_workspace(
     })
 }
 
+struct CachedEntry {
+    name: String,
+    path: PathBuf,
+    is_dir: bool,
+    is_file: bool,
+    is_symlink: bool,
+}
+
+type CachedDirListing = Result<Option<Rc<[CachedEntry]>>, String>;
+
+/// Memoized, bounded directory listing cache shared across all rules during one
+/// [`detect_workspace`] call so each workspace directory is read at most once.
+#[derive(Default)]
+struct WorkspaceTreeCache {
+    dirs: BTreeMap<PathBuf, CachedDirListing>,
+}
+
+impl WorkspaceTreeCache {
+    fn read_dir_sorted(&mut self, dir: &Path) -> VspResult<Option<Rc<[CachedEntry]>>> {
+        if let Some(cached) = self.dirs.get(dir) {
+            return match cached {
+                Ok(entries) => Ok(entries.clone()),
+                Err(msg) => Err(VspError::IncompleteObservation(msg.clone())),
+            };
+        }
+        if self.dirs.len() >= MAX_DETECT_DIRS {
+            return Ok(None);
+        }
+
+        // A directory that vanished during the scan is absent. Every other failure (permission
+        // denied, I/O error) is an incomplete scan and is propagated: it is never dropped.
+        let loaded = match fs::read_dir(dir) {
+            Ok(rd) => {
+                let mut raw_entries = Vec::new();
+                let mut read_err = None;
+                for entry in rd {
+                    match entry {
+                        Ok(e) => raw_entries.push(e),
+                        Err(err) => {
+                            read_err = Some(scan_incomplete_msg(dir, &err));
+                            break;
+                        }
+                    }
+                }
+                if let Some(msg) = read_err {
+                    Err(msg)
+                } else {
+                    raw_entries.sort_by_key(std::fs::DirEntry::file_name);
+                    let mut parsed = Vec::with_capacity(raw_entries.len());
+                    let mut ft_err = None;
+                    for entry in raw_entries {
+                        let path = entry.path();
+                        let ft = match entry.file_type() {
+                            Ok(ft) => ft,
+                            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                            Err(err) => {
+                                ft_err = Some(scan_incomplete_msg(&path, &err));
+                                break;
+                            }
+                        };
+                        let Some(name) = entry.file_name().to_str().map(ToString::to_string) else {
+                            continue;
+                        };
+                        parsed.push(CachedEntry {
+                            name,
+                            path,
+                            is_dir: ft.is_dir(),
+                            is_file: ft.is_file(),
+                            is_symlink: ft.is_symlink(),
+                        });
+                    }
+                    if let Some(msg) = ft_err {
+                        Err(msg)
+                    } else {
+                        Ok(Some(Rc::from(parsed)))
+                    }
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(scan_incomplete_msg(dir, &err)),
+        };
+
+        let result = match &loaded {
+            Ok(entries) => Ok(entries.clone()),
+            Err(msg) => Err(VspError::IncompleteObservation(msg.clone())),
+        };
+        self.dirs.insert(dir.to_path_buf(), loaded);
+        result
+    }
+
+    fn is_file_in_workspace(&mut self, ws_root: &Path, rel: &str) -> VspResult<bool> {
+        if rel.is_empty() {
+            return Ok(false);
+        }
+        if !rel.contains('/') && !rel.contains('\\') {
+            if let Some(entries) = self.read_dir_sorted(ws_root)? {
+                return Ok(match entries.iter().find(|e| e.name == rel) {
+                    Some(e) if e.is_file => true,
+                    Some(e) if e.is_symlink => ws_root.join(rel).is_file(),
+                    _ => false,
+                });
+            }
+            return Ok(false);
+        }
+        Ok(ws_root.join(rel).is_file())
+    }
+
+    fn exists_in_workspace(&mut self, ws_root: &Path, rel: &str) -> VspResult<bool> {
+        if rel.is_empty() {
+            return Ok(false);
+        }
+        if !rel.contains('/') && !rel.contains('\\') {
+            if let Some(entries) = self.read_dir_sorted(ws_root)? {
+                return Ok(match entries.iter().find(|e| e.name == rel) {
+                    Some(e) if e.is_symlink => ws_root.join(rel).exists(),
+                    Some(_) => true,
+                    None => false,
+                });
+            }
+            return Ok(false);
+        }
+        Ok(ws_root.join(rel).exists())
+    }
+}
+
+#[cfg(test)]
 fn eval_rule(ws_root: &Path, rule: &DetectRule) -> VspResult<Option<String>> {
+    let mut cache = WorkspaceTreeCache::default();
+    eval_rule_with_cache(ws_root, rule, &mut cache)
+}
+
+fn eval_rule_with_cache(
+    ws_root: &Path,
+    rule: &DetectRule,
+    cache: &mut WorkspaceTreeCache,
+) -> VspResult<Option<String>> {
     match rule {
         DetectRule::File { path } => {
-            if !path.is_empty() && ws_root.join(path).is_file() {
+            if cache.is_file_in_workspace(ws_root, path)? {
                 Ok(Some(path.clone()))
             } else {
                 Ok(None)
@@ -193,7 +343,7 @@ fn eval_rule(ws_root: &Path, rule: &DetectRule) -> VspResult<Option<String>> {
         }
         DetectRule::AnyFile { paths } => {
             for p in paths {
-                if !p.is_empty() && ws_root.join(p).is_file() {
+                if cache.is_file_in_workspace(ws_root, p)? {
                     return Ok(Some(p.clone()));
                 }
             }
@@ -202,7 +352,7 @@ fn eval_rule(ws_root: &Path, rule: &DetectRule) -> VspResult<Option<String>> {
         DetectRule::AllFiles { paths, any_extra } => {
             let mut matched = Vec::new();
             for p in paths {
-                if p.is_empty() || !ws_root.join(p).is_file() {
+                if !cache.is_file_in_workspace(ws_root, p)? {
                     return Ok(None);
                 }
                 matched.push(p.clone());
@@ -211,11 +361,15 @@ fn eval_rule(ws_root: &Path, rule: &DetectRule) -> VspResult<Option<String>> {
                 return Ok(None);
             }
             if !any_extra.is_empty() {
-                match any_extra
-                    .iter()
-                    .find(|p| !p.is_empty() && ws_root.join(p).is_file())
-                {
-                    Some(extra) => matched.push(extra.clone()),
+                let mut found_extra = None;
+                for p in any_extra {
+                    if cache.is_file_in_workspace(ws_root, p)? {
+                        found_extra = Some(p.clone());
+                        break;
+                    }
+                }
+                match found_extra {
+                    Some(extra) => matched.push(extra),
                     None => return Ok(None),
                 }
             }
@@ -237,9 +391,14 @@ fn eval_rule(ws_root: &Path, rule: &DetectRule) -> VspResult<Option<String>> {
             if !search_dir.is_dir() {
                 return Ok(None);
             }
-            if let Some(hit) =
-                find_first_matching_file(&search_dir, pattern, *max_depth, GLOB_PRUNE_DIRS)?
-            {
+            if let Some(hit) = find_first_matching_file_cached(
+                cache,
+                &search_dir,
+                pattern,
+                *max_depth,
+                GLOB_PRUNE_DIRS,
+                1,
+            )? {
                 let rel = hit
                     .strip_prefix(ws_root)
                     .unwrap_or(&hit)
@@ -250,9 +409,8 @@ fn eval_rule(ws_root: &Path, rule: &DetectRule) -> VspResult<Option<String>> {
             Ok(None)
         }
         DetectRule::FileAndAbsent { present, absent } => {
-            if !present.is_empty()
-                && ws_root.join(present).is_file()
-                && (absent.is_empty() || !ws_root.join(absent).exists())
+            if cache.is_file_in_workspace(ws_root, present)?
+                && (absent.is_empty() || !cache.exists_in_workspace(ws_root, absent)?)
             {
                 Ok(Some(present.clone()))
             } else {
@@ -265,10 +423,14 @@ fn eval_rule(ws_root: &Path, rule: &DetectRule) -> VspResult<Option<String>> {
             glob,
             pattern,
         } => {
-            let Some(found_manifest) = paths
-                .iter()
-                .find(|p| !p.is_empty() && ws_root.join(p).is_file())
-            else {
+            let mut found_manifest = None;
+            for p in paths {
+                if cache.is_file_in_workspace(ws_root, p)? {
+                    found_manifest = Some(p);
+                    break;
+                }
+            }
+            let Some(found_manifest) = found_manifest else {
                 return Ok(None);
             };
             if pattern.is_empty() {
@@ -282,38 +444,52 @@ fn eval_rule(ws_root: &Path, rule: &DetectRule) -> VspResult<Option<String>> {
             if !search_base.is_dir() {
                 return Ok(None);
             }
-            let mut candidates = Vec::new();
-            collect_matching_files(&search_base, glob, 8, GREP_PRUNE_DIRS, 1, &mut candidates)?;
-            for cand in candidates {
-                // Read bytes, not UTF-8 text: a source file in another encoding can still
-                // contain the pattern. A file that vanished is skipped. Every other read
-                // failure means the scan is incomplete, so "no match" cannot be reported.
-                let content = match fs::read(&cand) {
-                    Ok(bytes) => bytes,
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(err) => return Err(scan_incomplete(&cand, &err)),
-                };
-                if contains_bytes(&content, pattern.as_bytes()) {
-                    let rel = cand
-                        .strip_prefix(ws_root)
-                        .unwrap_or(&cand)
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    return Ok(Some(format!("{found_manifest}:{rel}")));
-                }
+            if let Some(hit) = find_first_grep_match_cached(
+                cache,
+                &search_base,
+                glob,
+                pattern.as_bytes(),
+                MAX_GREP_DEPTH,
+                GREP_PRUNE_DIRS,
+                1,
+            )? {
+                let rel = hit
+                    .strip_prefix(ws_root)
+                    .unwrap_or(&hit)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                return Ok(Some(format!("{found_manifest}:{rel}")));
             }
             Ok(None)
         }
     }
 }
 
+fn scan_incomplete_msg(path: &Path, err: &std::io::Error) -> String {
+    format!(
+        "detect: scan incomplete, cannot read {}: {err}",
+        path.display()
+    )
+}
+
 /// Builds the error for a scan that could not examine `path`. The detector then reports an
 /// incomplete observation (exit `7`) and never a complete "no match" (exit `3`).
 fn scan_incomplete(path: &Path, err: &std::io::Error) -> VspError {
-    VspError::IncompleteObservation(format!(
-        "detect: scan incomplete, cannot read {}: {err}",
-        path.display()
-    ))
+    VspError::IncompleteObservation(scan_incomplete_msg(path, err))
+}
+
+/// Reads at most `limit` bytes from `path`, returning `Ok(None)` if the file vanished.
+fn read_file_bounded(path: &Path, limit: u64) -> VspResult<Option<Vec<u8>>> {
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(scan_incomplete(path, &err)),
+    };
+    let mut buf = Vec::new();
+    file.take(limit)
+        .read_to_end(&mut buf)
+        .map_err(|err| scan_incomplete(path, &err))?;
+    Ok(Some(buf))
 }
 
 /// Returns `true` when `haystack` contains the byte sequence `needle` (not empty).
@@ -324,64 +500,91 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
             .any(|window| window == needle)
 }
 
-fn find_first_matching_file(
-    base: &Path,
-    pattern: &str,
-    max_depth: usize,
-    prune: &[&str],
-) -> VspResult<Option<std::path::PathBuf>> {
-    let mut matches = Vec::new();
-    collect_matching_files(base, pattern, max_depth, prune, 1, &mut matches)?;
-    Ok(matches.into_iter().next())
-}
-
-fn collect_matching_files(
+fn find_first_matching_file_cached(
+    cache: &mut WorkspaceTreeCache,
     dir: &Path,
     pattern: &str,
     max_depth: usize,
     prune: &[&str],
     depth: usize,
-    out: &mut Vec<std::path::PathBuf>,
-) -> VspResult<()> {
+) -> VspResult<Option<PathBuf>> {
     if depth > max_depth {
-        return Ok(());
+        return Ok(None);
     }
-    // A directory that vanished during the scan is absent. Every other failure (permission
-    // denied, I/O error) is an incomplete scan and is propagated: it is never dropped.
-    let read_dir = match fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(scan_incomplete(dir, &err)),
+    let Some(entries) = cache.read_dir_sorted(dir)? else {
+        return Ok(None);
     };
-    let mut entries = Vec::new();
-    for entry in read_dir {
-        entries.push(entry.map_err(|err| scan_incomplete(dir, &err))?);
-    }
-    entries.sort_by_key(std::fs::DirEntry::file_name);
 
-    for entry in entries {
-        let path = entry.path();
-        let ft = match entry.file_type() {
-            Ok(ft) => ft,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(err) => return Err(scan_incomplete(&path, &err)),
-        };
-        let name = entry.file_name();
-        let Some(name_str) = name.to_str() else {
-            continue;
-        };
-        if ft.is_dir() {
-            if prune.contains(&name_str) {
+    for entry in entries.iter() {
+        if entry.is_dir {
+            if prune.contains(&entry.name.as_str()) {
                 continue;
             }
             if depth < max_depth {
-                collect_matching_files(&path, pattern, max_depth, prune, depth + 1, out)?;
+                if let Some(hit) = find_first_matching_file_cached(
+                    cache,
+                    &entry.path,
+                    pattern,
+                    max_depth,
+                    prune,
+                    depth + 1,
+                )? {
+                    return Ok(Some(hit));
+                }
             }
-        } else if ft.is_file() && wildcard_match(pattern, name_str) {
-            out.push(path);
+        } else if entry.is_file && wildcard_match(pattern, &entry.name) {
+            return Ok(Some(entry.path.clone()));
         }
     }
-    Ok(())
+    Ok(None)
+}
+
+fn find_first_grep_match_cached(
+    cache: &mut WorkspaceTreeCache,
+    dir: &Path,
+    glob: &str,
+    needle: &[u8],
+    max_depth: usize,
+    prune: &[&str],
+    depth: usize,
+) -> VspResult<Option<PathBuf>> {
+    if depth > max_depth {
+        return Ok(None);
+    }
+    let Some(entries) = cache.read_dir_sorted(dir)? else {
+        return Ok(None);
+    };
+
+    for entry in entries.iter() {
+        if entry.is_dir {
+            if prune.contains(&entry.name.as_str()) {
+                continue;
+            }
+            if depth < max_depth {
+                if let Some(hit) = find_first_grep_match_cached(
+                    cache,
+                    &entry.path,
+                    glob,
+                    needle,
+                    max_depth,
+                    prune,
+                    depth + 1,
+                )? {
+                    return Ok(Some(hit));
+                }
+            }
+        } else if entry.is_file && wildcard_match(glob, &entry.name) {
+            // Read bounded raw bytes (up to MAX_DETECT_READ_BYTES), not UTF-8 text: a source
+            // file in another encoding can still contain the pattern. A file that vanished is
+            // skipped. Every other read failure means the scan is incomplete (exit 7).
+            if let Some(content) = read_file_bounded(&entry.path, MAX_DETECT_READ_BYTES)? {
+                if contains_bytes(&content, needle) {
+                    return Ok(Some(entry.path.clone()));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Simple deterministic filename glob matcher supporting `*` and `?`.

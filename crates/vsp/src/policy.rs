@@ -11,16 +11,18 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::legacy_loader::{parse_jsonc_settings_object, read_strict_json_value};
+use crate::jsonc::{parse_jsonc_settings_object, read_strict_json_value};
 use crate::model::{
-    ExtensionStatus, ModuleKind, PinsLoadState, WorkspaceCatalog, COMPILER_UNION_KEYS,
-    EXPECTED_UX_KEYS, GROUP_ORDER,
+    ExtensionStatus, ModuleDefinition, ModuleKind, PinsLoadState, UxPreset, WorkspaceCatalog,
+    COMPILER_UNION_KEYS,
 };
 use crate::resolver::{
-    compile_canonical_profile_settings, resolve_modules, resolve_profile_recipe, sha256_hex,
-    ResolveRequest,
+    compile_canonical_profile_settings, compile_canonical_profile_settings_from_resolved,
+    resolve_modules, resolve_profile_recipe, sha256_hex, ResolveRequest,
 };
-use crate::schema_loader::{embedded_snapshot_files, EMBEDDED_ROOT_LABEL};
+use crate::schema_loader::{
+    embedded_snapshot_files, AutonomyDenyListPolicy, PolicyManifest, EMBEDDED_ROOT_LABEL,
+};
 
 /// Execution-override keys denied anywhere in configuration (matched case-insensitively
 /// against both leaf keys and joined dot-paths).
@@ -228,8 +230,157 @@ pub fn matches_chat_tools_autoapprove(text: &str) -> bool {
     false
 }
 
-/// Recursively inspects a parsed JSON document against the autonomy and execution-override
-/// deny-list.
+/// Matches a declarative regex-subset pattern from `catalog/policy.jsonc` (`autonomyDenyList.patterns`)
+/// case-insensitively in linear-space DP (`O(P * N)`), supporting `^`, `$`, `.`, `*`, `+`, `?`,
+/// and backslash-escaped literals without external regex dependencies or backtracking blowup.
+#[must_use]
+pub fn matches_autonomy_pattern(pattern: &str, text: &str) -> bool {
+    #[derive(Clone, Copy)]
+    enum Atom {
+        Any,
+        Lit(char),
+    }
+    impl Atom {
+        fn matches(self, ch: char) -> bool {
+            match self {
+                Self::Any => true,
+                Self::Lit(c) => c == ch,
+            }
+        }
+    }
+    #[derive(Clone, Copy)]
+    enum Quant {
+        One,
+        ZeroOrMore,
+        OneOrMore,
+        ZeroOrOne,
+    }
+
+    if pattern.is_empty() {
+        return false;
+    }
+
+    let pat_lc = pattern.to_ascii_lowercase();
+    let mut pat_chars = pat_lc.chars().peekable();
+    let mut anchored_start = false;
+    if pat_chars.peek() == Some(&'^') {
+        anchored_start = true;
+        pat_chars.next();
+    }
+
+    let mut raw_tokens: Vec<(Atom, Quant, bool)> = Vec::new();
+    while let Some(ch) = pat_chars.next() {
+        let (atom, is_unescaped_dollar) = if ch == '\\' {
+            match pat_chars.next() {
+                Some(escaped) => (Atom::Lit(escaped), false),
+                None => (Atom::Lit('\\'), false),
+            }
+        } else if ch == '.' {
+            (Atom::Any, false)
+        } else if ch == '$' {
+            (Atom::Lit('$'), true)
+        } else {
+            (Atom::Lit(ch), false)
+        };
+
+        let quant = match pat_chars.peek() {
+            Some('*') => {
+                pat_chars.next();
+                Quant::ZeroOrMore
+            }
+            Some('+') => {
+                pat_chars.next();
+                Quant::OneOrMore
+            }
+            Some('?') => {
+                pat_chars.next();
+                Quant::ZeroOrOne
+            }
+            _ => Quant::One,
+        };
+        raw_tokens.push((atom, quant, is_unescaped_dollar));
+    }
+
+    let mut anchored_end = false;
+    if let Some(&(_, Quant::One, true)) = raw_tokens.last() {
+        anchored_end = true;
+        raw_tokens.pop();
+    }
+
+    let tokens: Vec<(Atom, Quant)> = raw_tokens.into_iter().map(|(a, q, _)| (a, q)).collect();
+    let chars: Vec<char> = text.to_ascii_lowercase().chars().collect();
+
+    let match_from = |start: usize| -> bool {
+        let slice = &chars[start..];
+        let n = slice.len();
+        let mut dp = vec![false; n + 1];
+        dp[0] = true;
+
+        for &(atom, quant) in &tokens {
+            let mut next = vec![false; n + 1];
+            match quant {
+                Quant::One => {
+                    for i in 0..n {
+                        if dp[i] && atom.matches(slice[i]) {
+                            next[i + 1] = true;
+                        }
+                    }
+                }
+                Quant::ZeroOrOne => {
+                    for i in 0..=n {
+                        if dp[i] {
+                            next[i] = true;
+                            if i < n && atom.matches(slice[i]) {
+                                next[i + 1] = true;
+                            }
+                        }
+                    }
+                }
+                Quant::ZeroOrMore => {
+                    next.copy_from_slice(&dp);
+                    for i in 0..n {
+                        if next[i] && atom.matches(slice[i]) {
+                            next[i + 1] = true;
+                        }
+                    }
+                }
+                Quant::OneOrMore => {
+                    for i in 0..n {
+                        if (dp[i] || next[i]) && atom.matches(slice[i]) {
+                            next[i + 1] = true;
+                        }
+                    }
+                }
+            }
+            dp = next;
+        }
+
+        if anchored_end {
+            dp[n]
+        } else {
+            dp.into_iter().any(|b| b)
+        }
+    };
+
+    if anchored_start {
+        if match_from(0) {
+            return true;
+        }
+        // Also match after any `.` boundary so nested `[lang]` or object-wrapped paths cannot
+        // bypass a `^`-anchored setting pattern.
+        for (idx, &ch) in chars.iter().enumerate() {
+            if ch == '.' && match_from(idx + 1) {
+                return true;
+            }
+        }
+        false
+    } else {
+        (0..=chars.len()).any(match_from)
+    }
+}
+
+/// Recursively inspects a parsed JSON document against the built-in autonomy and
+/// execution-override safety floor.
 ///
 /// Defeats all 5 N1 nested/string/case-variation payloads:
 /// 1. `{"chat.tools.autoApprove": true}`
@@ -239,9 +390,93 @@ pub fn matches_chat_tools_autoapprove(text: &str) -> bool {
 /// 5. `{"claudeCode.allowDangerouslySkipPermissions": "true"}`
 #[must_use]
 pub fn check_autonomy_denylist(value: &Value, label: &str) -> Vec<PolicyViolation> {
+    check_autonomy_denylist_with_policy(value, label, None)
+}
+
+/// Recursively inspects a parsed JSON document against the union of the built-in autonomy /
+/// execution-override safety floor and any declarative rules declared in
+/// `catalog/policy.jsonc` ([`AutonomyDenyListPolicy`]).
+///
+/// Declarative policy rules can only add restrictions on top of the built-in floor; omitting
+/// a rule from `policy` never weakens built-in security checks.
+#[must_use]
+pub fn check_autonomy_denylist_with_policy(
+    value: &Value,
+    label: &str,
+    policy: Option<&AutonomyDenyListPolicy>,
+) -> Vec<PolicyViolation> {
     let mut violations = Vec::new();
     let mut path = Vec::new();
-    inspect_autonomy_node(value, &mut path, label, &mut violations);
+    inspect_autonomy_node(value, &mut path, label, policy, &mut violations);
+    violations
+}
+
+/// Checks a Default-profile `settings.json` map against the union of the built-in security
+/// floor (`telemetry.telemetryLevel == "off"`,
+/// `security.workspace.trust.untrustedFiles == "prompt"`, `extensions.autoUpdate == false`)
+/// and any declarative `defaultProfileExpectations` declared in `catalog/policy.jsonc`.
+#[must_use]
+pub fn check_default_profile_expectations(
+    settings: &Map<String, Value>,
+    policy: Option<&PolicyManifest>,
+    label: &str,
+) -> Vec<PolicyViolation> {
+    let mut violations = Vec::new();
+    let mut checked_keys: BTreeSet<String> = BTreeSet::new();
+
+    // Built-in security floor (cannot be weakened by external policy).
+    let floor: [(&str, Value, &str); 3] = [
+        (
+            "telemetry.telemetryLevel",
+            Value::String("off".to_string()),
+            "string",
+        ),
+        (
+            "security.workspace.trust.untrustedFiles",
+            Value::String("prompt".to_string()),
+            "string",
+        ),
+        ("extensions.autoUpdate", Value::Bool(false), "boolean"),
+    ];
+
+    for (key, expected, expected_type) in &floor {
+        checked_keys.insert((*key).to_string());
+        let actual = settings.get(*key);
+        if actual != Some(expected) {
+            violations.push(PolicyViolation {
+                source: label.to_string(),
+                message: format!(
+                    "default profile expectation failed for '{key}': expected {expected_type} {expected}, found {}",
+                    actual.map_or_else(|| "missing".to_string(), Value::to_string)
+                ),
+            });
+        }
+    }
+
+    if let Some(pol) = policy {
+        for (key, exp) in &pol.default_profile_expectations {
+            let actual = settings.get(key);
+            let already_checked_same = checked_keys.contains(key)
+                && floor
+                    .iter()
+                    .any(|(fk, fv, _)| fk == key && fv == &exp.expected);
+            if already_checked_same {
+                continue;
+            }
+            if actual != Some(&exp.expected) {
+                violations.push(PolicyViolation {
+                    source: label.to_string(),
+                    message: format!(
+                        "default profile expectation failed for '{key}': expected {} {}, found {}",
+                        exp.value_type,
+                        exp.expected,
+                        actual.map_or_else(|| "missing".to_string(), Value::to_string)
+                    ),
+                });
+            }
+        }
+    }
+
     violations
 }
 
@@ -249,6 +484,7 @@ fn inspect_autonomy_node(
     value: &Value,
     path: &mut Vec<String>,
     label: &str,
+    policy: Option<&AutonomyDenyListPolicy>,
     violations: &mut Vec<PolicyViolation>,
 ) {
     match value {
@@ -258,68 +494,98 @@ fn inspect_autonomy_node(
                 let joined = path.join(".");
                 let norm_b = normalize_bool(val);
 
-                if matches_chat_tools_autoapprove(key) || matches_chat_tools_autoapprove(&joined) {
+                let matches_pattern = matches_chat_tools_autoapprove(key)
+                    || matches_chat_tools_autoapprove(&joined)
+                    || policy.is_some_and(|p| {
+                        p.patterns.iter().any(|pat| {
+                            matches_autonomy_pattern(pat, key)
+                                || matches_autonomy_pattern(pat, &joined)
+                        })
+                    });
+
+                let matches_deny_true = norm_b == Some(true)
+                    && (matches_key_or_path(
+                        key,
+                        &joined,
+                        "claudeCode.allowDangerouslySkipPermissions",
+                    ) || matches_key_or_path(key, &joined, "geminicodeassist.agentYoloMode")
+                        || policy.is_some_and(|p| {
+                            p.deny_true_keys
+                                .iter()
+                                .any(|target| matches_key_or_path(key, &joined, target))
+                        }));
+
+                let denied_mode: Option<String> = val.as_str().and_then(|s| {
+                    if matches_key_or_path(key, &joined, "claudeCode.initialPermissionMode") {
+                        if let Some(mode) = DENIED_PERMISSION_MODES
+                            .iter()
+                            .find(|denied| s.eq_ignore_ascii_case(denied))
+                        {
+                            return Some((*mode).to_string());
+                        }
+                    }
+                    if let Some(p) = policy {
+                        for (target_key, disallowed_vals) in &p.deny_values {
+                            if matches_key_or_path(key, &joined, target_key) {
+                                if let Some(found) = disallowed_vals
+                                    .iter()
+                                    .find(|denied| s.eq_ignore_ascii_case(denied))
+                                {
+                                    return Some(found.clone());
+                                }
+                            }
+                        }
+                    }
+                    None
+                });
+
+                let matches_prefix = EXEC_OVERRIDE_KEY_PREFIXES
+                    .iter()
+                    .any(|prefix| matches_key_prefix(key, &joined, prefix))
+                    || policy.is_some_and(|p| {
+                        p.presence_key_prefixes
+                            .iter()
+                            .any(|prefix| matches_key_prefix(key, &joined, prefix))
+                    });
+
+                let matches_presence = EXEC_OVERRIDE_KEYS
+                    .iter()
+                    .any(|target| matches_key_or_path(key, &joined, target))
+                    || policy.is_some_and(|p| {
+                        p.presence_keys
+                            .iter()
+                            .any(|target| matches_key_or_path(key, &joined, target))
+                    });
+
+                if matches_pattern {
                     violations.push(PolicyViolation {
                         source: label.to_string(),
                         message: format!("forbidden autonomy key: {joined}"),
                     });
-                } else if matches_key_or_path(
-                    key,
-                    &joined,
-                    "claudeCode.allowDangerouslySkipPermissions",
-                ) && norm_b == Some(true)
-                {
+                } else if matches_deny_true {
                     violations.push(PolicyViolation {
                         source: label.to_string(),
                         message: format!("forbidden autonomy setting: {joined}=true"),
                     });
-                } else if let Some(mode) = val
-                    .as_str()
-                    .filter(|_| {
-                        matches_key_or_path(key, &joined, "claudeCode.initialPermissionMode")
-                    })
-                    .and_then(|s| {
-                        DENIED_PERMISSION_MODES
-                            .iter()
-                            .find(|denied| s.eq_ignore_ascii_case(denied))
-                    })
-                {
+                } else if let Some(mode) = denied_mode {
                     violations.push(PolicyViolation {
                         source: label.to_string(),
                         message: format!("forbidden autonomy setting: {joined}={mode}"),
                     });
-                } else if EXEC_OVERRIDE_KEY_PREFIXES
-                    .iter()
-                    .any(|prefix| matches_key_prefix(key, &joined, prefix))
-                {
-                    violations.push(PolicyViolation {
-                        source: label.to_string(),
-                        message: format!("forbidden exec-override key: {joined}"),
-                    });
-                } else if matches_key_or_path(key, &joined, "geminicodeassist.agentYoloMode")
-                    && norm_b == Some(true)
-                {
-                    violations.push(PolicyViolation {
-                        source: label.to_string(),
-                        message: format!("forbidden autonomy setting: {joined}=true"),
-                    });
-                } else if EXEC_OVERRIDE_KEYS
-                    .iter()
-                    .any(|target| matches_key_or_path(key, &joined, target))
-                {
+                } else if matches_prefix || matches_presence {
                     violations.push(PolicyViolation {
                         source: label.to_string(),
                         message: format!("forbidden exec-override key: {joined}"),
                     });
                 }
 
-                inspect_autonomy_node(val, path, label, violations);
+                inspect_autonomy_node(val, path, label, policy, violations);
                 path.pop();
             }
         }
         Value::Array(items) => {
             for item in items {
-                inspect_autonomy_node(item, path, label, violations);
+                inspect_autonomy_node(item, path, label, policy, violations);
             }
         }
         Value::String(s) => {
@@ -329,6 +595,20 @@ fn inspect_autonomy_node(
                     source: label.to_string(),
                     message: format!("forbidden bypassPermissions value at: {}", path.join(".")),
                 });
+            } else if let Some(p) = policy {
+                if let Some(sub) = p
+                    .deny_value_substrings
+                    .iter()
+                    .find(|sub| !sub.is_empty() && lc.contains(&sub.to_ascii_lowercase()))
+                {
+                    violations.push(PolicyViolation {
+                        source: label.to_string(),
+                        message: format!(
+                            "forbidden autonomy value substring '{sub}' at: {}",
+                            path.join(".")
+                        ),
+                    });
+                }
             }
         }
         _ => {}
@@ -441,21 +721,101 @@ pub fn is_valid_marketplace_vsix_url(url: &str) -> bool {
     check_vsix_url(url, false).is_ok()
 }
 
+fn module_manifest_label(catalog: &WorkspaceCatalog, def: &ModuleDefinition) -> String {
+    if catalog.is_v2_layout() {
+        if def.manifest.id == "default" {
+            format!("{} (virtual)", def.dir.join("default").display())
+        } else {
+            def.dir
+                .join(format!("{}.jsonc", def.manifest.id))
+                .display()
+                .to_string()
+        }
+    } else {
+        def.dir.join("module.json").display().to_string()
+    }
+}
+
+fn module_settings_label(
+    catalog: &WorkspaceCatalog,
+    def: &ModuleDefinition,
+    scope: &str,
+    rel: &str,
+) -> String {
+    if catalog.is_v2_layout() {
+        format!("{} (settings.{scope})", def.dir.join(rel).display())
+    } else {
+        def.dir.join(rel).display().to_string()
+    }
+}
+
+fn validate_policy_manifest(catalog: &WorkspaceCatalog, violations: &mut Vec<PolicyViolation>) {
+    let Some(policy) = &catalog.policy else {
+        return;
+    };
+    let src = "catalog/policy.jsonc";
+    if !policy.vscode_version.is_empty() && semver::Version::parse(&policy.vscode_version).is_err()
+    {
+        violations.push(PolicyViolation {
+            source: src.to_string(),
+            message: format!("invalid semver vscodeVersion: {}", policy.vscode_version),
+        });
+    }
+    for (key, exp) in &policy.default_profile_expectations {
+        let type_matches = match exp.value_type.as_str() {
+            "integer" => is_json_integer(&exp.expected),
+            other => json_type_name(&exp.expected) == other,
+        };
+        if !type_matches {
+            violations.push(PolicyViolation {
+                source: src.to_string(),
+                message: format!(
+                    "defaultProfileExpectations['{key}']: expected value {} does not match declared type '{}'",
+                    exp.expected, exp.value_type
+                ),
+            });
+        }
+    }
+    for (key, floor_val) in [
+        ("telemetry.telemetryLevel", Value::String("off".to_string())),
+        (
+            "security.workspace.trust.untrustedFiles",
+            Value::String("prompt".to_string()),
+        ),
+        ("extensions.autoUpdate", Value::Bool(false)),
+    ] {
+        match policy.default_profile_expectations.get(key) {
+            None => violations.push(PolicyViolation {
+                source: src.to_string(),
+                message: format!("defaultProfileExpectations missing required floor key '{key}'"),
+            }),
+            Some(exp) if exp.expected != floor_val => violations.push(PolicyViolation {
+                source: src.to_string(),
+                message: format!(
+                    "defaultProfileExpectations['{key}'] cannot weaken safety floor (expected {floor_val}, got {})",
+                    exp.expected
+                ),
+            }),
+            Some(_) => {}
+        }
+    }
+}
+
 /// Runs the complete repository & security validation suite backing `vsp dev validate`.
 ///
 /// Validates:
-/// 1. Single-document strict JSON/JSONC syntax across `catalog/`, `modules/`, `profiles/`,
-///    `_merged/`, and `exports/` (when present).
-/// 2. Module manifests, sibling file references, symmetric `conflicts[]`, and DAG acyclicity.
-/// 3. `catalog/extensions.json` schema, active-module parity, `GROUP_ORDER` coverage, and
-///    exact `LC_ALL=C` sorted `catalog/publishers.json` parity.
-/// 4. Fail-closed `catalog/extension-pins.json` presence, SHA-256 format, and Marketplace URLs.
-/// 5. Workspace & profile setting fragments against autonomy deny-list, workspace lints, and
-///    `catalog/setting-scopes.json`.
+/// 1. Single-document strict JSON/JSONC syntax across `catalog/`, `packs/` / `modules/`,
+///    `profiles/`, `_merged/`, and `exports/` (when present).
+/// 2. Pack/module manifests, sibling file references, symmetric `conflicts[]`, and DAG acyclicity.
+/// 3. Extension catalog schema, active-module parity, group-order coverage, and exact
+///    `LC_ALL=C` sorted publisher allowlist parity.
+/// 4. Fail-closed lockfile / pins manifest presence, SHA-256 format, and Marketplace URLs.
+/// 5. Workspace & profile setting fragments against declarative + floor autonomy deny-list,
+///    workspace lints, and setting-scope rules.
 /// 6. Recursive scalar-leaf & object-vs-leaf prefix collision detection across jointly
 ///    selectable modules within the same scope.
-/// 7. Exact 15-key UX symmetry (`crisp`, `retina`, `default`, disjoint from `core-editor`).
-/// 8. Profile recipes, `_merged/*.json`, `exports/*.code-profile`, `exports/SHA256SUMS`,
+/// 7. Exact UX symmetry (`crisp`, `retina`, `default`, disjoint from `core-editor`).
+/// 8. Profile recipes, tracked `_merged/*.json`, `exports/*.code-profile`, `exports/SHA256SUMS`,
 ///    and forbidden security-bypass paths.
 #[must_use]
 pub fn validate_repository(catalog: &WorkspaceCatalog) -> ValidationReport {
@@ -499,7 +859,7 @@ pub fn validate_repository(catalog: &WorkspaceCatalog) -> ValidationReport {
 
     // 2. Module sibling files, references, symmetric conflicts, and DAG acyclicity.
     for (mid, def) in &catalog.modules {
-        let manifest_label = def.dir.join("module.json").display().to_string();
+        let manifest_label = module_manifest_label(catalog, def);
         if is_embedded {
             if def.manifest.settings.workspace.is_some() && def.workspace_settings.is_none() {
                 violations.push(PolicyViolation {
@@ -588,24 +948,27 @@ pub fn validate_repository(catalog: &WorkspaceCatalog) -> ValidationReport {
         }
     }
 
-    // 3. Catalog integrity, active-module parity, publisher allowlist parity, and GROUP_ORDER.
+    // 3. Catalog integrity, active-module parity, publisher allowlist parity, and group order.
     validate_catalog_and_publishers(catalog, &mut violations);
 
-    // 4. Fail-closed extension-pins.json validation.
+    // 4. Fail-closed pins/lockfile & declarative policy manifest validation.
     validate_pins(catalog, &mut violations);
+    validate_policy_manifest(catalog, &mut violations);
 
     // 5. Settings fragment validation (autonomy deny-list, workspace lints, setting-scopes).
-    let ux_keys = catalog.ux_managed_keys();
+    let mut ux_key_set: BTreeSet<String> = catalog.ux_managed_keys().into_iter().collect();
+    ux_key_set.extend(catalog.expected_ux_keys());
+    let ux_keys: Vec<String> = ux_key_set.into_iter().collect();
     for def in catalog.modules.values() {
         if let Some(rel) = &def.manifest.settings.workspace {
             if let Some(ws_map) = &def.workspace_settings {
-                let src = def.dir.join(rel).display().to_string();
+                let src = module_settings_label(catalog, def, "workspace", rel);
                 validate_settings_fragment(catalog, &src, ws_map, true, &ux_keys, &mut violations);
             }
         }
         if let Some(rel) = &def.manifest.settings.profile {
             if let Some(prof_map) = &def.profile_settings {
-                let src = def.dir.join(rel).display().to_string();
+                let src = module_settings_label(catalog, def, "profile", rel);
                 validate_settings_fragment(
                     catalog,
                     &src,
@@ -689,7 +1052,18 @@ fn validate_catalog_and_publishers(
     catalog: &WorkspaceCatalog,
     violations: &mut Vec<PolicyViolation>,
 ) {
-    let ext_src = "catalog/extensions.json";
+    let is_v2 = catalog.is_v2_layout();
+    let ext_src = if is_v2 {
+        "catalog/extensions.jsonc"
+    } else {
+        "catalog/extensions.json"
+    };
+    let pub_src = if is_v2 {
+        "catalog/extensions.jsonc"
+    } else {
+        "catalog/publishers.json"
+    };
+    let group_order = catalog.effective_group_order();
     for (k, rec) in &catalog.extensions.extensions {
         if k != &k.to_ascii_lowercase() {
             violations.push(PolicyViolation {
@@ -728,7 +1102,7 @@ fn validate_catalog_and_publishers(
             }
         }
         if rec.status == ExtensionStatus::Active
-            && !GROUP_ORDER
+            && !group_order
                 .iter()
                 .any(|g| g.eq_ignore_ascii_case(&rec.group))
         {
@@ -803,52 +1177,63 @@ fn validate_catalog_and_publishers(
     normalized_actual.sort();
     if actual_pubs != &normalized_actual {
         violations.push(PolicyViolation {
-            source: "catalog/publishers.json".to_string(),
-            message:
-                "catalog/publishers.json is not strictly lowercase, unique, and LC_ALL=C sorted"
-                    .to_string(),
+            source: pub_src.to_string(),
+            message: format!(
+                "{pub_src} publishers are not strictly lowercase, unique, and LC_ALL=C sorted"
+            ),
         });
     }
     if normalized_actual != expected_pubs {
         violations.push(PolicyViolation {
-            source: "catalog/publishers.json".to_string(),
-            message: "catalog/publishers.json drifted from active module publishers".to_string(),
+            source: pub_src.to_string(),
+            message: format!("{pub_src} drifted from active module publishers"),
         });
     }
 }
 
 fn validate_pins(catalog: &WorkspaceCatalog, violations: &mut Vec<PolicyViolation>) {
+    let is_v2 = catalog.is_v2_layout();
+    let pins_label = if is_v2 {
+        "vsp.lock.json"
+    } else {
+        "catalog/extension-pins.json"
+    };
+    let scopes_label = if is_v2 {
+        "catalog/policy.jsonc"
+    } else {
+        "catalog/setting-scopes.json"
+    };
+
     match &catalog.pins {
         PinsLoadState::Missing(path) => {
             violations.push(PolicyViolation {
                 source: path.display().to_string(),
-                message: "catalog/extension-pins.json is missing or unreadable".to_string(),
+                message: format!("{pins_label} is missing or unreadable"),
             });
         }
         PinsLoadState::Invalid { path, error } => {
             violations.push(PolicyViolation {
                 source: path.display().to_string(),
-                message: format!("catalog/extension-pins.json parse failed: {error}"),
+                message: format!("{pins_label} parse failed: {error}"),
             });
         }
         PinsLoadState::Loaded(manifest) => {
-            let src = "catalog/extension-pins.json";
             for (k, pin) in &manifest.pins {
                 if k != &k.to_ascii_lowercase() {
                     violations.push(PolicyViolation {
-                        source: src.to_string(),
+                        source: pins_label.to_string(),
                         message: format!("non-lowercase pin key: {k}"),
                     });
                 }
                 if !is_valid_sha256_hex(&pin.sha256) {
                     violations.push(PolicyViolation {
-                        source: src.to_string(),
+                        source: pins_label.to_string(),
                         message: format!("invalid sha256 for pin {k}"),
                     });
                 }
                 if !is_valid_marketplace_vsix_url(&pin.vsix_url) {
                     violations.push(PolicyViolation {
-                        source: src.to_string(),
+                        source: pins_label.to_string(),
                         message: format!(
                             "invalid or non-Marketplace vsix_url for pin {k}: {}",
                             pin.vsix_url
@@ -857,7 +1242,7 @@ fn validate_pins(catalog: &WorkspaceCatalog, violations: &mut Vec<PolicyViolatio
                 }
                 if !pin.version.is_empty() && semver::Version::parse(&pin.version).is_err() {
                     violations.push(PolicyViolation {
-                        source: src.to_string(),
+                        source: pins_label.to_string(),
                         message: format!("invalid semver version for pin {k}: {}", pin.version),
                     });
                 }
@@ -869,7 +1254,7 @@ fn validate_pins(catalog: &WorkspaceCatalog, violations: &mut Vec<PolicyViolatio
             && semver::Version::parse(&scopes.vscode_version).is_err()
         {
             violations.push(PolicyViolation {
-                source: "catalog/setting-scopes.json".to_string(),
+                source: scopes_label.to_string(),
                 message: format!("invalid semver vscodeVersion: {}", scopes.vscode_version),
             });
         }
@@ -884,8 +1269,13 @@ fn validate_settings_fragment(
     ux_keys: &[String],
     violations: &mut Vec<PolicyViolation>,
 ) {
+    let autonomy_policy = catalog.policy.as_ref().map(|p| &p.autonomy_deny_list);
     let val = Value::Object(map.clone());
-    violations.extend(check_autonomy_denylist(&val, source));
+    violations.extend(check_autonomy_denylist_with_policy(
+        &val,
+        source,
+        autonomy_policy,
+    ));
 
     if is_workspace {
         if map.contains_key("editor.defaultFormatter") {
@@ -929,8 +1319,34 @@ fn validate_settings_fragment(
         }
     }
 
-    let Some(scopes) = &catalog.setting_scopes else {
+    if catalog.policy.is_none() && catalog.setting_scopes.is_none() {
         return;
+    }
+
+    let vscode_version = catalog
+        .policy
+        .as_ref()
+        .map(|p| p.vscode_version.as_str())
+        .or_else(|| {
+            catalog
+                .setting_scopes
+                .as_ref()
+                .map(|s| s.vscode_version.as_str())
+        })
+        .unwrap_or("");
+
+    let mut forbidden_keys: BTreeSet<&str> = BTreeSet::new();
+    if let Some(pol) = &catalog.policy {
+        forbidden_keys.extend(pol.forbidden_keys.iter().map(String::as_str));
+    }
+    if let Some(scopes) = &catalog.setting_scopes {
+        forbidden_keys.extend(scopes.forbidden_keys.iter().map(String::as_str));
+    }
+
+    let ws_fragment_label = if catalog.is_v2_layout() {
+        "settings.workspace"
+    } else {
+        "settings.workspace.jsonc"
     };
 
     // Nested objects and `[language]` blocks are flattened to dotted keys first, so a nested
@@ -938,16 +1354,23 @@ fn validate_settings_fragment(
     for flat in flatten_setting_paths(map) {
         let key = &flat.key;
         let value = flat.value;
-        if scopes.forbidden_keys.iter().any(|fk| fk == key) {
+        if forbidden_keys.contains(key.as_str()) {
             violations.push(PolicyViolation {
                 source: source.to_string(),
-                message: format!(
-                    "forbidden/deprecated VS Code {} key: {key}",
-                    scopes.vscode_version
-                ),
+                message: format!("forbidden/deprecated VS Code {vscode_version} key: {key}"),
             });
         }
-        let Some(spec) = scopes.settings.get(key) else {
+        let spec = catalog
+            .policy
+            .as_ref()
+            .and_then(|p| p.scopes.get(key))
+            .or_else(|| {
+                catalog
+                    .setting_scopes
+                    .as_ref()
+                    .and_then(|s| s.settings.get(key))
+            });
+        let Some(spec) = spec else {
             continue;
         };
 
@@ -964,7 +1387,7 @@ fn validate_settings_fragment(
             violations.push(PolicyViolation {
                 source: source.to_string(),
                 message: format!(
-                    "key {key} has scope={} and is forbidden in settings.workspace.jsonc",
+                    "key {key} has scope={} and is forbidden in {ws_fragment_label}",
                     spec.scope
                 ),
             });
@@ -1016,25 +1439,49 @@ fn validate_settings_fragment(
     }
 }
 
+type BorrowedScalarLeafMap<'a> = BTreeMap<Vec<&'a str>, &'a Value>;
+type BorrowedObjectPathSet<'a> = BTreeSet<Vec<&'a str>>;
+
+struct PrecomputedModuleSettings<'a> {
+    ws: Option<(BorrowedScalarLeafMap<'a>, BorrowedObjectPathSet<'a>)>,
+    pr: Option<(BorrowedScalarLeafMap<'a>, BorrowedObjectPathSet<'a>)>,
+}
+
 fn validate_module_collisions(catalog: &WorkspaceCatalog, violations: &mut Vec<PolicyViolation>) {
-    // Precompute transitive requires[] ancestors for each module.
-    let mut ancestors: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // Precompute transitive requires[] ancestors for each module using borrowed &str keys.
+    let mut ancestors: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for id in catalog.modules.keys() {
-        let mut seen = BTreeSet::new();
-        let mut stack = vec![id.clone()];
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        let mut stack: Vec<&str> = vec![id.as_str()];
         while let Some(cur) = stack.pop() {
-            if let Some(def) = catalog.modules.get(&cur) {
+            if let Some(def) = catalog.modules.get(cur) {
                 for req in &def.manifest.requires {
-                    if seen.insert(req.clone()) {
-                        stack.push(req.clone());
+                    if seen.insert(req.as_str()) {
+                        stack.push(req.as_str());
                     }
                 }
             }
         }
-        ancestors.insert(id.clone(), seen);
+        ancestors.insert(id.as_str(), seen);
     }
 
-    let mods: Vec<_> = catalog.modules.values().collect();
+    // Precompute borrowed scalar leaf maps and object-path sets ONCE per module & scope
+    // before the O(N^2) pair comparison loop (zero Value/String cloning per pair).
+    let mods: Vec<&ModuleDefinition> = catalog.modules.values().collect();
+    let precomputed: Vec<PrecomputedModuleSettings<'_>> = mods
+        .iter()
+        .map(|def| PrecomputedModuleSettings {
+            ws: def
+                .workspace_settings
+                .as_ref()
+                .map(|m| (collect_scalar_leaves(m), collect_object_paths(m))),
+            pr: def
+                .profile_settings
+                .as_ref()
+                .map(|m| (collect_scalar_leaves(m), collect_object_paths(m))),
+        })
+        .collect();
+
     for i in 0..mods.len() {
         for j in (i + 1)..mods.len() {
             let a = mods[i];
@@ -1049,28 +1496,24 @@ fn validate_module_collisions(catalog: &WorkspaceCatalog, violations: &mut Vec<P
                 continue;
             }
             if ancestors
-                .get(&a.manifest.id)
-                .is_some_and(|set| set.contains(&b.manifest.id))
+                .get(a.manifest.id.as_str())
+                .is_some_and(|set| set.contains(b.manifest.id.as_str()))
                 || ancestors
-                    .get(&b.manifest.id)
-                    .is_some_and(|set| set.contains(&a.manifest.id))
+                    .get(b.manifest.id.as_str())
+                    .is_some_and(|set| set.contains(a.manifest.id.as_str()))
             {
                 continue;
             }
 
-            for (scope_label, map_a, map_b) in [
-                ("ws", &a.workspace_settings, &b.workspace_settings),
-                ("pr", &a.profile_settings, &b.profile_settings),
+            for (scope_label, scope_a, scope_b) in [
+                ("ws", &precomputed[i].ws, &precomputed[j].ws),
+                ("pr", &precomputed[i].pr, &precomputed[j].pr),
             ] {
-                let (Some(ma), Some(mb)) = (map_a, map_b) else {
+                let (Some((la, oa)), Some((lb, ob))) = (scope_a, scope_b) else {
                     continue;
                 };
-                let la = collect_scalar_leaves(ma);
-                let lb = collect_scalar_leaves(mb);
-                let oa = collect_object_paths(ma);
-                let ob = collect_object_paths(mb);
 
-                for (path_a, val_a) in &la {
+                for (path_a, val_a) in la {
                     if let Some(val_b) = lb.get(path_a) {
                         if val_a != val_b || json_type_name(val_a) != json_type_name(val_b) {
                             violations.push(PolicyViolation {
@@ -1117,6 +1560,24 @@ fn validate_module_collisions(catalog: &WorkspaceCatalog, violations: &mut Vec<P
 }
 
 fn validate_ux_symmetry(catalog: &WorkspaceCatalog, violations: &mut Vec<PolicyViolation>) {
+    let is_v2 = catalog.is_v2_layout();
+    let ux_group_src = if is_v2 { "packs (ux)" } else { "modules/ux" };
+    let default_src = if is_v2 {
+        "packs/default (virtual)"
+    } else {
+        "modules/ux/default/settings.profile.jsonc"
+    };
+    let crisp_src = if is_v2 {
+        "packs/crisp.jsonc"
+    } else {
+        "modules/ux/crisp/settings.profile.jsonc"
+    };
+    let retina_src = if is_v2 {
+        "packs/retina.jsonc"
+    } else {
+        "modules/ux/retina/settings.profile.jsonc"
+    };
+
     let (Some(crisp), Some(retina), Some(default_ux), Some(core)) = (
         catalog
             .modules
@@ -1136,35 +1597,40 @@ fn validate_ux_symmetry(catalog: &WorkspaceCatalog, violations: &mut Vec<PolicyV
             .and_then(|m| m.profile_settings.as_ref()),
     ) else {
         violations.push(PolicyViolation {
-            source: "modules/ux".to_string(),
+            source: ux_group_src.to_string(),
             message: "missing required UX or core-editor settings fragments (crisp, retina, default, core-editor)".to_string(),
         });
         return;
     };
 
+    let expected_ux_owned = catalog.expected_ux_keys();
+    let expected_ux: Vec<&str> = expected_ux_owned.iter().map(String::as_str).collect();
     let crisp_keys: Vec<&str> = crisp.keys().map(String::as_str).collect();
     let retina_keys: Vec<&str> = retina.keys().map(String::as_str).collect();
     if crisp_keys != retina_keys {
         violations.push(PolicyViolation {
-            source: "modules/ux".to_string(),
+            source: ux_group_src.to_string(),
             message: "crisp and retina UX presets have different key sets".to_string(),
         });
     }
-    if crisp_keys != EXPECTED_UX_KEYS {
+    if crisp_keys != expected_ux {
         violations.push(PolicyViolation {
-            source: "modules/ux".to_string(),
-            message: "UX presets do not match the exact 15 symmetric keys".to_string(),
+            source: ux_group_src.to_string(),
+            message: format!(
+                "UX presets do not match the expected {} symmetric managed keys",
+                expected_ux.len()
+            ),
         });
     }
     if !default_ux.is_empty() {
         violations.push(PolicyViolation {
-            source: "modules/ux/default/settings.profile.jsonc".to_string(),
-            message: "modules/ux/default/settings.profile.jsonc must be empty {}".to_string(),
+            source: default_src.to_string(),
+            message: format!("{default_src} must be empty {{}}"),
         });
     }
     if retina.get("workbench.iconTheme").and_then(Value::as_str) != Some("catppuccin-mocha") {
         violations.push(PolicyViolation {
-            source: "modules/ux/retina/settings.profile.jsonc".to_string(),
+            source: retina_src.to_string(),
             message: "retina workbench.iconTheme must be 'catppuccin-mocha'".to_string(),
         });
     }
@@ -1174,7 +1640,7 @@ fn validate_ux_symmetry(catalog: &WorkspaceCatalog, violations: &mut Vec<PolicyV
         != Some("fluent-icons")
     {
         violations.push(PolicyViolation {
-            source: "modules/ux/retina/settings.profile.jsonc".to_string(),
+            source: retina_src.to_string(),
             message: "retina workbench.productIconTheme must be 'fluent-icons'".to_string(),
         });
     }
@@ -1184,7 +1650,7 @@ fn validate_ux_symmetry(catalog: &WorkspaceCatalog, violations: &mut Vec<PolicyV
         != Some("material-product-icons")
     {
         violations.push(PolicyViolation {
-            source: "modules/ux/crisp/settings.profile.jsonc".to_string(),
+            source: crisp_src.to_string(),
             message: "crisp workbench.productIconTheme must be 'material-product-icons'"
                 .to_string(),
         });
@@ -1192,7 +1658,7 @@ fn validate_ux_symmetry(catalog: &WorkspaceCatalog, violations: &mut Vec<PolicyV
     for k in &crisp_keys {
         if core.contains_key(*k) {
             violations.push(PolicyViolation {
-                source: "modules/ux".to_string(),
+                source: ux_group_src.to_string(),
                 message: format!("key '{k}' appears in both UX preset and core-editor"),
             });
         }
@@ -1205,24 +1671,52 @@ fn validate_profiles_and_artifacts(
     violations: &mut Vec<PolicyViolation>,
 ) {
     let is_embedded = catalog.root == Path::new(EMBEDDED_ROOT_LABEL);
+    let policy = catalog.policy.as_ref();
+    let autonomy_policy = policy.map(|p| &p.autonomy_deny_list);
 
     for (name, recipe) in &catalog.profiles {
         let src = format!("preset:{name}");
         if let Ok(val) = serde_json::to_value(recipe) {
-            violations.extend(check_autonomy_denylist(&val, &src));
+            violations.extend(check_autonomy_denylist_with_policy(
+                &val,
+                &src,
+                autonomy_policy,
+            ));
         }
-        if let Err(err) = resolve_profile_recipe(catalog, name, &[], &[], None, None) {
-            violations.push(PolicyViolation {
-                source: src.clone(),
-                message: format!("profile '{name}' recipe failed resolution: {err}"),
-            });
-            continue;
-        }
-        match compile_canonical_profile_settings(catalog, name) {
+        // Resolve each profile ONCE when its UX is already default/empty (all canonical presets).
+        let compiled_res = if recipe.ux.is_empty() || recipe.ux == "default" {
+            match resolve_profile_recipe(catalog, name, &[], &[], Some(UxPreset::Default), None) {
+                Ok(resolved) => {
+                    compile_canonical_profile_settings_from_resolved(catalog, recipe, &resolved)
+                }
+                Err(err) => {
+                    violations.push(PolicyViolation {
+                        source: src,
+                        message: format!("profile '{name}' recipe failed resolution: {err}"),
+                    });
+                    continue;
+                }
+            }
+        } else {
+            if let Err(err) = resolve_profile_recipe(catalog, name, &[], &[], None, None) {
+                violations.push(PolicyViolation {
+                    source: src,
+                    message: format!("profile '{name}' recipe failed resolution: {err}"),
+                });
+                continue;
+            }
+            compile_canonical_profile_settings(catalog, name)
+        };
+
+        match compiled_res {
             Ok(compiled) => {
                 let val = Value::Object(compiled);
-                violations.extend(check_autonomy_denylist(&val, &src));
-                check_baseline_invariants(&val, &src, true, ux_keys, violations);
+                violations.extend(check_autonomy_denylist_with_policy(
+                    &val,
+                    &src,
+                    autonomy_policy,
+                ));
+                check_baseline_invariants(&val, &src, true, ux_keys, policy, violations);
             }
             Err(err) => {
                 violations.push(PolicyViolation {
@@ -1262,8 +1756,12 @@ fn validate_profiles_and_artifacts(
             for path in files {
                 let src = path.display().to_string();
                 if let Ok(val) = read_strict_json_value(&path, false) {
-                    violations.extend(check_autonomy_denylist(&val, &src));
-                    check_baseline_invariants(&val, &src, false, ux_keys, violations);
+                    violations.extend(check_autonomy_denylist_with_policy(
+                        &val,
+                        &src,
+                        autonomy_policy,
+                    ));
+                    check_baseline_invariants(&val, &src, false, ux_keys, policy, violations);
                 }
             }
         }
@@ -1287,8 +1785,14 @@ fn validate_profiles_and_artifacts(
                     let src = path.display().to_string();
                     if let Ok(val) = read_strict_json_value(&path, false) {
                         if let Some(settings) = val.get("settings") {
-                            violations.extend(check_autonomy_denylist(settings, &src));
-                            check_baseline_invariants(settings, &src, true, ux_keys, violations);
+                            violations.extend(check_autonomy_denylist_with_policy(
+                                settings,
+                                &src,
+                                autonomy_policy,
+                            ));
+                            check_baseline_invariants(
+                                settings, &src, true, ux_keys, policy, violations,
+                            );
                         }
                     }
                 }
@@ -1352,6 +1856,7 @@ fn check_baseline_invariants(
     source: &str,
     check_no_ux_leak: bool,
     ux_keys: &[String],
+    policy: Option<&PolicyManifest>,
     violations: &mut Vec<PolicyViolation>,
 ) {
     let Some(obj) = settings.as_object() else {
@@ -1389,6 +1894,30 @@ fn check_baseline_invariants(
             message: "editor.hover.enabled != \"on\"".to_string(),
         });
     }
+    // Enforce any additional compiled-profile-compatible expectations declared in catalog/policy.jsonc.
+    if let Some(pol) = policy {
+        for (key, exp) in &pol.default_profile_expectations {
+            if matches!(
+                key.as_str(),
+                "security.workspace.trust.untrustedFiles" | "telemetry.telemetryLevel"
+            ) {
+                continue;
+            }
+            let disallowed_in_compiled = pol
+                .scopes
+                .get(key)
+                .is_some_and(|spec| spec.allow_in_compiled_profile == Some(false));
+            if disallowed_in_compiled {
+                continue;
+            }
+            if obj.get(key) != Some(&exp.expected) {
+                violations.push(PolicyViolation {
+                    source: source.to_string(),
+                    message: format!("{key} != {}", exp.expected),
+                });
+            }
+        }
+    }
     if obj.contains_key("$schema") || obj.contains_key("@extends") {
         violations.push(PolicyViolation {
             source: source.to_string(),
@@ -1408,49 +1937,55 @@ fn check_baseline_invariants(
     }
 }
 
-fn collect_scalar_leaves(map: &Map<String, Value>) -> BTreeMap<Vec<String>, Value> {
-    fn walk(val: &Value, prefix: &mut Vec<String>, out: &mut BTreeMap<Vec<String>, Value>) {
+fn collect_scalar_leaves<'a>(map: &'a Map<String, Value>) -> BorrowedScalarLeafMap<'a> {
+    fn walk<'a>(val: &'a Value, prefix: &mut Vec<&'a str>, out: &mut BorrowedScalarLeafMap<'a>) {
         match val {
             Value::Object(obj) => {
                 for (k, v) in obj {
-                    prefix.push(k.clone());
+                    prefix.push(k.as_str());
                     walk(v, prefix, out);
                     prefix.pop();
                 }
             }
             Value::Array(_) => {
-                if prefix.len() == 1 && COMPILER_UNION_KEYS.contains(&prefix[0].as_str()) {
+                if prefix.len() == 1 && COMPILER_UNION_KEYS.contains(&prefix[0]) {
                     return;
                 }
-                out.insert(prefix.clone(), val.clone());
+                out.insert(prefix.clone(), val);
             }
             _ => {
-                out.insert(prefix.clone(), val.clone());
+                out.insert(prefix.clone(), val);
             }
         }
     }
     let mut out = BTreeMap::new();
     let mut prefix = Vec::new();
-    walk(&Value::Object(map.clone()), &mut prefix, &mut out);
+    for (k, v) in map {
+        prefix.push(k.as_str());
+        walk(v, &mut prefix, &mut out);
+        prefix.pop();
+    }
     out
 }
 
-fn collect_object_paths(map: &Map<String, Value>) -> BTreeSet<Vec<String>> {
-    fn walk(val: &Value, prefix: &mut Vec<String>, out: &mut BTreeSet<Vec<String>>) {
-        if let Value::Object(obj) = val {
-            if !prefix.is_empty() {
+fn collect_object_paths<'a>(map: &'a Map<String, Value>) -> BorrowedObjectPathSet<'a> {
+    fn walk_obj<'a>(
+        obj: &'a Map<String, Value>,
+        prefix: &mut Vec<&'a str>,
+        out: &mut BorrowedObjectPathSet<'a>,
+    ) {
+        for (k, v) in obj {
+            if let Value::Object(sub) = v {
+                prefix.push(k.as_str());
                 out.insert(prefix.clone());
-            }
-            for (k, v) in obj {
-                prefix.push(k.clone());
-                walk(v, prefix, out);
+                walk_obj(sub, prefix, out);
                 prefix.pop();
             }
         }
     }
     let mut out = BTreeSet::new();
     let mut prefix = Vec::new();
-    walk(&Value::Object(map.clone()), &mut prefix, &mut out);
+    walk_obj(map, &mut prefix, &mut out);
     out
 }
 

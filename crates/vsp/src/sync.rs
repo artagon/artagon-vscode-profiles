@@ -591,6 +591,8 @@ fn run_user_default_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspR
         ai_mode: opts.ai,
         unlocked_bypass: prev_prov.as_ref().is_some_and(|p| p.unlocked_bypass),
         publisher_trust_bypass: prev_prov.as_ref().is_some_and(|p| p.publisher_trust_bypass),
+        pins_file_override: false,
+        tier2_unpinned: Vec::new(),
         last_sync_at: now_rfc3339_utc(),
     };
     save_profile_provenance(&prov)?;
@@ -1071,6 +1073,8 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
             ai_mode: opts.ai,
             unlocked_bypass: recorded_unlocked_bypass,
             publisher_trust_bypass: recorded_publisher_trust_bypass,
+            pins_file_override: false,
+            tier2_unpinned: Vec::new(),
             last_sync_at: now_rfc3339_utc(),
         };
         save_profile_provenance(&prov)?;
@@ -1092,6 +1096,8 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
                 ai_mode: None,
                 unlocked_bypass: false,
                 publisher_trust_bypass: false,
+                pins_file_override: false,
+                tier2_unpinned: Vec::new(),
                 last_sync_at: String::new(),
             });
             prov.managed_extensions = desired_ext_ids;
@@ -1667,6 +1673,8 @@ fn run_bundle_import_apply(
         ai_mode: opts.ai,
         unlocked_bypass: unlocked_bypass || prev_unlocked,
         publisher_trust_bypass: publisher_trust_bypass || prev_publisher_trust_bypass,
+        pins_file_override: false,
+        tier2_unpinned: Vec::new(),
         last_sync_at: now_rfc3339_utc(),
     };
     save_profile_provenance(&prov)?;

@@ -62,6 +62,13 @@ pub struct ProfileProvenance {
     /// `ARTAGON_VSCODE_TRUST_UNKNOWN_PUBLISHER=1` in this sync or in an earlier sync.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub publisher_trust_bypass: bool,
+    /// Whether `ARTAGON_VSCODE_PINS_FILE` overrode the catalog lockfile/pins manifest during
+    /// this sync or an earlier sync.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pins_file_override: bool,
+    /// Tier 2 extension IDs installed without a verified version pin during this sync.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tier2_unpinned: Vec<String>,
     /// RFC 3339 UTC timestamp of the last sync.
     pub last_sync_at: String,
 }

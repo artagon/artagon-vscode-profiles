@@ -48,13 +48,20 @@
       "antigravity.caCertificates",
       "chatgpt.cliExecutable"
     ],
+    "presenceKeyPrefixes": [
+      "terminal.integrated.profiles",
+      "terminal.integrated.env",
+      "terminal.integrated.automationProfile",
+      "terminal.integrated.defaultProfile"
+    ],
     "denyTrueKeys": [
       "claudeCode.allowDangerouslySkipPermissions",
       "geminicodeassist.agentYoloMode"
     ],
     "denyValues": {
       "claudeCode.initialPermissionMode": [
-        "bypassPermissions"
+        "bypassPermissions",
+        "acceptEdits"
       ]
     },
     "denyValueSubstrings": [

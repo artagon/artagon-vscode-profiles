@@ -95,6 +95,20 @@ impl VspError {
             Self::IncompleteObservation(_) => ExitCode::IncompleteObservation,
         }
     }
+
+    /// Returns a stable `snake_case` machine-readable kind identifier for this error variant.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Operational(_) => "operational",
+            Self::TargetMissing(_) => "target_missing",
+            Self::NegativeCheck(_) => "negative_check",
+            Self::UsageOrConfig(_) => "usage_or_config",
+            Self::SafetyRefusal(_) => "safety_refusal",
+            Self::RetryableLock(_) => "retryable_lock",
+            Self::IncompleteObservation(_) => "incomplete_observation",
+        }
+    }
 }
 
 /// Convenience result alias used throughout `vsp`.

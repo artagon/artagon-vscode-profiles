@@ -8,11 +8,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use jsonc_parser::cst::{CstArray, CstInputValue, CstNode, CstObject, CstObjectProp, CstRootNode};
-use jsonc_parser::ParseOptions;
 use serde_json::{Map, Value};
 
 use crate::exit_codes::{VspError, VspResult};
-use crate::legacy_loader::parse_jsonc_value;
+use crate::jsonc::{default_parse_options, parse_jsonc_value};
 use crate::model::{WorkspaceExtensionsFile, COMPILER_UNION_KEYS};
 use crate::resolver::to_canonical_json_string;
 
@@ -42,22 +41,16 @@ impl Default for CstMergeOptions {
     }
 }
 
-fn cst_parse_options() -> ParseOptions {
-    ParseOptions {
-        allow_comments: true,
-        allow_trailing_commas: true,
-        allow_loose_object_property_names: false,
-    }
-}
-
 /// Losslessly merges `desired` settings into an existing JSONC document `existing_text`.
 ///
 /// - When `existing_text` is empty or whitespace-only, emits canonical formatted JSON.
-/// - Otherwise parses `existing_text` with [`CstRootNode::parse`], updates changed values in
-///   place, recursively merges nested JSON objects (such as `[rust]` / `[typescript]` blocks)
-///   without touching user-owned keys or comments, unions set-like arrays, and deletes retired
-///   keys and nested paths.
-/// - Re-parses the emitted JSONC before returning to guarantee syntactic validity.
+/// - Otherwise parses `existing_text` with [`CstRootNode::parse`], indexes existing CST
+///   properties once per object (`O(K + P)`), updates changed values in place, collapses
+///   duplicate keys to the effective last occurrence, recursively merges nested JSON objects
+///   (such as `[rust]` / `[typescript]` blocks) without touching user-owned keys or comments,
+///   unions set-like arrays, and deletes retired keys and nested paths.
+/// - Re-parses the emitted JSONC before returning to guarantee syntactic validity and
+///   post-merge value effectiveness.
 ///
 /// # Errors
 ///
@@ -72,7 +65,7 @@ pub fn merge_jsonc_object_str(
         return to_canonical_json_string(desired);
     }
 
-    let parse_opts = cst_parse_options();
+    let parse_opts = default_parse_options();
     let root = CstRootNode::parse(existing_text, &parse_opts)
         .map_err(|err| VspError::Operational(format!("JSONC CST parse error: {err}")))?;
 
@@ -80,13 +73,30 @@ pub fn merge_jsonc_object_str(
         VspError::Operational("expected a JSONC object at document root".to_string())
     })?;
 
-    // 1. Merge desired keys recursively into the CST object.
-    merge_into_cst_object(&root_obj, desired, &opts.union_array_keys, true)?;
+    // 1. Merge desired keys recursively into the CST object using an O(K + P) property index.
+    let mut remaining_root_props =
+        merge_into_cst_object(&root_obj, desired, &opts.union_array_keys, true)?;
 
     // 2. Delete retired nested paths that are not re-declared in `desired`.
     for path in &opts.delete_paths {
         if !path.is_empty() && !map_contains_nested_path(desired, path) {
-            remove_nested_path(&root_obj, path);
+            if let Some((first, rest)) = path.split_first() {
+                if rest.is_empty() {
+                    if let Some(props) = remaining_root_props.remove(first) {
+                        for prop in props {
+                            prop.remove();
+                        }
+                    }
+                } else if let Some(props) = remaining_root_props.get(first) {
+                    for prop in props {
+                        if let Some(sub_obj) = prop.object_value() {
+                            remove_nested_path(&sub_obj, rest);
+                        }
+                    }
+                } else {
+                    remove_nested_path(&root_obj, path);
+                }
+            }
         }
     }
 
@@ -96,8 +106,10 @@ pub fn merge_jsonc_object_str(
         del_keys.remove(k.as_str());
     }
     for key in del_keys {
-        while let Some(prop) = root_obj.get(key) {
-            prop.remove();
+        if let Some(props) = remaining_root_props.remove(key) {
+            for prop in props {
+                prop.remove();
+            }
         }
     }
 
@@ -158,25 +170,17 @@ fn verify_desired_applied(
     Ok(())
 }
 
-/// Removes every occurrence of property `key` in `cst_obj` except the last one.
-///
-/// JSON readers (VS Code included) use the last occurrence of a duplicate key, while
-/// [`CstObject::get`] returns the first. Without this step a managed value would be written
-/// to the first occurrence and a later duplicate would silently stay effective.
-fn remove_duplicate_props(cst_obj: &CstObject, key: &str) {
-    let matching: Vec<CstObjectProp> = cst_obj
-        .properties()
-        .into_iter()
-        .filter(|prop| {
-            prop.name()
-                .and_then(|name| name.decoded_value().ok())
-                .is_some_and(|name| name == key)
-        })
-        .collect();
-    let keep = matching.len().saturating_sub(1);
-    for prop in matching.into_iter().take(keep) {
-        prop.remove();
+/// Indexes all properties of `cst_obj` once by decoded property name, preserving document
+/// order per key so duplicate occurrences can be collapsed to the effective last entry in
+/// `O(K + P)` time instead of rescanning the object for every desired key.
+fn index_cst_object_props(cst_obj: &CstObject) -> BTreeMap<String, Vec<CstObjectProp>> {
+    let mut index: BTreeMap<String, Vec<CstObjectProp>> = BTreeMap::new();
+    for prop in cst_obj.properties() {
+        if let Some(name) = prop.name().and_then(|n| n.decoded_value().ok()) {
+            index.entry(name.to_string()).or_default().push(prop);
+        }
     }
+    index
 }
 
 /// Losslessly merges workspace `.vscode/extensions.json` preserving comments and user-owned
@@ -278,7 +282,7 @@ pub fn merge_workspace_extensions_jsonc(
         return Ok((to_canonical_json_string(&out_map)?, new_managed_recs));
     }
 
-    let parse_opts = cst_parse_options();
+    let parse_opts = default_parse_options();
     let root = CstRootNode::parse(existing_text, &parse_opts)
         .map_err(|err| VspError::Operational(format!("extensions.json CST parse error: {err}")))?;
     let root_obj = root.object_value().ok_or_else(|| {
@@ -311,7 +315,7 @@ pub fn merge_workspace_tasks_jsonc(existing_text: &str, desired_doc: &Value) -> 
         return to_canonical_json_string(desired_doc);
     }
 
-    let parse_opts = cst_parse_options();
+    let parse_opts = default_parse_options();
     let root = CstRootNode::parse(existing_text, &parse_opts)
         .map_err(|err| VspError::Operational(format!("tasks.json CST parse error: {err}")))?;
     let root_obj = root
@@ -406,49 +410,56 @@ fn merge_into_cst_object(
     desired: &Map<String, Value>,
     union_keys: &BTreeSet<String>,
     is_top_level: bool,
-) -> VspResult<()> {
-    for (key, desired_val) in desired {
-        // Leave one occurrence (the effective, last one) of each desired key.
-        remove_duplicate_props(cst_obj, key);
-        if let Some(prop) = cst_obj.get(key) {
-            if let (Value::Object(desired_sub), Some(existing_sub)) =
-                (desired_val, prop.object_value())
-            {
-                merge_into_cst_object(&existing_sub, desired_sub, union_keys, false)?;
-                continue;
-            }
+) -> VspResult<BTreeMap<String, Vec<CstObjectProp>>> {
+    let mut prop_index = index_cst_object_props(cst_obj);
 
-            if is_top_level && union_keys.contains(key) {
-                if let (Value::Array(desired_arr), Some(existing_arr)) =
-                    (desired_val, prop.array_value())
+    for (key, desired_val) in desired {
+        if let Some(mut matches) = prop_index.remove(key) {
+            // Keep only the effective (last) occurrence of a duplicate key; remove earlier copies.
+            if let Some(prop) = matches.pop() {
+                for duplicate in matches {
+                    duplicate.remove();
+                }
+
+                if let (Value::Object(desired_sub), Some(existing_sub)) =
+                    (desired_val, prop.object_value())
                 {
-                    let mut existing_vals = Vec::new();
-                    for elem in existing_arr.elements() {
-                        existing_vals.push(cst_node_to_value(&elem)?);
-                    }
-                    for item in desired_arr {
-                        if !existing_vals.contains(item) {
-                            append_value_to_cst_array(&existing_arr, item)?;
-                            existing_vals.push(item.clone());
-                        }
-                    }
+                    let _ = merge_into_cst_object(&existing_sub, desired_sub, union_keys, false)?;
                     continue;
                 }
-            }
 
-            let existing_val = match prop.value() {
-                Some(v) => Some(cst_node_to_value(&v)?),
-                None => None,
-            };
-            if existing_val.as_ref() == Some(desired_val) {
+                if is_top_level && union_keys.contains(key) {
+                    if let (Value::Array(desired_arr), Some(existing_arr)) =
+                        (desired_val, prop.array_value())
+                    {
+                        let mut existing_vals = Vec::new();
+                        for elem in existing_arr.elements() {
+                            existing_vals.push(cst_node_to_value(&elem)?);
+                        }
+                        for item in desired_arr {
+                            if !existing_vals.contains(item) {
+                                append_value_to_cst_array(&existing_arr, item)?;
+                                existing_vals.push(item.clone());
+                            }
+                        }
+                        continue;
+                    }
+                }
+
+                let existing_val = match prop.value() {
+                    Some(v) => Some(cst_node_to_value(&v)?),
+                    None => None,
+                };
+                if existing_val.as_ref() == Some(desired_val) {
+                    continue;
+                }
+                set_prop_value_safe(&prop, desired_val)?;
                 continue;
             }
-            set_prop_value_safe(&prop, desired_val)?;
-        } else {
-            append_prop_safe(cst_obj, key, desired_val)?;
         }
+        append_prop_safe(cst_obj, key, desired_val)?;
     }
-    Ok(())
+    Ok(prop_index)
 }
 
 fn sync_cst_string_array_prop(
