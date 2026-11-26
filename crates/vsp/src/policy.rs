@@ -230,153 +230,226 @@ pub fn matches_chat_tools_autoapprove(text: &str) -> bool {
     false
 }
 
-/// Matches a declarative regex-subset pattern from `catalog/policy.jsonc` (`autonomyDenyList.patterns`)
-/// case-insensitively in linear-space DP (`O(P * N)`), supporting `^`, `$`, `.`, `*`, `+`, `?`,
-/// and backslash-escaped literals without external regex dependencies or backtracking blowup.
-#[must_use]
-pub fn matches_autonomy_pattern(pattern: &str, text: &str) -> bool {
-    #[derive(Clone, Copy)]
-    enum Atom {
-        Any,
-        Lit(char),
-    }
-    impl Atom {
-        fn matches(self, ch: char) -> bool {
-            match self {
-                Self::Any => true,
-                Self::Lit(c) => c == ch,
-            }
+#[derive(Clone, Copy)]
+enum PatternAtom {
+    Any,
+    Lit(char),
+}
+
+impl PatternAtom {
+    fn matches(self, ch: char) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Lit(c) => c == ch,
         }
     }
-    #[derive(Clone, Copy)]
-    enum Quant {
-        One,
-        ZeroOrMore,
-        OneOrMore,
-        ZeroOrOne,
-    }
+}
 
-    if pattern.is_empty() {
-        return false;
-    }
+#[derive(Clone, Copy)]
+enum PatternQuant {
+    One,
+    ZeroOrMore,
+    OneOrMore,
+    ZeroOrOne,
+}
 
-    let pat_lc = pattern.to_ascii_lowercase();
-    let mut pat_chars = pat_lc.chars().peekable();
-    let mut anchored_start = false;
-    if pat_chars.peek() == Some(&'^') {
-        anchored_start = true;
-        pat_chars.next();
-    }
+enum CompiledAutonomyPattern {
+    Empty,
+    ChatToolsAutoApprove,
+    Nfa {
+        anchored_start: bool,
+        anchored_end: bool,
+        tokens: Vec<(PatternAtom, PatternQuant)>,
+    },
+}
 
-    let mut raw_tokens: Vec<(Atom, Quant, bool)> = Vec::new();
-    while let Some(ch) = pat_chars.next() {
-        let (atom, is_unescaped_dollar) = if ch == '\\' {
-            match pat_chars.next() {
-                Some(escaped) => (Atom::Lit(escaped), false),
-                None => (Atom::Lit('\\'), false),
-            }
-        } else if ch == '.' {
-            (Atom::Any, false)
-        } else if ch == '$' {
-            (Atom::Lit('$'), true)
-        } else {
-            (Atom::Lit(ch), false)
-        };
+impl CompiledAutonomyPattern {
+    fn compile(pattern: &str) -> Self {
+        if pattern.is_empty() {
+            return Self::Empty;
+        }
+        if pattern.eq_ignore_ascii_case(r"^chat\.tools\..*autoApprove$") {
+            return Self::ChatToolsAutoApprove;
+        }
+        let pat_lc = pattern.to_ascii_lowercase();
+        let mut pat_chars = pat_lc.chars().peekable();
+        let mut anchored_start = false;
+        if pat_chars.peek() == Some(&'^') {
+            anchored_start = true;
+            pat_chars.next();
+        }
 
-        let quant = match pat_chars.peek() {
-            Some('*') => {
-                pat_chars.next();
-                Quant::ZeroOrMore
-            }
-            Some('+') => {
-                pat_chars.next();
-                Quant::OneOrMore
-            }
-            Some('?') => {
-                pat_chars.next();
-                Quant::ZeroOrOne
-            }
-            _ => Quant::One,
-        };
-        raw_tokens.push((atom, quant, is_unescaped_dollar));
-    }
-
-    let mut anchored_end = false;
-    if let Some(&(_, Quant::One, true)) = raw_tokens.last() {
-        anchored_end = true;
-        raw_tokens.pop();
-    }
-
-    let tokens: Vec<(Atom, Quant)> = raw_tokens.into_iter().map(|(a, q, _)| (a, q)).collect();
-    let chars: Vec<char> = text.to_ascii_lowercase().chars().collect();
-
-    let match_from = |start: usize| -> bool {
-        let slice = &chars[start..];
-        let n = slice.len();
-        let mut dp = vec![false; n + 1];
-        dp[0] = true;
-
-        for &(atom, quant) in &tokens {
-            let mut next = vec![false; n + 1];
-            match quant {
-                Quant::One => {
-                    for i in 0..n {
-                        if dp[i] && atom.matches(slice[i]) {
-                            next[i + 1] = true;
-                        }
-                    }
+        let mut raw_tokens: Vec<(PatternAtom, PatternQuant, bool)> = Vec::new();
+        while let Some(ch) = pat_chars.next() {
+            let (atom, is_unescaped_dollar) = if ch == '\\' {
+                match pat_chars.next() {
+                    Some(escaped) => (PatternAtom::Lit(escaped), false),
+                    None => (PatternAtom::Lit('\\'), false),
                 }
-                Quant::ZeroOrOne => {
-                    for i in 0..=n {
-                        if dp[i] {
-                            next[i] = true;
-                            if i < n && atom.matches(slice[i]) {
-                                next[i + 1] = true;
+            } else if ch == '.' {
+                (PatternAtom::Any, false)
+            } else if ch == '$' {
+                (PatternAtom::Lit('$'), true)
+            } else {
+                (PatternAtom::Lit(ch), false)
+            };
+
+            let quant = match pat_chars.peek() {
+                Some('*') => {
+                    pat_chars.next();
+                    PatternQuant::ZeroOrMore
+                }
+                Some('+') => {
+                    pat_chars.next();
+                    PatternQuant::OneOrMore
+                }
+                Some('?') => {
+                    pat_chars.next();
+                    PatternQuant::ZeroOrOne
+                }
+                _ => PatternQuant::One,
+            };
+            raw_tokens.push((atom, quant, is_unescaped_dollar));
+        }
+
+        let mut anchored_end = false;
+        if let Some(&(_, PatternQuant::One, true)) = raw_tokens.last() {
+            anchored_end = true;
+            raw_tokens.pop();
+        }
+
+        let tokens = raw_tokens.into_iter().map(|(a, q, _)| (a, q)).collect();
+        Self::Nfa {
+            anchored_start,
+            anchored_end,
+            tokens,
+        }
+    }
+
+    fn matches(&self, text: &str) -> bool {
+        match self {
+            Self::Empty => false,
+            Self::ChatToolsAutoApprove => matches_chat_tools_autoapprove(text),
+            Self::Nfa {
+                anchored_start,
+                anchored_end,
+                tokens,
+            } => {
+                let chars: Vec<char> = text.to_ascii_lowercase().chars().collect();
+                let mut dp = Vec::with_capacity(chars.len() + 1);
+                let mut next = Vec::with_capacity(chars.len() + 1);
+
+                let mut match_from = |start: usize| -> bool {
+                    let slice = &chars[start..];
+                    let n = slice.len();
+                    dp.clear();
+                    dp.resize(n + 1, false);
+                    dp[0] = true;
+
+                    for &(atom, quant) in tokens {
+                        next.clear();
+                        next.resize(n + 1, false);
+                        match quant {
+                            PatternQuant::One => {
+                                for i in 0..n {
+                                    if dp[i] && atom.matches(slice[i]) {
+                                        next[i + 1] = true;
+                                    }
+                                }
+                            }
+                            PatternQuant::ZeroOrOne => {
+                                for i in 0..=n {
+                                    if dp[i] {
+                                        next[i] = true;
+                                        if i < n && atom.matches(slice[i]) {
+                                            next[i + 1] = true;
+                                        }
+                                    }
+                                }
+                            }
+                            PatternQuant::ZeroOrMore => {
+                                next.copy_from_slice(&dp);
+                                for i in 0..n {
+                                    if next[i] && atom.matches(slice[i]) {
+                                        next[i + 1] = true;
+                                    }
+                                }
+                            }
+                            PatternQuant::OneOrMore => {
+                                for i in 0..n {
+                                    if (dp[i] || next[i]) && atom.matches(slice[i]) {
+                                        next[i + 1] = true;
+                                    }
+                                }
                             }
                         }
+                        std::mem::swap(&mut dp, &mut next);
                     }
-                }
-                Quant::ZeroOrMore => {
-                    next.copy_from_slice(&dp);
-                    for i in 0..n {
-                        if next[i] && atom.matches(slice[i]) {
-                            next[i + 1] = true;
+
+                    if *anchored_end {
+                        dp[n]
+                    } else {
+                        dp.iter().any(|&b| b)
+                    }
+                };
+
+                if *anchored_start {
+                    if match_from(0) {
+                        return true;
+                    }
+                    for (idx, &ch) in chars.iter().enumerate() {
+                        if ch == '.' && match_from(idx + 1) {
+                            return true;
                         }
                     }
-                }
-                Quant::OneOrMore => {
-                    for i in 0..n {
-                        if (dp[i] || next[i]) && atom.matches(slice[i]) {
-                            next[i + 1] = true;
-                        }
-                    }
+                    false
+                } else {
+                    (0..=chars.len()).any(match_from)
                 }
             }
-            dp = next;
         }
-
-        if anchored_end {
-            dp[n]
-        } else {
-            dp.into_iter().any(|b| b)
-        }
-    };
-
-    if anchored_start {
-        if match_from(0) {
-            return true;
-        }
-        // Also match after any `.` boundary so nested `[lang]` or object-wrapped paths cannot
-        // bypass a `^`-anchored setting pattern.
-        for (idx, &ch) in chars.iter().enumerate() {
-            if ch == '.' && match_from(idx + 1) {
-                return true;
-            }
-        }
-        false
-    } else {
-        (0..=chars.len()).any(match_from)
     }
+}
+
+struct CompiledAutonomyPolicy<'a> {
+    raw: &'a AutonomyDenyListPolicy,
+    extra_patterns: Vec<CompiledAutonomyPattern>,
+    extra_substrings_lc: Vec<(String, String)>,
+}
+
+impl<'a> CompiledAutonomyPolicy<'a> {
+    fn compile(raw: &'a AutonomyDenyListPolicy) -> Self {
+        let extra_patterns = raw
+            .patterns
+            .iter()
+            .filter(|pat| !pat.eq_ignore_ascii_case(r"^chat\.tools\..*autoApprove$"))
+            .map(|pat| CompiledAutonomyPattern::compile(pat))
+            .collect();
+        let extra_substrings_lc = raw
+            .deny_value_substrings
+            .iter()
+            .filter(|s| {
+                !s.is_empty()
+                    && !s.eq_ignore_ascii_case("bypassPermissions")
+                    && !s.eq_ignore_ascii_case("--dangerously-skip-permissions")
+            })
+            .map(|s| (s.clone(), s.to_ascii_lowercase()))
+            .collect();
+        Self {
+            raw,
+            extra_patterns,
+            extra_substrings_lc,
+        }
+    }
+}
+
+/// Matches a declarative regex-subset pattern from `catalog/policy.jsonc`
+/// (`autonomyDenyList.patterns`) case-insensitively in linear-space DP (`O(P * N)`), supporting
+/// `^`, `$`, `.`, `*`, `+`, `?`, and backslash-escaped literals without external regex
+/// dependencies or backtracking blowup.
+#[must_use]
+pub fn matches_autonomy_pattern(pattern: &str, text: &str) -> bool {
+    CompiledAutonomyPattern::compile(pattern).matches(text)
 }
 
 /// Recursively inspects a parsed JSON document against the built-in autonomy and
@@ -407,7 +480,8 @@ pub fn check_autonomy_denylist_with_policy(
 ) -> Vec<PolicyViolation> {
     let mut violations = Vec::new();
     let mut path = Vec::new();
-    inspect_autonomy_node(value, &mut path, label, policy, &mut violations);
+    let compiled = policy.map(CompiledAutonomyPolicy::compile);
+    inspect_autonomy_node(value, &mut path, label, compiled.as_ref(), &mut violations);
     violations
 }
 
@@ -484,39 +558,45 @@ fn inspect_autonomy_node(
     value: &Value,
     path: &mut Vec<String>,
     label: &str,
-    policy: Option<&AutonomyDenyListPolicy>,
+    policy: Option<&CompiledAutonomyPolicy<'_>>,
     violations: &mut Vec<PolicyViolation>,
 ) {
     match value {
         Value::Object(map) => {
             for (key, val) in map {
                 path.push(key.clone());
-                let joined = path.join(".");
+                let joined_owned;
+                let joined: &str = if path.len() == 1 {
+                    key.as_str()
+                } else {
+                    joined_owned = path.join(".");
+                    joined_owned.as_str()
+                };
                 let norm_b = normalize_bool(val);
 
                 let matches_pattern = matches_chat_tools_autoapprove(key)
-                    || matches_chat_tools_autoapprove(&joined)
+                    || (path.len() > 1 && matches_chat_tools_autoapprove(joined))
                     || policy.is_some_and(|p| {
-                        p.patterns.iter().any(|pat| {
-                            matches_autonomy_pattern(pat, key)
-                                || matches_autonomy_pattern(pat, &joined)
-                        })
+                        p.extra_patterns
+                            .iter()
+                            .any(|pat| pat.matches(key) || (path.len() > 1 && pat.matches(joined)))
                     });
 
                 let matches_deny_true = norm_b == Some(true)
                     && (matches_key_or_path(
                         key,
-                        &joined,
+                        joined,
                         "claudeCode.allowDangerouslySkipPermissions",
-                    ) || matches_key_or_path(key, &joined, "geminicodeassist.agentYoloMode")
+                    ) || matches_key_or_path(key, joined, "geminicodeassist.agentYoloMode")
                         || policy.is_some_and(|p| {
-                            p.deny_true_keys
+                            p.raw
+                                .deny_true_keys
                                 .iter()
-                                .any(|target| matches_key_or_path(key, &joined, target))
+                                .any(|target| matches_key_or_path(key, joined, target))
                         }));
 
                 let denied_mode: Option<String> = val.as_str().and_then(|s| {
-                    if matches_key_or_path(key, &joined, "claudeCode.initialPermissionMode") {
+                    if matches_key_or_path(key, joined, "claudeCode.initialPermissionMode") {
                         if let Some(mode) = DENIED_PERMISSION_MODES
                             .iter()
                             .find(|denied| s.eq_ignore_ascii_case(denied))
@@ -525,8 +605,8 @@ fn inspect_autonomy_node(
                         }
                     }
                     if let Some(p) = policy {
-                        for (target_key, disallowed_vals) in &p.deny_values {
-                            if matches_key_or_path(key, &joined, target_key) {
+                        for (target_key, disallowed_vals) in &p.raw.deny_values {
+                            if matches_key_or_path(key, joined, target_key) {
                                 if let Some(found) = disallowed_vals
                                     .iter()
                                     .find(|denied| s.eq_ignore_ascii_case(denied))
@@ -541,20 +621,22 @@ fn inspect_autonomy_node(
 
                 let matches_prefix = EXEC_OVERRIDE_KEY_PREFIXES
                     .iter()
-                    .any(|prefix| matches_key_prefix(key, &joined, prefix))
+                    .any(|prefix| matches_key_prefix(key, joined, prefix))
                     || policy.is_some_and(|p| {
-                        p.presence_key_prefixes
+                        p.raw
+                            .presence_key_prefixes
                             .iter()
-                            .any(|prefix| matches_key_prefix(key, &joined, prefix))
+                            .any(|prefix| matches_key_prefix(key, joined, prefix))
                     });
 
                 let matches_presence = EXEC_OVERRIDE_KEYS
                     .iter()
-                    .any(|target| matches_key_or_path(key, &joined, target))
+                    .any(|target| matches_key_or_path(key, joined, target))
                     || policy.is_some_and(|p| {
-                        p.presence_keys
+                        p.raw
+                            .presence_keys
                             .iter()
-                            .any(|target| matches_key_or_path(key, &joined, target))
+                            .any(|target| matches_key_or_path(key, joined, target))
                     });
 
                 if matches_pattern {
@@ -596,15 +678,15 @@ fn inspect_autonomy_node(
                     message: format!("forbidden bypassPermissions value at: {}", path.join(".")),
                 });
             } else if let Some(p) = policy {
-                if let Some(sub) = p
-                    .deny_value_substrings
+                if let Some((raw_sub, _)) = p
+                    .extra_substrings_lc
                     .iter()
-                    .find(|sub| !sub.is_empty() && lc.contains(&sub.to_ascii_lowercase()))
+                    .find(|(_, sub_lc)| lc.contains(sub_lc.as_str()))
                 {
                     violations.push(PolicyViolation {
                         source: label.to_string(),
                         message: format!(
-                            "forbidden autonomy value substring '{sub}' at: {}",
+                            "forbidden autonomy value substring '{raw_sub}' at: {}",
                             path.join(".")
                         ),
                     });
