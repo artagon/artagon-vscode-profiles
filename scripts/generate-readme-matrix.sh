@@ -35,7 +35,7 @@ render_matrix() {
   cat <<'HEADER'
 ### Profiles (15 Compiled Recipes)
 
-| Profile | Description | Included Modules | Extensions | Export Bundle |
+| Profile | Description | Included Packs | Extensions | Bundle Artifact |
 | --- | --- | --- | ---: | --- |
 HEADER
 
@@ -56,7 +56,7 @@ HEADER
       done <<< "${resolved_str}"
       ext_count="$(compiler_compile_extensions "${ROOT}" profile "${mods[@]+"${mods[@]}"}" | jq 'length')"
     fi
-    bundle_cell="[\`${prof}.code-profile\`](exports/${prof}.code-profile)"
+    bundle_cell="\`${prof}.code-profile\`"
     # shellcheck disable=SC2016
     printf '| `%s` | %s | `%s` | %s | %s |\n' \
       "${prof}" "${desc}" "${mods_str}" "${ext_count}" "${bundle_cell}"
@@ -64,9 +64,9 @@ HEADER
 
   cat <<'MODHEADER'
 
-### Modules (`modules/`)
+### Packs (`packs/`)
 
-| Kind | Module ID | Description | Requires | Conflicts |
+| Kind | Pack ID | Description | Requires | Conflicts |
 | --- | --- | --- | --- | --- |
 MODHEADER
 
