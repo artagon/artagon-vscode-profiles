@@ -468,13 +468,17 @@ fn diff_and_sync_dry_run_are_byte_identical_for_json_and_text() {
     let fake_data = TempDir::new().expect("data");
     fs::write(ws.path().join("Cargo.toml"), "[package]\nname=\"demo\"\n").expect("cargo");
 
-    let cases: Vec<Vec<&str>> = vec![
-        vec![ws.path().to_str().expect("utf8")],
-        vec!["-p", "rust", "--ux", "retina"],
-        vec!["--user", "--ux", "crisp", "--ai", "off"],
+    let cases: Vec<(Vec<&str>, i32)> = vec![
+        (vec![ws.path().to_str().expect("utf8")], 0),
+        (vec!["-p", "rust", "--ux", "retina", "--allow-unlocked"], 0),
+        // Without `--allow-unlocked`, pending embedded Tier 1 locks populate `would_refuse`,
+        // so `diff` exits 0 while `sync --dry-run` predicts the apply refusal with exit 5
+        // and emits byte-identical stdout!
+        (vec!["-p", "rust", "--ux", "retina"], 5),
+        (vec!["--user", "--ux", "crisp", "--ai", "off"], 0),
     ];
 
-    for selector in cases {
+    for (selector, expected_dry_run_exit) in cases {
         for flag_mode in [&["--json"][..], &[][..]] {
             let mut diff_cmd = vsp_cmd();
             diff_cmd
@@ -503,7 +507,7 @@ fn diff_and_sync_dry_run_are_byte_identical_for_json_and_text() {
                 .arg("sync")
                 .args(&selector);
             let sync_out = sync_cmd.output().expect("run sync --dry-run");
-            assert_eq!(sync_out.status.code(), Some(0));
+            assert_eq!(sync_out.status.code(), Some(expected_dry_run_exit));
 
             assert_eq!(
                 diff_out.stdout, sync_out.stdout,
@@ -1114,16 +1118,36 @@ fn repair_pins_downgrade_requires_yes_and_open_sync_aborts_on_failure() {
         ))
         .is_file());
 
-    // 3. `vsp open` (and alias `use`) with `--sync` aborts launch when sync fails!
+    // 3. `vsp use <PROFILE> <PATH> --sync` and `vsp open <PATH> --sync` abort launch when sync fails!
     fs::write(&code_log, "").expect("clear log");
     let empty_ws = TempDir::new().expect("empty ws");
-    let open_fail = vsp_cmd()
+    let use_fail = vsp_cmd()
         .args([
             "--catalog",
             catalog_arg,
             "--vscode-data-dir",
             fake_data.path().to_str().expect("utf8"),
             "use",
+            "general-minimal",
+            empty_ws.path().to_str().expect("utf8"),
+            "--sync",
+        ])
+        .env("XDG_STATE_HOME", xdg_state.path())
+        .env("PATH", stub_bin.path())
+        .output()
+        .expect("use --sync empty ws");
+    assert_eq!(use_fail.status.code(), Some(3));
+    assert!(
+        fs::read_to_string(&code_log).expect("log").is_empty(),
+        "code must NOT be launched when --sync fails"
+    );
+    let open_fail = vsp_cmd()
+        .args([
+            "--catalog",
+            catalog_arg,
+            "--vscode-data-dir",
+            fake_data.path().to_str().expect("utf8"),
+            "open",
             empty_ws.path().to_str().expect("utf8"),
             "--sync",
         ])
