@@ -560,7 +560,18 @@ fn step0_uninstalls_compromised_extension_before_any_install_even_when_installs_
         .env("PATH", stub_bin.path())
         .output()
         .expect("run step0 test");
-    assert_eq!(out.status.code(), Some(1), "failed installs should exit 1");
+    assert_eq!(
+        out.status.code(),
+        Some(6),
+        "mid-apply failed installs after Step 0/Step 4 mutations must exit 6 (PartialApply), stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err_text = String::from_utf8_lossy(&out.stderr);
+    assert!(err_text.contains("partial apply"), "{err_text}");
+    assert!(
+        err_text.contains("simulated network failure"),
+        "child stderr must be preserved in partial-apply summary: {err_text}"
+    );
 
     let log_lines: Vec<String> = fs::read_to_string(&log_file)
         .expect("read log")
@@ -920,7 +931,14 @@ fn exit_codes_lock_contention_6_missing_2_drift_3_invalid_4_list_fail_7_and_guar
         .expect("missing sel");
     assert_eq!(missing_sel.status.code(), Some(4));
 
-    // Exit 7: failed `code --list-extensions` during profile sync.
+    // Exit 7: failed `code --list-extensions` during profile sync on an existing registered profile.
+    let reg_gs = fake_data.path().join("User/globalStorage");
+    fs::create_dir_all(&reg_gs).expect("mkdir gs");
+    fs::write(
+        reg_gs.join("storage.json"),
+        r#"{"userDataProfiles":[{"name":"rust","location":"abcd1234"}]}"#,
+    )
+    .expect("register rust profile");
     write_executable_stub(
         stub_bin.path(),
         "code",
@@ -1166,16 +1184,65 @@ fn dev_ops_pins_docs_hooks_and_compat_mock_marketplace() {
     let root = repo_root();
     let catalog_arg = root.to_str().expect("utf8");
 
-    // 1. `vsp dev pins --check` passes cleanly on tracked repo.
+    // 1. `vsp dev pins --check` passes cleanly on tracked repo and cites `vsp.lock.json` (SOL-08).
     let pins_ok = vsp_cmd()
         .args(["--catalog", catalog_arg, "dev", "pins", "--check"])
         .output()
         .expect("dev pins --check");
     assert_eq!(pins_ok.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&pins_ok.stdout).contains("vsp.lock.json"),
+        "dev pins --check on v2.2 catalog must cite vsp.lock.json, stdout={}",
+        String::from_utf8_lossy(&pins_ok.stdout)
+    );
 
-    // 2. `vsp dev docs --check` passes cleanly on tracked repo.
+    // 2. `vsp dev docs --write` + `--check` passes cleanly on a temp repo copy with updated
+    //    `Packs` matrix format (SOL-08; Wave 3 regenerates tracked README.md).
+    let docs_tmp = TempDir::new().expect("docs tmp");
+    fs::create_dir_all(docs_tmp.path().join("docs")).expect("mkdir docs");
+    fs::create_dir_all(docs_tmp.path().join("catalog")).expect("mkdir catalog");
+    fs::create_dir_all(docs_tmp.path().join("packs")).expect("mkdir packs");
+    for rel in [
+        "docs/rust.md",
+        "README.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "CODEX.md",
+        "GEMINI.md",
+        "catalog/extensions.jsonc",
+        "catalog/policy.jsonc",
+        "presets.jsonc",
+        "vsp.lock.json",
+    ] {
+        fs::copy(root.join(rel), docs_tmp.path().join(rel)).expect("copy repo file");
+    }
+    fn copy_tree(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).expect("mkdir dst");
+        for entry in fs::read_dir(src).expect("read src").flatten() {
+            let p = entry.path();
+            let t = dst.join(entry.file_name());
+            if p.is_dir() {
+                copy_tree(&p, &t);
+            } else {
+                fs::copy(&p, &t).expect("copy");
+            }
+        }
+    }
+    copy_tree(&root.join("packs"), &docs_tmp.path().join("packs"));
+    let docs_arg = docs_tmp.path().to_str().expect("utf8");
+    let docs_write = vsp_cmd()
+        .args(["--catalog", docs_arg, "dev", "docs", "--write"])
+        .output()
+        .expect("dev docs --write");
+    assert_eq!(
+        docs_write.status.code(),
+        Some(0),
+        "dev docs --write failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&docs_write.stdout),
+        String::from_utf8_lossy(&docs_write.stderr)
+    );
     let docs_ok = vsp_cmd()
-        .args(["--catalog", catalog_arg, "dev", "docs", "--check"])
+        .args(["--catalog", docs_arg, "dev", "docs", "--check"])
         .output()
         .expect("dev docs --check");
     assert_eq!(

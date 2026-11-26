@@ -346,6 +346,14 @@ fn h1_m1_shipped_lock_fails_closed_and_unlocked_bypass_is_sticky() {
         .expect("the rust preset has a pending Tier 1 extension in the shipped lock")
         .clone();
 
+    // Pre-register `rust` so `code --list-extensions --profile=rust` observes `others`
+    // (FABLE-01 treats unregistered profiles as empty installed sets).
+    fs::write(
+        sb.path("data/User/globalStorage/storage.json"),
+        r#"{"userDataProfiles":[{"name":"rust","location":"abcd1234"}]}"#,
+    )
+    .expect("register rust profile");
+
     // Every other extension is already installed, so only the pending one must resolve.
     let others: Vec<String> = desired
         .iter()
@@ -370,7 +378,16 @@ fn h1_m1_shipped_lock_fails_closed_and_unlocked_bypass_is_sticky() {
         "a pending Tier 1 extension must not be installed: {}",
         sb.code_log()
     );
-    assert_eq!(sb.provenance("rust")["unlockedBypass"], false);
+    // OPUS-02 / CARBON-02: pre-write VSIX safety refusal performs ZERO writes (no settings or provenance).
+    assert!(
+        !sb.path("state/vsp/profiles").exists(),
+        "pre-write exit 5 must not write provenance"
+    );
+    assert!(
+        !sb.path("data/User/profiles/abcd1234/settings.json")
+            .exists(),
+        "pre-write exit 5 must not write settings.json"
+    );
 
     // Explicit bypass: installs by ID, warns, and records the bypass.
     sb.clear_code_log();
@@ -615,6 +632,12 @@ fn m5_l8_step0_failure_aborts_with_exit_5() {
         ..Default::default()
     });
     let storage = sb.path("data/User/globalStorage/storage.json");
+    // Register `rust` in storage.json so `sync` observes its pre-existing installed extensions (FABLE-01).
+    fs::write(
+        &storage,
+        r#"{"userDataProfiles":[{"name":"rust","location":"abcd1234"}]}"#,
+    )
+    .expect("register rust profile");
     let storage_before = fs::read_to_string(&storage).expect("storage");
 
     let sync = sb.vsp(&["--vscode-data-dir", &data, "sync", "-p", "rust"]);
@@ -705,6 +728,12 @@ fn m7_ai_off_uninstalls_installed_ai_extensions() {
         installed: &installed,
         ..Default::default()
     });
+    // Register `rust` so `sync` queries its already-installed extensions (FABLE-01).
+    fs::write(
+        sb.path("data/User/globalStorage/storage.json"),
+        r#"{"userDataProfiles":[{"name":"rust","location":"abcd1234"}]}"#,
+    )
+    .expect("register rust profile");
 
     let diff = sb.vsp(&[
         "--vscode-data-dir",
@@ -1459,12 +1488,13 @@ fn a01_a10_pins_refresh_targets_the_lockfile_and_keeps_policy() {
     let after = read_lock(&lock_path);
     assert_eq!(after["pinRequired"], true, "policy kept");
     assert_eq!(after["platforms"], before["platforms"]);
-    let mut refreshed = 0;
+    let mut refreshed_t1 = 0;
+    let mut refreshed_t2 = 0;
     for (id, old) in before["extensions"].as_object().expect("extensions") {
         let new = &after["extensions"][id];
         assert_eq!(new["tier"], old["tier"], "{id}: tier kept");
         if old["tier"] == 1 && old["universal"] == true {
-            refreshed += 1;
+            refreshed_t1 += 1;
             assert_eq!(new["status"], "verified", "{id}");
             assert_eq!(new["version"], "9.8.7", "{id}");
             assert_eq!(new["sha256"], expected_sha.as_str(), "{id}");
@@ -1474,11 +1504,18 @@ fn a01_a10_pins_refresh_targets_the_lockfile_and_keeps_policy() {
                 "{id}"
             );
             assert_eq!(new["universal"], true, "{id}");
+        } else if old["tier"] == 2 {
+            // OPUS-01 / CARBON-01: `dev pins --refresh` now also version-locks Tier 2 entries.
+            refreshed_t2 += 1;
+            assert_eq!(new["status"], "verified", "{id}");
+            assert_eq!(new["version"], "9.8.7", "{id}");
+            assert!(new["verifiedAt"].is_string(), "{id}");
         } else {
             assert_eq!(new, old, "{id}: entry outside the refresh set is unchanged");
         }
     }
-    assert!(refreshed > 0, "the lock has Tier 1 universal entries");
+    assert!(refreshed_t1 > 0, "the lock has Tier 1 universal entries");
+    assert!(refreshed_t2 > 0, "the lock has Tier 2 entries");
 
     // A10: a legacy manifest with pinRequired=true keeps that policy.
     let legacy_pins = sb.path("legacy-pins.json");

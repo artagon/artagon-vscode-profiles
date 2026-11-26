@@ -1,17 +1,28 @@
 //! Read-only VS Code data directory, `storage.json` profile registry, XDG path helpers,
-//! and `code --list-extensions` subprocess observer.
+//! and bounded `code` CLI subprocess execution.
 
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use crate::exit_codes::{VspError, VspResult};
-use crate::legacy_loader::read_strict_json_value;
+use crate::jsonc::read_strict_json_value;
 use crate::provenance::check_path_contained;
+
+/// Default maximum wall-clock duration for a single `code` CLI subprocess (`120s`).
+///
+/// Overridable via `VSP_CODE_TIMEOUT_SECS` (seconds) or `VSP_CODE_TIMEOUT_MS` (milliseconds).
+pub const DEFAULT_CODE_TIMEOUT_SECS: u64 = 120;
+
+/// Maximum bytes captured from a single `code` subprocess stdout or stderr stream (`16 MiB`).
+const MAX_CODE_CAPTURE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Resolved VS Code user-data store paths.
 #[derive(Debug, Clone)]
@@ -20,6 +31,180 @@ pub struct VsCodeStore {
     pub user_dir: PathBuf,
     /// Optional explicit `--user-data-dir` root passed to `code` when overriding the default store.
     pub data_root: Option<PathBuf>,
+}
+
+/// Structured result of executing a bounded VS Code `code` CLI subprocess.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeExecOutput {
+    /// `true` when the subprocess exited with status code `0`.
+    pub success: bool,
+    /// Process exit status code, or `None` when terminated by a signal.
+    pub exit_code: Option<i32>,
+    /// Captured standard output decoded lossily as UTF-8.
+    pub stdout: String,
+    /// Captured standard error decoded lossily as UTF-8 with normalized whitespace.
+    pub stderr: String,
+}
+
+impl CodeExecOutput {
+    /// Formats a compact single-line failure summary combining exit code and trimmed stderr
+    /// so caller diagnostics never discard child stderr.
+    #[must_use]
+    pub fn format_failure(&self) -> String {
+        let rc = self
+            .exit_code
+            .map_or_else(|| "signal".to_string(), |c| c.to_string());
+        let cleaned = normalize_stderr(&self.stderr);
+        if cleaned.is_empty() {
+            format!("exit={rc}")
+        } else {
+            format!("exit={rc}: {cleaned}")
+        }
+    }
+}
+
+/// Resolves the effective `code` CLI subprocess timeout.
+///
+/// Honors `VSP_CODE_TIMEOUT_SECS` (positive integer seconds) first, then optional
+/// `VSP_CODE_TIMEOUT_MS` (positive integer milliseconds), defaulting to
+/// [`DEFAULT_CODE_TIMEOUT_SECS`] (`120s`).
+#[must_use]
+pub fn effective_code_timeout() -> Duration {
+    if let Ok(raw) = env::var("VSP_CODE_TIMEOUT_SECS") {
+        if let Ok(secs) = raw.trim().parse::<u64>() {
+            if secs > 0 {
+                return Duration::from_secs(secs);
+            }
+        }
+    }
+    if let Ok(raw) = env::var("VSP_CODE_TIMEOUT_MS") {
+        if let Ok(ms) = raw.trim().parse::<u64>() {
+            if ms > 0 {
+                return Duration::from_millis(ms);
+            }
+        }
+    }
+    Duration::from_secs(DEFAULT_CODE_TIMEOUT_SECS)
+}
+
+/// Executes a VS Code `code` CLI command using [`effective_code_timeout`].
+///
+/// # Errors
+///
+/// Returns [`VspError::IncompleteObservation`] (exit `7`) if the subprocess fails to spawn,
+/// fails while waiting, or exceeds the timeout (in which case the child process tree is killed
+/// cleanly).
+pub fn run_code_command(cmd: &mut Command, context: &str) -> VspResult<CodeExecOutput> {
+    run_code_command_with_timeout(cmd, effective_code_timeout(), context)
+}
+
+/// Executes a VS Code `code` CLI command with an explicit wall-clock `timeout`.
+///
+/// Captures `stdout` and `stderr` concurrently on reader threads so large outputs cannot
+/// deadlock on pipe buffers. On Unix, isolates the child in its own process group so a
+/// timed-out wrapper script and all of its descendants are terminated cleanly without leaving
+/// orphan processes or blocking pipe readers.
+///
+/// # Errors
+///
+/// Returns [`VspError::IncompleteObservation`] (exit `7`) if the subprocess fails to spawn,
+/// encounters a wait syscall error, or exceeds `timeout`.
+pub fn run_code_command_with_timeout(
+    cmd: &mut Command,
+    timeout: Duration,
+    context: &str,
+) -> VspResult<CodeExecOutput> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+
+    let mut child = cmd.spawn().map_err(|err| {
+        VspError::IncompleteObservation(format!("failed to invoke {context}: {err}"))
+    })?;
+
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+
+    let stdout_reader = thread::spawn(move || read_bounded_pipe(stdout_pipe));
+    let stderr_reader = thread::spawn(move || read_bounded_pipe(stderr_pipe));
+
+    let deadline = Instant::now() + timeout;
+    let mut poll_ms = 5u64;
+
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    kill_child_tree(&mut child);
+                    let timeout_label = if timeout.as_secs() > 0 && timeout.subsec_millis() == 0 {
+                        format!("{}s", timeout.as_secs())
+                    } else {
+                        format!("{}ms", timeout.as_millis())
+                    };
+                    return Err(VspError::IncompleteObservation(format!(
+                        "{context} timed out after {timeout_label} (override with VSP_CODE_TIMEOUT_SECS)"
+                    )));
+                }
+                let remaining = deadline.saturating_duration_since(now);
+                thread::sleep(Duration::from_millis(poll_ms).min(remaining));
+                poll_ms = (poll_ms * 2).min(50);
+            }
+            Err(err) => {
+                kill_child_tree(&mut child);
+                return Err(VspError::IncompleteObservation(format!(
+                    "failed waiting for {context}: {err}"
+                )));
+            }
+        }
+    };
+
+    let stdout_bytes = stdout_reader.join().unwrap_or_default();
+    let stderr_bytes = stderr_reader.join().unwrap_or_default();
+
+    Ok(CodeExecOutput {
+        success: status.success(),
+        exit_code: status.code(),
+        stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr_bytes).trim().to_string(),
+    })
+}
+
+fn read_bounded_pipe<R: Read>(pipe: Option<R>) -> Vec<u8> {
+    let Some(reader) = pipe else {
+        return Vec::new();
+    };
+    let mut buf = Vec::new();
+    let _ = reader.take(MAX_CODE_CAPTURE_BYTES).read_to_end(&mut buf);
+    buf
+}
+
+fn kill_child_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        if let Ok(raw_pid) = i32::try_from(child.id()) {
+            if let Some(pid) = rustix::process::Pid::from_raw(raw_pid) {
+                let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn normalize_stderr(raw: &str) -> String {
+    raw.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Resolves XDG config home per the XDG Base Directory Specification (ignoring relative paths).
@@ -328,12 +513,14 @@ pub struct InstalledExtension {
 }
 
 /// Queries installed extensions for `profile_name` (`"default"` or a named profile)
-/// by executing `code [--user-data-dir <root>] [--profile <name>] --list-extensions --show-versions`.
+/// by executing `code [--user-data-dir <root>] [--profile=<name>] --list-extensions --show-versions`
+/// under [`effective_code_timeout`].
 ///
 /// # Errors
 ///
 /// - [`VspError::SafetyRefusal`] (exit `5`) if `profile_name` is unsafe (`code` is not run).
-/// - [`VspError::IncompleteObservation`] (exit `7`) if `code` fails to spawn or exits nonzero.
+/// - [`VspError::IncompleteObservation`] (exit `7`) if `code` fails to spawn, times out, or
+///   exits nonzero.
 pub fn list_installed_extensions(
     code_bin: &Path,
     store: &VsCodeStore,
@@ -342,37 +529,22 @@ pub fn list_installed_extensions(
     let mut cmd = code_command(code_bin, store, profile_name)?;
     cmd.arg("--list-extensions").arg("--show-versions");
 
-    let output = cmd.output().map_err(|err| {
+    let context = format!("{} for profile '{profile_name}'", code_bin.display());
+    let output = run_code_command(&mut cmd, &context).map_err(|err| {
         VspError::IncompleteObservation(format!(
-            "failed to invoke {} for profile '{profile_name}': {err}",
-            code_bin.display()
+            "audit incomplete — failed to list extensions for profile '{profile_name}' ({err})"
         ))
     })?;
 
-    if !output.status.success() {
-        let rc = output
-            .status
-            .code()
-            .map_or_else(|| "signal".to_string(), |c| c.to_string());
-        let stderr = String::from_utf8_lossy(&output.stderr)
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let detail = if stderr.is_empty() {
-            format!("exit={rc}")
-        } else {
-            format!("exit={rc}: {stderr}")
-        };
+    if !output.success {
+        let detail = output.format_failure();
         return Err(VspError::IncompleteObservation(format!(
             "audit incomplete — failed to list extensions for profile '{profile_name}' ({detail})"
         )));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let mut exts = Vec::new();
-    for line in stdout.lines() {
+    for line in output.stdout.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -450,5 +622,36 @@ mod tests {
     #[test]
     fn find_binary_uses_path_lookup() {
         assert!(find_binary("vsp-definitely-not-a-real-binary-name").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn code_timeout_kills_hung_child_and_returns_exit_7() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 30"]);
+        let start = Instant::now();
+        let err = run_code_command_with_timeout(&mut cmd, Duration::from_millis(120), "stub code")
+            .expect_err("hung child must time out");
+        assert_eq!(err.exit_code().as_i32(), 7);
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "timeout wrapper hung: {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn code_exec_output_captures_exit_code_and_trimmed_stderr() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "echo 'out line'; echo '  bad profile  ' >&2; exit 23"]);
+        let out = run_code_command_with_timeout(&mut cmd, Duration::from_secs(5), "stub code")
+            .expect("spawned");
+        assert!(!out.success);
+        assert_eq!(out.exit_code, Some(23));
+        assert_eq!(out.stdout.trim(), "out line");
+        assert_eq!(out.stderr, "bad profile");
+        assert_eq!(out.format_failure(), "exit=23: bad profile");
     }
 }
