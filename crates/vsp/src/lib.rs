@@ -6,6 +6,7 @@
 //! # Architecture
 //!
 //! - [`exit_codes`]: Canonical exit codes (`0..=7`) and structured [`VspError`](exit_codes::VspError).
+//! - [`jsonc`]: Neutral strict JSONC and JSON parsing helpers shared across loaders, CST merging, and validators.
 //! - [`model`]: Typed catalog, module, profile recipe, extension, and bundle structs.
 //! - [`legacy_loader`]: Offline reader for `catalog/`, `modules/`, and `profiles/` using strict JSONC parsing.
 //! - [`schema_loader`]: Consolidated v2.2 schema loader supporting embedded build snapshots and explicit catalog directories.
@@ -36,6 +37,7 @@ pub mod detect;
 pub mod dev_ops;
 pub mod doctor;
 pub mod exit_codes;
+pub mod jsonc;
 pub mod legacy_loader;
 pub mod model;
 pub mod open;

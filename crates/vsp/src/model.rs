@@ -235,6 +235,18 @@ pub struct WorkspaceCatalog {
     /// `catalog/extensions.jsonc`, plus the publishers of `compromised` and `removed`
     /// catalog extensions. See [`derive_blocked_publishers`] for the exact rule.
     pub blocked_publishers: BTreeSet<String>,
+    /// Consolidated security and scope policy parsed from `catalog/policy.jsonc` (`Some` for
+    /// v2.2 catalogs; `None` for the legacy repository layout).
+    pub policy: Option<crate::schema_loader::PolicyManifest>,
+    /// Declarative `retireOnSwitch` rules indexed by pack ID from v2.2 `packs/*.jsonc`.
+    /// Empty for the legacy repository layout.
+    pub retire_on_switch: BTreeMap<String, crate::schema_loader::PackRetireOnSwitch>,
+    /// Parsed 4-tier per-platform VSIX lockfile from `vsp.lock.json` (`Some` for v2.2
+    /// catalogs; `None` for the legacy repository layout).
+    pub lockfile: Option<crate::schema_loader::LockfileManifest>,
+    /// Authoritative extension group display/install order from `catalog/extensions.jsonc`.
+    /// Empty for the legacy repository layout, which falls back to [`GROUP_ORDER`].
+    pub group_order: Vec<String>,
 }
 
 /// Returns the lowercase publisher part of an extension ID (`publisher.name`).
@@ -299,6 +311,13 @@ pub fn derive_blocked_publishers(
 }
 
 impl WorkspaceCatalog {
+    /// Returns `true` when this catalog was loaded from the consolidated v2.2 layout
+    /// (`catalog/policy.jsonc`, `vsp.lock.json`, `presets.jsonc`, and `packs/`).
+    #[must_use]
+    pub const fn is_v2_layout(&self) -> bool {
+        self.policy.is_some()
+    }
+
     /// Returns `true` when the publisher of `ext_id` is in
     /// [`WorkspaceCatalog::blocked_publishers`].
     #[must_use]
@@ -309,15 +328,72 @@ impl WorkspaceCatalog {
 
     /// Resolves a legacy alias name to `(canonical preset, UX preset)`.
     ///
-    /// Aliases declared in the catalog (`presets.jsonc`) have priority, so a custom alias
-    /// in an external catalog works in every command. The built-in
-    /// `<flavor>-{crisp,retina}` table ([`resolve_legacy_profile_name`]) is the fallback.
+    /// For v2.2 catalogs (`presets.jsonc`), [`WorkspaceCatalog::legacy_aliases`] is the single
+    /// source of truth. The built-in `<flavor>-{crisp,retina}` table
+    /// ([`resolve_legacy_profile_name`]) is used only as a fallback for the legacy repository
+    /// layout.
     #[must_use]
     pub fn resolve_alias(&self, name: &str) -> Option<(String, UxPreset)> {
         if let Some((preset, ux)) = self.legacy_aliases.get(name) {
             return Some((preset.clone(), *ux));
         }
+        if self.is_v2_layout() {
+            return None;
+        }
         resolve_legacy_profile_name(name).map(|(canonical, ux)| (canonical.to_string(), ux))
+    }
+
+    /// Returns `(alias_filename, canonical_filename)` `.code-profile` pairs for `dev dist`.
+    ///
+    /// Uses [`WorkspaceCatalog::legacy_aliases`] from `presets.jsonc` as the single source of
+    /// truth for v2.2 catalogs, falling back to [`LEGACY_BUNDLE_ALIASES`] only for the legacy
+    /// repository layout.
+    #[must_use]
+    pub fn bundle_alias_pairs(&self) -> Vec<(String, String)> {
+        if self.is_v2_layout() {
+            self.legacy_aliases
+                .iter()
+                .map(|(alias, (preset, _))| {
+                    (
+                        format!("{alias}.code-profile"),
+                        format!("{preset}.code-profile"),
+                    )
+                })
+                .collect()
+        } else {
+            LEGACY_BUNDLE_ALIASES
+                .iter()
+                .map(|&(alias, canonical)| (alias.to_string(), canonical.to_string()))
+                .collect()
+        }
+    }
+
+    /// Returns the authoritative extension group display/install order from
+    /// `catalog/extensions.jsonc` (`groupOrder`), falling back to [`GROUP_ORDER`] for the
+    /// legacy layout.
+    #[must_use]
+    pub fn effective_group_order(&self) -> Vec<&str> {
+        if !self.group_order.is_empty() {
+            self.group_order.iter().map(String::as_str).collect()
+        } else {
+            GROUP_ORDER.to_vec()
+        }
+    }
+
+    /// Returns the sorted expected symmetric managed UX setting keys declared in
+    /// `catalog/policy.jsonc` (`ux.managedKeys`), falling back to [`EXPECTED_UX_KEYS`] for the
+    /// legacy layout.
+    #[must_use]
+    pub fn expected_ux_keys(&self) -> Vec<String> {
+        if let Some(policy) = &self.policy {
+            if !policy.ux.managed_keys.is_empty() {
+                let mut keys = policy.ux.managed_keys.clone();
+                keys.sort();
+                keys.dedup();
+                return keys;
+            }
+        }
+        EXPECTED_UX_KEYS.iter().map(|s| (*s).to_string()).collect()
     }
 
     /// Builds the implicit preset of a toolchain pack: the `general` preset plus that pack.
@@ -386,14 +462,15 @@ impl WorkspaceCatalog {
             .map_or("General", |rec| rec.group.as_str())
     }
 
-    /// Returns the sorted list of managed UX keys dynamically loaded from `modules/ux/crisp`.
+    /// Returns the sorted list of managed UX keys dynamically loaded from `crisp` (falling back
+    /// to [`WorkspaceCatalog::expected_ux_keys`]).
     #[must_use]
     pub fn ux_managed_keys(&self) -> Vec<String> {
         self.modules
             .get("crisp")
             .and_then(|m| m.profile_settings.as_ref())
             .map_or_else(
-                || EXPECTED_UX_KEYS.iter().map(|s| (*s).to_string()).collect(),
+                || self.expected_ux_keys(),
                 |map| map.keys().cloned().collect(),
             )
     }

@@ -14,9 +14,9 @@ use sha2::{Digest, Sha256};
 
 use crate::exit_codes::{VspError, VspResult};
 use crate::model::{
-    is_valid_module_id, AiMode, BundleExtensions, CodeProfileBundle, ModuleKind, UxPreset,
-    VsCodeExtensionEntry, VsCodeExtensionIdentifier, WorkspaceCatalog, WorkspaceExtensionsFile,
-    COMPILER_UNION_KEYS, GROUP_ORDER, LEGACY_BUNDLE_ALIASES,
+    is_valid_module_id, AiMode, BundleExtensions, CodeProfileBundle, ModuleKind, ProfileRecipe,
+    UxPreset, VsCodeExtensionEntry, VsCodeExtensionIdentifier, WorkspaceCatalog,
+    WorkspaceExtensionsFile, COMPILER_UNION_KEYS,
 };
 use crate::provenance::write_file_atomic;
 
@@ -53,19 +53,37 @@ pub struct ResolveRequest {
     pub cli_without: Vec<String>,
 }
 
-/// Result of writing `.code-profile` bundles and `SHA256SUMS`.
+/// Result of writing (or planning in `--dry-run` mode) `.code-profile` bundles and `SHA256SUMS`.
 #[derive(Debug, Clone)]
 pub struct DistReport {
-    /// Destination directory where bundles and `SHA256SUMS` were written.
+    /// Destination directory where bundles and `SHA256SUMS` were written or planned.
     pub out_dir: PathBuf,
-    /// Canonical bundle filenames written.
+    /// Canonical bundle filenames written or planned.
     pub canonical_bundles: Vec<String>,
-    /// Materialized legacy alias bundle filenames written.
+    /// Materialized legacy alias bundle filenames written or planned.
     pub alias_bundles: Vec<String>,
     /// Path to the generated `SHA256SUMS` manifest.
     pub sha256sums_path: PathBuf,
     /// Ordered `(sha256_hex, filename)` entries recorded in `SHA256SUMS`.
     pub checksums: Vec<(String, String)>,
+}
+
+impl DistReport {
+    /// Returns all destination file paths that this export/dist run writes (or would write
+    /// under `dry_run = true`): canonical bundles, legacy alias bundles, and `SHA256SUMS`.
+    #[must_use]
+    pub fn planned_paths(&self) -> Vec<PathBuf> {
+        let mut paths =
+            Vec::with_capacity(self.canonical_bundles.len() + self.alias_bundles.len() + 1);
+        for fname in &self.canonical_bundles {
+            paths.push(self.out_dir.join(fname));
+        }
+        for fname in &self.alias_bundles {
+            paths.push(self.out_dir.join(fname));
+        }
+        paths.push(self.sha256sums_path.clone());
+        paths
+    }
 }
 
 /// Personal additions that [`export_profiles_with_additions`] applies to one profile bundle.
@@ -396,6 +414,33 @@ pub fn compile_settings(
     Ok(acc)
 }
 
+/// Compiles canonical UX-agnostic merged profile settings from a pre-resolved module list.
+///
+/// Merges `workspace` + `profile` fragments, applies combined recipe overrides, and strips
+/// all managed UX keys without re-running DAG recipe resolution.
+///
+/// # Errors
+///
+/// Returns [`VspError::UsageOrConfig`] if any module ID in `resolved_modules` is unknown.
+pub fn compile_canonical_profile_settings_from_resolved(
+    catalog: &WorkspaceCatalog,
+    recipe: &ProfileRecipe,
+    resolved_modules: &[String],
+) -> VspResult<Map<String, Value>> {
+    let (ov_ws, ov_prof) = recipe.split_overrides();
+    let combined_ov = recursive_object_multiply(&ov_ws, &ov_prof);
+    let mut merged = compile_settings(
+        catalog,
+        SettingsScope::Both,
+        resolved_modules,
+        Some(&combined_ov),
+    )?;
+    for ux_key in catalog.ux_managed_keys() {
+        merged.remove(&ux_key);
+    }
+    Ok(merged)
+}
+
 /// Compiles canonical UX-agnostic merged profile settings matching `_merged/<name>.json`.
 ///
 /// Resolves the recipe with `ux = default`, merges `workspace` + `profile` fragments,
@@ -420,13 +465,7 @@ pub fn compile_canonical_profile_settings(
         Some(UxPreset::Default),
         None,
     )?;
-    let (ov_ws, ov_prof) = recipe.split_overrides();
-    let combined_ov = recursive_object_multiply(&ov_ws, &ov_prof);
-    let mut merged = compile_settings(catalog, SettingsScope::Both, &resolved, Some(&combined_ov))?;
-    for ux_key in catalog.ux_managed_keys() {
-        merged.remove(&ux_key);
-    }
-    Ok(merged)
+    compile_canonical_profile_settings_from_resolved(catalog, recipe, &resolved)
 }
 
 /// Compiles profile extensions in exact resolved-module order (`workspace[]` then `profile[]`),
@@ -518,14 +557,14 @@ pub fn compile_workspace_extensions(
     })
 }
 
-/// Orders extension IDs deterministically by [`GROUP_ORDER`] while preserving
-/// relative order within each group.
+/// Orders extension IDs deterministically by the catalog's effective group order while
+/// preserving relative order within each group.
 #[must_use]
 pub fn order_extensions_by_group(catalog: &WorkspaceCatalog, ids: &[String]) -> Vec<String> {
     let mut ordered = Vec::with_capacity(ids.len());
     let mut placed = vec![false; ids.len()];
 
-    for grp in GROUP_ORDER {
+    for grp in catalog.effective_group_order() {
         for (idx, id) in ids.iter().enumerate() {
             if !placed[idx] && catalog.extension_group(id).eq_ignore_ascii_case(grp) {
                 ordered.push(id.clone());
@@ -606,7 +645,8 @@ pub fn compile_tasks(
     Ok(Some(Value::Object(root)))
 }
 
-/// Compiles a deterministic UX-agnostic [`CodeProfileBundle`] for a canonical profile.
+/// Compiles a deterministic UX-agnostic [`CodeProfileBundle`] for a canonical profile
+/// using a single DAG recipe resolution pass.
 ///
 /// # Errors
 ///
@@ -616,6 +656,9 @@ pub fn compile_code_profile_bundle(
     catalog: &WorkspaceCatalog,
     profile_name: &str,
 ) -> VspResult<CodeProfileBundle> {
+    let recipe = catalog.profiles.get(profile_name).ok_or_else(|| {
+        VspError::TargetMissing(format!("unknown profile recipe '{profile_name}'"))
+    })?;
     let resolved = resolve_profile_recipe(
         catalog,
         profile_name,
@@ -624,7 +667,7 @@ pub fn compile_code_profile_bundle(
         Some(UxPreset::Default),
         None,
     )?;
-    let settings = compile_canonical_profile_settings(catalog, profile_name)?;
+    let settings = compile_canonical_profile_settings_from_resolved(catalog, recipe, &resolved)?;
     let ext_entries = compile_profile_extensions(catalog, &resolved)?;
     let enabled = ext_entries
         .into_iter()
@@ -678,12 +721,13 @@ pub fn export_profiles(
     out_dir: &Path,
     include_legacy_aliases: bool,
 ) -> VspResult<DistReport> {
-    export_profiles_with_additions(
+    export_profiles_with_options(
         catalog,
         names,
         out_dir,
         include_legacy_aliases,
         &BTreeMap::new(),
+        false,
     )
 }
 
@@ -706,13 +750,38 @@ pub fn export_profiles_with_additions(
     include_legacy_aliases: bool,
     additions: &BTreeMap<String, BundleAdditions>,
 ) -> VspResult<DistReport> {
-    fs::create_dir_all(out_dir).map_err(|err| {
-        VspError::Operational(format!(
-            "failed to create output directory {}: {err}",
-            out_dir.display()
-        ))
-    })?;
+    export_profiles_with_options(
+        catalog,
+        names,
+        out_dir,
+        include_legacy_aliases,
+        additions,
+        false,
+    )
+}
 
+/// Exports or previews (when `dry_run == true`) `.code-profile` bundles and `SHA256SUMS`.
+///
+/// All requested profile names are validated and every bundle is compiled in memory BEFORE
+/// touching the filesystem. When `dry_run` is `true`, performs ZERO directory creations and
+/// ZERO file writes while returning the complete planned [`DistReport`] (including planned
+/// bundle names, checksums, and [`DistReport::planned_paths`]).
+///
+/// # Errors
+///
+/// - [`VspError::TargetMissing`] (exit `2`): a requested profile name does not exist.
+/// - [`VspError::SafetyRefusal`] (exit `5`): `include_legacy_aliases` is `true` and
+///   `out_dir` already contains stale or unmanaged `.code-profile` files.
+/// - [`VspError::Operational`] (exit `1`): compilation or filesystem error.
+pub fn export_profiles_with_options(
+    catalog: &WorkspaceCatalog,
+    names: &[String],
+    out_dir: &Path,
+    include_legacy_aliases: bool,
+    additions: &BTreeMap<String, BundleAdditions>,
+    dry_run: bool,
+) -> VspResult<DistReport> {
+    // 1. Validate all requested profile names BEFORE any filesystem side effects.
     let target_profiles: Vec<String> = if names.is_empty() {
         catalog.profiles.keys().cloned().collect()
     } else {
@@ -729,6 +798,7 @@ pub fn export_profiles_with_additions(
         selected
     };
 
+    // 2. Compile every bundle and legacy alias in memory before touching disk.
     let mut emitted_files: Vec<(String, Vec<u8>)> = Vec::new();
     let mut canonical_bundles = Vec::new();
     let mut alias_bundles = Vec::new();
@@ -756,21 +826,31 @@ pub fn export_profiles_with_additions(
     }
 
     if include_legacy_aliases {
-        for &(alias_file, canonical_file) in LEGACY_BUNDLE_ALIASES {
+        for (alias_file, canonical_file) in catalog.bundle_alias_pairs() {
             if let Some((_, canonical_bytes)) = emitted_files
                 .iter()
-                .find(|(name, _)| name == canonical_file)
+                .find(|(name, _)| name == &canonical_file)
             {
                 let alias_bytes = canonical_bytes.clone();
-                alias_bundles.push(alias_file.to_string());
-                emitted_files.push((alias_file.to_string(), alias_bytes));
+                alias_bundles.push(alias_file.clone());
+                emitted_files.push((alias_file, alias_bytes));
             }
         }
     }
 
-    // Every bundle is compiled in memory before the first write, so a compile error leaves
-    // the destination unchanged. The destination inventory is then examined.
-    let existing_bundles = list_code_profile_files(out_dir)?;
+    // 3. Inspect existing destination inventory without creating `out_dir` yet.
+    if out_dir.exists() && !out_dir.is_dir() {
+        return Err(VspError::Operational(format!(
+            "output path is not a directory: {}",
+            out_dir.display()
+        )));
+    }
+    let existing_bundles = if out_dir.is_dir() {
+        list_code_profile_files(out_dir)?
+    } else {
+        Vec::new()
+    };
+
     if include_legacy_aliases {
         // A full distribution must not depend on the history of a reused directory. A
         // `.code-profile` file that this run does not produce (for example a removed
@@ -790,15 +870,11 @@ pub fn export_profiles_with_additions(
         }
     }
 
-    for (fname, bytes) in &emitted_files {
-        write_file_atomic(&out_dir.join(fname), bytes, 0o644, false)?;
-    }
-
-    // `SHA256SUMS` covers the whole destination inventory. A partial export (`vsp export
-    // rust`, then `vsp export general`) keeps the entries of bundles from earlier runs, so
-    // each bundle in the directory stays verifiable. The map key order is the `LC_ALL=C`
-    // byte order of the file names.
-    let mut inventory: BTreeMap<String, Vec<u8>> = emitted_files.into_iter().collect();
+    // 4. Build the full checksum inventory in memory before mutating disk.
+    let mut inventory: BTreeMap<String, Vec<u8>> = emitted_files
+        .iter()
+        .map(|(name, bytes)| (name.clone(), bytes.clone()))
+        .collect();
     if !include_legacy_aliases {
         for name in existing_bundles {
             if inventory.contains_key(&name) {
@@ -824,7 +900,21 @@ pub fn export_profiles_with_additions(
     }
 
     let sha256sums_path = out_dir.join("SHA256SUMS");
-    write_file_atomic(&sha256sums_path, sums_buf.as_bytes(), 0o644, false)?;
+
+    // 5. Commit to disk only when `dry_run` is false.
+    if !dry_run {
+        fs::create_dir_all(out_dir).map_err(|err| {
+            VspError::Operational(format!(
+                "failed to create output directory {}: {err}",
+                out_dir.display()
+            ))
+        })?;
+
+        for (fname, bytes) in &emitted_files {
+            write_file_atomic(&out_dir.join(fname), bytes, 0o644, false)?;
+        }
+        write_file_atomic(&sha256sums_path, sums_buf.as_bytes(), 0o644, false)?;
+    }
 
     Ok(DistReport {
         out_dir: out_dir.to_path_buf(),
@@ -835,6 +925,23 @@ pub fn export_profiles_with_additions(
     })
 }
 
+/// Builds or previews (when `dry_run == true`) the full deterministic release distribution
+/// in `out_dir`: all canonical `.code-profile` bundles + materialized legacy `.code-profile`
+/// alias files + `LC_ALL=C` sorted `SHA256SUMS`.
+///
+/// When `dry_run` is `true`, performs ZERO directory creations and ZERO file writes.
+///
+/// # Errors
+///
+/// Returns [`VspError`] if compilation, stale-file validation, or filesystem output fails.
+pub fn build_dist_with_options(
+    catalog: &WorkspaceCatalog,
+    out_dir: &Path,
+    dry_run: bool,
+) -> VspResult<DistReport> {
+    export_profiles_with_options(catalog, &[], out_dir, true, &BTreeMap::new(), dry_run)
+}
+
 /// Builds the full deterministic release distribution in `out_dir`:
 /// 15 canonical `.code-profile` bundles + 22 materialized legacy `.code-profile`
 /// alias files + `LC_ALL=C` sorted `SHA256SUMS`.
@@ -843,7 +950,7 @@ pub fn export_profiles_with_additions(
 ///
 /// Returns [`VspError`] if compilation or filesystem output fails.
 pub fn build_dist(catalog: &WorkspaceCatalog, out_dir: &Path) -> VspResult<DistReport> {
-    export_profiles(catalog, &[], out_dir, true)
+    build_dist_with_options(catalog, out_dir, false)
 }
 
 /// Lists the names of the regular `*.code-profile` files in `dir`, sorted in byte order.

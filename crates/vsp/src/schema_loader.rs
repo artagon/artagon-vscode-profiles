@@ -18,12 +18,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::exit_codes::{VspError, VspResult};
-use crate::legacy_loader::parse_jsonc_value;
+use crate::jsonc::parse_jsonc_bytes;
 use crate::model::{
     is_valid_module_id, DefaultsManifest, DetectSpec, ExtensionCatalog, ExtensionPin,
     ExtensionPinsManifest, ExtensionRecord, ExtensionStatus, ModuleDefinition, ModuleExtensions,
@@ -82,6 +81,9 @@ pub struct AutonomyDenyListPolicy {
     /// Execution-override keys denied anywhere regardless of value or nesting.
     #[serde(default)]
     pub presence_keys: Vec<String>,
+    /// Execution-override key prefixes denied anywhere regardless of value or nesting.
+    #[serde(default)]
+    pub presence_key_prefixes: Vec<String>,
     /// Boolean keys denied when evaluated to `true` (typed or string `"true"`).
     #[serde(default)]
     pub deny_true_keys: Vec<String>,
@@ -410,46 +412,45 @@ pub fn derive_allowed_publishers(
     })
 }
 
-/// Loads and validates the compile-time embedded v2.2 snapshot into a [`LoadedSchema`].
-///
-/// Works identically regardless of the current working directory or disk contents.
-///
-/// # Errors
-///
-/// Returns [`VspError`] if the embedded snapshot violates any v2.2 schema invariant.
-pub fn load_embedded_schema() -> VspResult<LoadedSchema> {
+/// Builds a zero-copy borrowed index over the compile-time embedded v2.2 snapshot entries.
+fn embedded_snapshot_index() -> VspResult<BTreeMap<&'static str, &'static [u8]>> {
     let mut files = BTreeMap::new();
     for &(path, bytes) in embedded_snapshot_files() {
-        if files.insert(path.to_string(), bytes.to_vec()).is_some() {
+        if files.insert(path, bytes).is_some() {
             return Err(VspError::UsageOrConfig(format!(
                 "duplicate path '{path}' in embedded v2.2 snapshot"
             )));
         }
     }
-    load_from_snapshot(PathBuf::from(EMBEDDED_ROOT_LABEL), &files)
+    Ok(files)
 }
 
-/// Loads the compile-time embedded v2.2 snapshot directly into a [`WorkspaceCatalog`].
+/// Loads and validates the compile-time embedded v2.2 snapshot into a [`LoadedSchema`].
+///
+/// Works identically regardless of the current working directory or disk contents and avoids
+/// copying static snapshot buffers onto the heap.
+///
+/// # Errors
+///
+/// Returns [`VspError`] if the embedded snapshot violates any v2.2 schema invariant.
+pub fn load_embedded_schema() -> VspResult<LoadedSchema> {
+    let files = embedded_snapshot_index()?;
+    load_schema_from_slices(PathBuf::from(EMBEDDED_ROOT_LABEL), &files)
+}
+
+/// Loads the compile-time embedded v2.2 snapshot directly into a [`WorkspaceCatalog`],
+/// retaining `policy`, `retire_on_switch`, `lockfile`, and `group_order` without copying
+/// static snapshot file buffers or cloning manifest payloads.
 ///
 /// # Errors
 ///
 /// Returns [`VspError`] if the embedded snapshot fails strict validation.
 pub fn load_embedded() -> VspResult<WorkspaceCatalog> {
-    load_embedded_schema().map(|s| s.catalog)
+    let files = embedded_snapshot_index()?;
+    load_catalog_from_slices(PathBuf::from(EMBEDDED_ROOT_LABEL), &files, false).map(|p| p.catalog)
 }
 
-/// Loads and validates an explicit external v2.2 catalog directory into a [`LoadedSchema`].
-///
-/// Never falls back to the embedded snapshot when files are missing or invalid.
-/// Rejects symlinks or paths escaping `root` with [`VspError::SafetyRefusal`] (exit `5`).
-///
-/// # Errors
-///
-/// - [`VspError::TargetMissing`] (exit `2`): `root` does not exist or is not a directory.
-/// - [`VspError::UsageOrConfig`] (exit `4`): required v2.2 files/directories are missing or invalid.
-/// - [`VspError::SafetyRefusal`] (exit `5`): symlink or path escapes `root`, or security invariant fails.
-/// - [`VspError::Operational`] (exit `1`): IO or JSON/JSONC syntax error.
-pub fn load_schema_from_dir(root: &Path) -> VspResult<LoadedSchema> {
+fn read_external_v2_snapshot(root: &Path) -> VspResult<(PathBuf, BTreeMap<String, Vec<u8>>)> {
     if !root.exists() {
         return Err(VspError::TargetMissing(format!(
             "catalog directory not found: {}",
@@ -508,10 +509,27 @@ pub fn load_schema_from_dir(root: &Path) -> VspResult<LoadedSchema> {
     }
     read_dir_tree_into_snapshot(&canon_root, &canon_packs, &mut files)?;
 
+    Ok((canon_root, files))
+}
+
+/// Loads and validates an explicit external v2.2 catalog directory into a [`LoadedSchema`].
+///
+/// Never falls back to the embedded snapshot when files are missing or invalid.
+/// Rejects symlinks or paths escaping `root` with [`VspError::SafetyRefusal`] (exit `5`).
+///
+/// # Errors
+///
+/// - [`VspError::TargetMissing`] (exit `2`): `root` does not exist or is not a directory.
+/// - [`VspError::UsageOrConfig`] (exit `4`): required v2.2 files/directories are missing or invalid.
+/// - [`VspError::SafetyRefusal`] (exit `5`): symlink or path escapes `root`, or security invariant fails.
+/// - [`VspError::Operational`] (exit `1`): IO or JSON/JSONC syntax error.
+pub fn load_schema_from_dir(root: &Path) -> VspResult<LoadedSchema> {
+    let (canon_root, files) = read_external_v2_snapshot(root)?;
     load_from_snapshot(canon_root, &files)
 }
 
-/// Loads an explicit external v2.2 catalog directory directly into a [`WorkspaceCatalog`].
+/// Loads an explicit external v2.2 catalog directory directly into a [`WorkspaceCatalog`],
+/// retaining `policy`, `retire_on_switch`, `lockfile`, and `group_order`.
 ///
 /// Never falls back to the embedded snapshot.
 ///
@@ -520,7 +538,12 @@ pub fn load_schema_from_dir(root: &Path) -> VspResult<LoadedSchema> {
 /// Returns [`VspError`] on missing directory, incomplete layout, out-of-root escape, or
 /// schema validation failure.
 pub fn load_from_dir(root: &Path) -> VspResult<WorkspaceCatalog> {
-    load_schema_from_dir(root).map(|s| s.catalog)
+    let (canon_root, files) = read_external_v2_snapshot(root)?;
+    let borrowed: BTreeMap<&str, &[u8]> = files
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_slice()))
+        .collect();
+    load_catalog_from_slices(canon_root, &borrowed, false).map(|p| p.catalog)
 }
 
 /// Loads a [`WorkspaceCatalog`] using the authoritative v2.2 CLI resolution policy:
@@ -679,6 +702,13 @@ pub fn resolve_repo_dir(cli_catalog: Option<&Path>) -> VspResult<PathBuf> {
     ))
 }
 
+struct LoadedCatalogParts {
+    catalog: WorkspaceCatalog,
+    blocked_publishers: Vec<String>,
+    legacy_aliases: BTreeMap<String, LegacyAliasEntry>,
+    pack_scripts: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
+}
+
 /// Shared strict parser and validator powering both [`load_embedded_schema`] and
 /// [`load_schema_from_dir`].
 ///
@@ -702,8 +732,45 @@ pub fn load_from_snapshot(
     root_label: PathBuf,
     files: &BTreeMap<String, Vec<u8>>,
 ) -> VspResult<LoadedSchema> {
+    let borrowed: BTreeMap<&str, &[u8]> = files
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_slice()))
+        .collect();
+    load_schema_from_slices(root_label, &borrowed)
+}
+
+fn load_schema_from_slices(
+    root_label: PathBuf,
+    files: &BTreeMap<&str, &[u8]>,
+) -> VspResult<LoadedSchema> {
+    let parts = load_catalog_from_slices(root_label, files, true)?;
+    let policy = parts.catalog.policy.clone().ok_or_else(|| {
+        VspError::Operational("internal error: loaded v2.2 catalog missing policy".to_string())
+    })?;
+    let lockfile = parts.catalog.lockfile.clone().ok_or_else(|| {
+        VspError::Operational("internal error: loaded v2.2 catalog missing lockfile".to_string())
+    })?;
+    let group_order = parts.catalog.group_order.clone();
+    let retire_on_switch = parts.catalog.retire_on_switch.clone();
+    Ok(LoadedSchema {
+        catalog: parts.catalog,
+        group_order,
+        blocked_publishers: parts.blocked_publishers,
+        policy,
+        lockfile,
+        legacy_aliases: parts.legacy_aliases,
+        retire_on_switch,
+        pack_scripts: parts.pack_scripts,
+    })
+}
+
+fn load_catalog_from_slices(
+    root_label: PathBuf,
+    files: &BTreeMap<&str, &[u8]>,
+    collect_scripts: bool,
+) -> VspResult<LoadedCatalogParts> {
     // 1. Validate every relative path key is strictly inside the snapshot root.
-    for rel in files.keys() {
+    for &rel in files.keys() {
         validate_relative_snapshot_path(rel)?;
     }
 
@@ -717,10 +784,16 @@ pub fn load_from_snapshot(
     }
 
     // 3. Parse catalog/extensions.jsonc.
-    let raw_exts: RawExtensionsFile = parse_jsonc_bytes(
-        files["catalog/extensions.jsonc"].as_slice(),
-        "catalog/extensions.jsonc",
-    )?;
+    let ext_bytes = files
+        .get("catalog/extensions.jsonc")
+        .copied()
+        .ok_or_else(|| {
+            VspError::UsageOrConfig(
+                "incomplete v2.2 snapshot: missing required file 'catalog/extensions.jsonc'"
+                    .to_string(),
+            )
+        })?;
+    let raw_exts: RawExtensionsFile = parse_jsonc_bytes(ext_bytes, "catalog/extensions.jsonc")?;
     require_schema_version(raw_exts.version, "catalog/extensions.jsonc")?;
     if raw_exts.group_order.is_empty() {
         return Err(VspError::UsageOrConfig(
@@ -773,10 +846,12 @@ pub fn load_from_snapshot(
     let publishers = derive_allowed_publishers(&extensions_catalog, &raw_exts.blocked_publishers)?;
 
     // 4. Parse catalog/policy.jsonc.
-    let policy: PolicyManifest = parse_jsonc_bytes(
-        files["catalog/policy.jsonc"].as_slice(),
-        "catalog/policy.jsonc",
-    )?;
+    let policy_bytes = files.get("catalog/policy.jsonc").copied().ok_or_else(|| {
+        VspError::UsageOrConfig(
+            "incomplete v2.2 snapshot: missing required file 'catalog/policy.jsonc'".to_string(),
+        )
+    })?;
+    let policy: PolicyManifest = parse_jsonc_bytes(policy_bytes, "catalog/policy.jsonc")?;
     require_schema_version(policy.version, "catalog/policy.jsonc")?;
     if policy.vscode_version.is_empty() || semver::Version::parse(&policy.vscode_version).is_err() {
         return Err(VspError::UsageOrConfig(format!(
@@ -802,7 +877,7 @@ pub fn load_from_snapshot(
 
     // 5. Discover and parse packs/** (single-file packs/<id>.jsonc & directory packs/<id>/<id>.jsonc).
     let (mut modules, retire_on_switch, pack_scripts) =
-        parse_packs_from_snapshot(&root_label, files)?;
+        parse_packs_from_snapshot(&root_label, files, collect_scripts)?;
 
     // Synthesize virtual `default` UX preset (`{}` profile settings, zero dummy file on disk)
     // and ensure symmetric UX conflict declarations with all loaded UX packs.
@@ -844,10 +919,14 @@ pub fn load_from_snapshot(
     );
 
     // 6. Parse strict JSON 4-tier vsp.lock.json and validate 100% active coverage.
-    let lockfile: LockfileManifest = serde_json::from_slice(files["vsp.lock.json"].as_slice())
-        .map_err(|err| {
-            VspError::Operational(format!("failed to parse strict JSON vsp.lock.json: {err}"))
-        })?;
+    let lock_bytes = files.get("vsp.lock.json").copied().ok_or_else(|| {
+        VspError::UsageOrConfig(
+            "incomplete v2.2 snapshot: missing required file 'vsp.lock.json'".to_string(),
+        )
+    })?;
+    let lockfile: LockfileManifest = serde_json::from_slice(lock_bytes).map_err(|err| {
+        VspError::Operational(format!("failed to parse strict JSON vsp.lock.json: {err}"))
+    })?;
     require_schema_version(lockfile.version, "vsp.lock.json")?;
     let pins_manifest = validate_and_map_lockfile(
         &lockfile,
@@ -858,8 +937,12 @@ pub fn load_from_snapshot(
     )?;
 
     // 7. Parse presets.jsonc, resolve `extends` inheritance, and validate legacyAliases.
-    let raw_presets: RawPresetsFile =
-        parse_jsonc_bytes(files["presets.jsonc"].as_slice(), "presets.jsonc")?;
+    let presets_bytes = files.get("presets.jsonc").copied().ok_or_else(|| {
+        VspError::UsageOrConfig(
+            "incomplete v2.2 snapshot: missing required file 'presets.jsonc'".to_string(),
+        )
+    })?;
+    let raw_presets: RawPresetsFile = parse_jsonc_bytes(presets_bytes, "presets.jsonc")?;
     require_schema_version(raw_presets.version, "presets.jsonc")?;
     let profiles = resolve_presets_map(&raw_presets, &modules)?;
     validate_legacy_aliases(&raw_presets.legacy_aliases, &profiles)?;
@@ -886,16 +969,16 @@ pub fn load_from_snapshot(
             .iter()
             .map(|(alias, entry)| (alias.clone(), (entry.preset.clone(), entry.ux)))
             .collect(),
+        policy: Some(policy),
+        retire_on_switch,
+        lockfile: Some(lockfile),
+        group_order: raw_exts.group_order,
     };
 
-    Ok(LoadedSchema {
+    Ok(LoadedCatalogParts {
         catalog,
-        group_order: raw_exts.group_order,
         blocked_publishers: raw_exts.blocked_publishers,
-        policy,
-        lockfile,
         legacy_aliases: raw_presets.legacy_aliases,
-        retire_on_switch,
         pack_scripts,
     })
 }
@@ -1060,14 +1143,6 @@ fn read_dir_tree_into_snapshot(
     Ok(())
 }
 
-fn parse_jsonc_bytes<T: DeserializeOwned>(bytes: &[u8], label: &str) -> VspResult<T> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(|err| VspError::Operational(format!("{label}: invalid UTF-8: {err}")))?;
-    let val = parse_jsonc_value(text, label)?;
-    serde_json::from_value(val)
-        .map_err(|err| VspError::UsageOrConfig(format!("{label}: schema error: {err}")))
-}
-
 fn parse_optional_settings_object(
     value: Value,
     label: &str,
@@ -1104,12 +1179,13 @@ type ParsedPacksResult = (
 
 fn parse_packs_from_snapshot(
     root_label: &Path,
-    files: &BTreeMap<String, Vec<u8>>,
+    files: &BTreeMap<&str, &[u8]>,
+    collect_scripts: bool,
 ) -> VspResult<ParsedPacksResult> {
-    let mut pack_manifests: Vec<(String, String, String, PathBuf, &[u8])> = Vec::new();
-    let mut dir_pack_assets: BTreeMap<String, BTreeMap<String, Vec<u8>>> = BTreeMap::new();
+    let mut pack_manifests: Vec<(&str, &str, &str, PathBuf, &[u8])> = Vec::new();
+    let mut dir_pack_assets: BTreeMap<&str, BTreeMap<String, &[u8]>> = BTreeMap::new();
 
-    for (rel, bytes) in files {
+    for (&rel, &bytes) in files {
         let Some(sub) = rel.strip_prefix("packs/") else {
             continue;
         };
@@ -1121,13 +1197,7 @@ fn parse_packs_from_snapshot(
                         "unexpected non-.jsonc file directly under packs/: '{rel}'"
                     )));
                 };
-                pack_manifests.push((
-                    stem.to_string(),
-                    rel.clone(),
-                    (*file).to_string(),
-                    root_label.join("packs"),
-                    bytes.as_slice(),
-                ));
+                pack_manifests.push((stem, rel, file, root_label.join("packs"), bytes));
             }
             [dir_id, file] if file.ends_with(".jsonc") => {
                 let stem = file.strip_suffix(".jsonc").unwrap_or("");
@@ -1137,11 +1207,11 @@ fn parse_packs_from_snapshot(
                     )));
                 }
                 pack_manifests.push((
-                    (*dir_id).to_string(),
-                    rel.clone(),
-                    (*file).to_string(),
+                    dir_id,
+                    rel,
+                    file,
                     root_label.join("packs").join(dir_id),
-                    bytes.as_slice(),
+                    bytes,
                 ));
             }
             [dir_id, rest @ ..] => {
@@ -1152,9 +1222,9 @@ fn parse_packs_from_snapshot(
                 }
                 let asset_rel = rest.join("/");
                 dir_pack_assets
-                    .entry((*dir_id).to_string())
+                    .entry(dir_id)
                     .or_default()
-                    .insert(asset_rel, bytes.clone());
+                    .insert(asset_rel, bytes);
             }
             [] => {}
         }
@@ -1177,14 +1247,14 @@ fn parse_packs_from_snapshot(
                     .to_string(),
             ));
         }
-        if !is_valid_module_id(&expected_id) {
+        if !is_valid_module_id(expected_id) {
             return Err(VspError::UsageOrConfig(format!(
                 "invalid pack identifier '{expected_id}' in '{rel_path}' (must match ^[a-z0-9][a-z0-9-]*$)"
             )));
         }
 
-        let raw: RawPackFile = parse_jsonc_bytes(bytes, &rel_path)?;
-        require_schema_version(raw.version, &rel_path)?;
+        let raw: RawPackFile = parse_jsonc_bytes(bytes, rel_path)?;
+        require_schema_version(raw.version, rel_path)?;
         if raw.id != expected_id {
             return Err(VspError::UsageOrConfig(format!(
                 "{rel_path}: pack id '{}' does not match filename '{expected_id}'",
@@ -1199,13 +1269,13 @@ fn parse_packs_from_snapshot(
         }
 
         let workspace_settings =
-            parse_optional_settings_object(raw.settings.workspace, &rel_path, "workspace")?;
+            parse_optional_settings_object(raw.settings.workspace, rel_path, "workspace")?;
         let profile_settings =
-            parse_optional_settings_object(raw.settings.profile, &rel_path, "profile")?;
-        let tasks_doc = parse_optional_tasks_object(raw.tasks, &rel_path)?;
+            parse_optional_settings_object(raw.settings.profile, rel_path, "profile")?;
+        let tasks_doc = parse_optional_tasks_object(raw.tasks, rel_path)?;
 
         if !raw.scripts.is_empty() {
-            let assets = dir_pack_assets.get(&raw.id).ok_or_else(|| {
+            let assets = dir_pack_assets.get(raw.id.as_str()).ok_or_else(|| {
                 VspError::UsageOrConfig(format!(
                     "{rel_path}: declares scripts {:?} but no directory assets exist under packs/{}/",
                     raw.scripts, raw.id
@@ -1214,15 +1284,19 @@ fn parse_packs_from_snapshot(
             let mut scripts_map = BTreeMap::new();
             for script_rel in &raw.scripts {
                 validate_relative_snapshot_path(script_rel)?;
-                let data = assets.get(script_rel).ok_or_else(|| {
+                let &data = assets.get(script_rel).ok_or_else(|| {
                     VspError::UsageOrConfig(format!(
                         "{rel_path}: declared script '{script_rel}' missing from packs/{}/",
                         raw.id
                     ))
                 })?;
-                scripts_map.insert(script_rel.clone(), data.clone());
+                if collect_scripts {
+                    scripts_map.insert(script_rel.clone(), data.to_vec());
+                }
             }
-            pack_scripts.insert(raw.id.clone(), scripts_map);
+            if collect_scripts {
+                pack_scripts.insert(raw.id.clone(), scripts_map);
+            }
         }
 
         if !raw.retire_on_switch.is_empty() {
@@ -1230,10 +1304,12 @@ fn parse_packs_from_snapshot(
         }
 
         let settings_refs = ModuleSettingsRefs {
-            workspace: workspace_settings.as_ref().map(|_| manifest_file.clone()),
-            profile: profile_settings.as_ref().map(|_| manifest_file.clone()),
+            workspace: workspace_settings
+                .as_ref()
+                .map(|_| manifest_file.to_string()),
+            profile: profile_settings.as_ref().map(|_| manifest_file.to_string()),
         };
-        let tasks_ref = tasks_doc.as_ref().map(|_| manifest_file);
+        let tasks_ref = tasks_doc.as_ref().map(|_| manifest_file.to_string());
 
         let manifest = ModuleManifest {
             version: 1,
