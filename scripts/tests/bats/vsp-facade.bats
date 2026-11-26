@@ -53,7 +53,7 @@ vsp() {
   [[ "${output}" == "${repo_phys}/bin/vsp" ]]
 }
 
-@test "facade: self install and self uninstall manage XDG_BIN_HOME/vsp and refuse non-symlink clobber" {
+@test "facade: self install and self uninstall manage owned links and refuse foreign/dangling links and regular files" {
   export XDG_BIN_HOME="${TEST_TMP}/local-bin"
   repo_phys="$(CDPATH='' cd -P -- "${REPO_ROOT}" && pwd -P)"
 
@@ -66,12 +66,98 @@ vsp() {
   [[ "${status}" -eq 0 ]]
   [[ ! -e "${XDG_BIN_HOME}/vsp" && ! -L "${XDG_BIN_HOME}/vsp" ]]
 
+  # Owned links (indirect alias to bin/vsp and checkout target/{release,debug}/vsp) are accepted.
+  alias_link="${TEST_TMP}/vsp-alias"
+  ln -s "${repo_phys}/bin/vsp" "${alias_link}"
+  ln -s "${alias_link}" "${XDG_BIN_HOME}/vsp"
+  run vsp self install
+  [[ "${status}" -eq 0 ]]
+  [[ "$(readlink "${XDG_BIN_HOME}/vsp")" == "${repo_phys}/bin/vsp" ]]
+
+  ln -sfn "${repo_phys}/target/release/vsp" "${XDG_BIN_HOME}/vsp"
+  run vsp self install
+  [[ "${status}" -eq 0 ]]
+  [[ "$(readlink "${XDG_BIN_HOME}/vsp")" == "${repo_phys}/bin/vsp" ]]
+
+  ln -sfn "${repo_phys}/target/debug/vsp" "${XDG_BIN_HOME}/vsp"
+  run vsp self uninstall
+  [[ "${status}" -eq 0 ]]
+  [[ ! -e "${XDG_BIN_HOME}/vsp" && ! -L "${XDG_BIN_HOME}/vsp" ]]
+
+  # Foreign live symlink: install and uninstall must refuse (exit 5) and leave target untouched.
+  foreign_bin="${TEST_TMP}/other-tool-vsp"
+  printf '#!/bin/sh\n' > "${foreign_bin}"
+  chmod 0755 "${foreign_bin}"
+  ln -s "${foreign_bin}" "${XDG_BIN_HOME}/vsp"
+
+  run --separate-stderr vsp self install
+  [[ "${status}" -eq 5 ]]
+  [[ "${stderr}" == *"foreign symlink"* ]]
+  [[ -L "${XDG_BIN_HOME}/vsp" ]]
+  [[ "$(readlink "${XDG_BIN_HOME}/vsp")" == "${foreign_bin}" ]]
+
+  run --separate-stderr vsp self uninstall
+  [[ "${status}" -eq 5 ]]
+  [[ "${stderr}" == *"foreign symlink"* ]]
+  [[ -L "${XDG_BIN_HOME}/vsp" ]]
+  [[ "$(readlink "${XDG_BIN_HOME}/vsp")" == "${foreign_bin}" ]]
+
+  # Dangling foreign symlink: install and uninstall must refuse (exit 5) and leave untouched.
+  dangling_target="${TEST_TMP}/missing-dir/other-vsp"
+  ln -sfn "${dangling_target}" "${XDG_BIN_HOME}/vsp"
+
+  run --separate-stderr vsp self install
+  [[ "${status}" -eq 5 ]]
+  [[ "${stderr}" == *"foreign symlink"* ]]
+  [[ -L "${XDG_BIN_HOME}/vsp" ]]
+  [[ "$(readlink "${XDG_BIN_HOME}/vsp")" == "${dangling_target}" ]]
+
+  run --separate-stderr vsp self uninstall
+  [[ "${status}" -eq 5 ]]
+  [[ "${stderr}" == *"foreign symlink"* ]]
+  [[ -L "${XDG_BIN_HOME}/vsp" ]]
+  [[ "$(readlink "${XDG_BIN_HOME}/vsp")" == "${dangling_target}" ]]
+
+  # Regular file: install and uninstall must refuse (exit 5) and leave file untouched.
+  rm -f "${XDG_BIN_HOME}/vsp"
   printf '#!/bin/sh\n' > "${XDG_BIN_HOME}/vsp"
   run vsp self install
   [[ "${status}" -eq 5 ]]
+  [[ -f "${XDG_BIN_HOME}/vsp" && ! -L "${XDG_BIN_HOME}/vsp" ]]
 
   run vsp self uninstall
   [[ "${status}" -eq 5 ]]
+  [[ -f "${XDG_BIN_HOME}/vsp" && ! -L "${XDG_BIN_HOME}/vsp" ]]
+}
+
+@test "facade: vsp use <profile> [path] aligns cleanly with vsp open in Bash fallback" {
+  mock_bin="${TEST_TMP}/open-use-bin"
+  mkdir -p "${mock_bin}"
+  open_log="${TEST_TMP}/open-use.log"
+  cat > "${mock_bin}/code" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${OPEN_LOG}"
+MOCK
+  chmod 0755 "${mock_bin}/code"
+  ws="$(make_workspace use-ws Cargo.toml)"
+
+  run vsp use --help
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == "Usage: vsp use <profile> [path]" ]]
+
+  run --separate-stderr vsp use
+  [[ "${status}" -eq 4 ]]
+  [[ "${stderr}" == *"vsp use: requires <profile> [path]"* ]]
+
+  run env PATH="${mock_bin}:${PATH}" OPEN_LOG="${open_log}" "${REPO_ROOT}/bin/vsp" use rust "${ws}"
+  [[ "${status}" -eq 0 ]]
+  run env PATH="${mock_bin}:${PATH}" OPEN_LOG="${open_log}" "${REPO_ROOT}/bin/vsp" open rust "${ws}"
+  [[ "${status}" -eq 0 ]]
+
+  line1="$(sed -n '1p' "${open_log}")"
+  line2="$(sed -n '2p' "${open_log}")"
+  [[ "${line1}" == *"--profile rust -- ${ws}" ]]
+  [[ "${line1}" == "${line2}" ]]
 }
 
 @test "facade: sync and diff with no selector exit 4 and never mutate cwd" {

@@ -66,10 +66,7 @@ EOF
 }
 
 need_val() {
-  if [[ $# -lt 2 || -z "${2}" ]]; then
-    printf 'vsp: %s requires a value\n' "${1}" >&2
-    exit 4
-  fi
+  [[ $# -ge 2 && -n "${2}" ]] || { printf 'vsp: %s requires a value\n' "${1}" >&2; exit 4; }
 }
 
 cmd_list() {
@@ -94,10 +91,7 @@ cmd_show() {
     cand="${ROOT}/profiles/${name}/profile.json"
   else
     for kind in capabilities toolchains ux; do
-      if [[ -f "${ROOT}/modules/${kind}/${name}/module.json" ]]; then
-        cand="${ROOT}/modules/${kind}/${name}/module.json"
-        break
-      fi
+      [[ -f "${ROOT}/modules/${kind}/${name}/module.json" ]] && { cand="${ROOT}/modules/${kind}/${name}/module.json"; break; }
     done
   fi
   [[ -n "${cand}" ]] || { printf 'vsp show: target not found: %s\n' "${name}" >&2; exit 2; }
@@ -116,10 +110,7 @@ cmd_completions() {
   esac
 }
 
-_check_requires_rust() {
-  printf 'vsp diff --check: compiled Rust vsp binary is required for full %s drift verification\n' "${1}" >&2
-  exit 7
-}
+_check_requires_rust() { printf 'vsp diff --check: compiled Rust vsp binary is required for full %s drift verification\n' "${1}" >&2; exit 7; }
 
 _dispatch_sync_or_diff() {
   local mode="${1}"; shift
@@ -132,10 +123,7 @@ _dispatch_sync_or_diff() {
 
   while [[ $# -gt 0 ]]; do
     case "${1}" in
-      -h|--help)
-        echo "Usage: vsp ${mode} (<path> | --workspace <path> | -p <name> | --from <bundle> -p <name> | --user | --all [--compromised-only]) [options]"
-        exit 0
-        ;;
+      -h|--help) echo "Usage: vsp ${mode} (<path> | --workspace <path> | -p <name> | --from <bundle> -p <name> | --user | --all [--compromised-only]) [options]"; exit 0 ;;
       -p|--profile)      need_val "${1}" "${2:-}"; profile="${2}"; shift 2 ;;
       --profile=*)       profile="${1#*=}"; need_val "--profile" "${profile}"; shift ;;
       --workspace)       need_val "${1}" "${2:-}"; workspace="${2}"; shift 2 ;;
@@ -163,10 +151,7 @@ _dispatch_sync_or_diff() {
       --all)             all_mode=1; shift ;;
       --compromised-only) compromised_only=1; shift ;;
       -n|--dry-run)      dry_run=1; shift ;;
-      --check)
-        [[ "${mode}" == "diff" ]] || { echo "vsp sync: --check is only valid with vsp diff" >&2; exit 4; }
-        check_mode=1; shift
-        ;;
+      --check)           [[ "${mode}" == "diff" ]] || { echo "vsp sync: --check is only valid with vsp diff" >&2; exit 4; }; check_mode=1; shift ;;
       --prune-retired)   prune_retired=1; shift ;;
       --prune-unmanaged) prune_unmanaged=1; shift ;;
       --force)           apply_args+=(--force); import_args+=(--force); ux_args+=(--force); shift ;;
@@ -196,17 +181,11 @@ _dispatch_sync_or_diff() {
         ;;
       --)
         shift
-        if [[ $# -gt 0 ]]; then
-          [[ -z "${workspace}" ]] || { printf 'vsp %s: unexpected argument %q\n' "${mode}" "${1}" >&2; exit 4; }
-          workspace="${1}"; shift
-        fi
+        if [[ $# -gt 0 ]]; then [[ -z "${workspace}" ]] || { printf 'vsp %s: unexpected argument %q\n' "${mode}" "${1}" >&2; exit 4; }; workspace="${1}"; shift; fi
         [[ $# -eq 0 ]] || { printf 'vsp %s: unexpected argument %q\n' "${mode}" "${1}" >&2; exit 4; }
         ;;
       -*) printf 'vsp %s: unknown option %q\n' "${mode}" "${1}" >&2; exit 4 ;;
-      *)
-        [[ -z "${workspace}" ]] || { printf 'vsp %s: unexpected argument %q\n' "${mode}" "${1}" >&2; exit 4; }
-        workspace="${1}"; shift
-        ;;
+      *)  [[ -z "${workspace}" ]] || { printf 'vsp %s: unexpected argument %q\n' "${mode}" "${1}" >&2; exit 4; }; workspace="${1}"; shift ;;
     esac
   done
 
@@ -235,9 +214,7 @@ _dispatch_sync_or_diff() {
       return 0
     fi
     "${BASH}" "${SCRIPTS_DIR}/import-profile.sh" "${profile}" "${from_bundle}" "${import_args[@]+"${import_args[@]}"}"
-    if [[ "${has_ux}" -eq 1 ]]; then
-      "${BASH}" "${VSPCLI}" apply --target=profile --profile "${profile}" "${ux_args[@]+"${ux_args[@]}"}"
-    fi
+    [[ "${has_ux}" -eq 1 ]] && "${BASH}" "${VSPCLI}" apply --target=profile --profile "${profile}" "${ux_args[@]+"${ux_args[@]}"}"
     return 0
   fi
 
@@ -248,10 +225,7 @@ _dispatch_sync_or_diff() {
     [[ -n "${profile}" ]] && ws_args+=(--profile "${profile}")
     [[ -n "${preset}" ]] && ws_args+=(--toolchain "${preset}")
     "${BASH}" "${VSPCLI}" apply "${ws_args[@]}" "${apply_args[@]+"${apply_args[@]}"}" "${workspace}"
-    if [[ "${check_mode}" -eq 1 ]]; then
-      [[ -f "${workspace}/.vscode/settings.json" ]] || exit 3
-      _check_requires_rust "workspace"
-    fi
+    if [[ "${check_mode}" -eq 1 ]]; then [[ -f "${workspace}/.vscode/settings.json" ]] || exit 3; _check_requires_rust "workspace"; fi
     return 0
   fi
 
@@ -261,8 +235,7 @@ _dispatch_sync_or_diff() {
     [[ "${dry_run}" -eq 1 ]] && step0_args+=(--dry-run)
     if [[ "${compromised_only}" -eq 1 ]]; then
       [[ "${check_mode}" -eq 1 ]] && _check_requires_rust "--compromised-only"
-      "${BASH}" "${VSPCLI}" reconcile "${step0_args[@]}"
-      return $?
+      "${BASH}" "${VSPCLI}" reconcile "${step0_args[@]}"; return $?
     fi
     # Step 0: unconditionally remediate compromised extensions BEFORE settings or installs.
     "${BASH}" "${VSPCLI}" reconcile "${step0_args[@]}"
@@ -272,8 +245,7 @@ _dispatch_sync_or_diff() {
     [[ -n "${preset}" ]] && prof_args+=(--toolchain "${preset}")
     "${BASH}" "${VSPCLI}" apply "${prof_args[@]}" "${apply_args[@]+"${apply_args[@]}"}"
 
-    local rec_args=(--profile "${profile}")
-    local eff_recipe="${as_recipe:-${preset}}"
+    local rec_args=(--profile "${profile}") eff_recipe="${as_recipe:-${preset}}"
     [[ -n "${eff_recipe}" ]] && rec_args+=(--as "${eff_recipe}")
     [[ "${dry_run}" -eq 1 ]] && rec_args+=(--dry-run)
     [[ "${prune_retired}" -eq 1 ]] && rec_args+=(--prune-retired)
@@ -285,8 +257,7 @@ _dispatch_sync_or_diff() {
       case "${rec_out}" in *"[STEP 0]"*|*"[STEP 1]"*|*"[STEP 2]"*) exit 3 ;; esac
       _check_requires_rust "profile"
     fi
-    "${BASH}" "${VSPCLI}" reconcile "${rec_args[@]}"
-    return $?
+    "${BASH}" "${VSPCLI}" reconcile "${rec_args[@]}"; return $?
   fi
 
   if [[ "${user_mode}" -eq 1 ]]; then
@@ -294,8 +265,7 @@ _dispatch_sync_or_diff() {
     local g_args=(--target=global)
     [[ "${dry_run}" -eq 1 ]] && g_args+=(--dry-run)
     [[ -n "${preset}" ]] && g_args+=(--toolchain "${preset}")
-    "${BASH}" "${VSPCLI}" apply "${g_args[@]}" "${apply_args[@]+"${apply_args[@]}"}"
-    return $?
+    "${BASH}" "${VSPCLI}" apply "${g_args[@]}" "${apply_args[@]+"${apply_args[@]}"}"; return $?
   fi
 
   printf 'vsp %s: explicit target selector required (<path>, --workspace <path>, -p/--profile <name>, --user, --from <bundle>, or --all --compromised-only)\n' "${mode}" >&2
@@ -304,9 +274,7 @@ _dispatch_sync_or_diff() {
 
 cmd_dev() {
   local sub="${1:-}"
-  if [[ -z "${sub}" || "${sub}" == "-h" || "${sub}" == "--help" ]]; then
-    echo "Usage: vsp dev {validate|build|dist|pins|compat|docs|hooks|test} [args...]"; exit 0
-  fi
+  if [[ -z "${sub}" || "${sub}" == "-h" || "${sub}" == "--help" ]]; then echo "Usage: vsp dev {validate|build|dist|pins|compat|docs|hooks|test} [args...]"; exit 0; fi
   shift
   case "${sub}" in
     validate) "${BASH}" "${SCRIPTS_DIR}/validate-json.sh" "${@+"${@}"}" ;;
@@ -321,22 +289,37 @@ cmd_dev() {
   esac
 }
 
+_vsp_owns_link() {
+  local link="${1}" raw="" resolved=""
+  [[ "${link}" == -* ]] && link="./${link}"
+  raw="$(readlink "${link}" 2>/dev/null)" || return 1
+  case "${raw}" in
+    "${VSP_SELF_PATH}"|"${REPO_ROOT}/target/release/vsp"|"${REPO_ROOT}/target/debug/vsp") return 0 ;;
+  esac
+  [[ -e "${link}" ]] || return 1
+  resolved="$(_vsp_resolve_real "${link}" 2>/dev/null)" || return 1
+  case "${resolved}" in
+    "${VSP_SELF_PATH}"|"${REPO_ROOT}/target/release/vsp"|"${REPO_ROOT}/target/debug/vsp") return 0 ;;
+  esac
+  return 1
+}
+
 cmd_self() {
   local sub="${1:-}"
-  if [[ -z "${sub}" || "${sub}" == "-h" || "${sub}" == "--help" ]]; then
-    echo "Usage: vsp self {path|install|uninstall}"; exit 0
-  fi
+  if [[ -z "${sub}" || "${sub}" == "-h" || "${sub}" == "--help" ]]; then echo "Usage: vsp self {path|install|uninstall}"; exit 0; fi
   shift
-  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-    printf 'Usage: vsp self %s\n' "${sub}"; exit 0
-  fi
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then printf 'Usage: vsp self %s\n' "${sub}"; exit 0; fi
   [[ $# -eq 0 ]] || { printf 'vsp self %s: unexpected argument %q\n' "${sub}" "${1}" >&2; exit 4; }
-  local bin_dir="${XDG_BIN_HOME:-${HOME}/.local/bin}"
-  local link_path="${bin_dir}/vsp"
+  local bin_dir="${XDG_BIN_HOME:-${HOME}/.local/bin}" link_path="${XDG_BIN_HOME:-${HOME}/.local/bin}/vsp" target=""
   case "${sub}" in
     path) printf '%s\n' "${VSP_SELF_PATH}" ;;
     install)
-      if [[ -e "${link_path}" && ! -L "${link_path}" ]]; then
+      if [[ -L "${link_path}" ]]; then
+        if ! _vsp_owns_link "${link_path}"; then
+          target="$(readlink "${link_path}" 2>/dev/null || true)"
+          printf 'vsp self install: refusing to overwrite foreign symlink %s -> %s\n' "${link_path}" "${target}" >&2; exit 5
+        fi
+      elif [[ -e "${link_path}" ]]; then
         printf 'vsp self install: refusing to overwrite non-symlink %s\n' "${link_path}" >&2; exit 5
       fi
       mkdir -p "${bin_dir}"
@@ -344,11 +327,11 @@ cmd_self() {
       printf 'Installed %s -> %s\n' "${link_path}" "${VSP_SELF_PATH}"
       ;;
     uninstall)
-      if [[ ! -L "${link_path}" && ! -e "${link_path}" ]]; then
-        printf 'vsp self uninstall: not installed at %s\n' "${link_path}"; return 0
-      fi
-      if [[ ! -L "${link_path}" ]]; then
-        printf 'vsp self uninstall: refusing to remove non-symlink %s\n' "${link_path}" >&2; exit 5
+      if [[ ! -L "${link_path}" && ! -e "${link_path}" ]]; then printf 'vsp self uninstall: not installed at %s\n' "${link_path}"; return 0; fi
+      if [[ ! -L "${link_path}" ]]; then printf 'vsp self uninstall: refusing to remove non-symlink %s\n' "${link_path}" >&2; exit 5; fi
+      if ! _vsp_owns_link "${link_path}"; then
+        target="$(readlink "${link_path}" 2>/dev/null || true)"
+        printf 'vsp self uninstall: refusing to remove foreign symlink %s -> %s\n' "${link_path}" "${target}" >&2; exit 5
       fi
       rm -f "${link_path}"
       printf 'Removed %s\n' "${link_path}"
@@ -381,8 +364,8 @@ case "${CMD}" in
   detect)      "${BASH}" "${SCRIPTS_DIR}/detect-toolchain.sh" "${@+"${@}"}" ;;
   doctor)      "${BASH}" "${VSPCLI}" doctor "${@+"${@}"}" ;;
   open|use)
-    [[ $# -ge 1 ]] || { echo "vsp open: requires <profile> [path]" >&2; exit 4; }
-    [[ "${1}" != "-h" && "${1}" != "--help" ]] || { echo "Usage: vsp open <profile> [path]"; exit 0; }
+    [[ $# -ge 1 ]] || { printf 'vsp %s: requires <profile> [path]\n' "${CMD}" >&2; exit 4; }
+    [[ "${1}" != "-h" && "${1}" != "--help" ]] || { printf 'Usage: vsp %s <profile> [path]\n' "${CMD}"; exit 0; }
     "${BASH}" "${VSPCLI}" open "${@+"${@}"}"
     ;;
   export)

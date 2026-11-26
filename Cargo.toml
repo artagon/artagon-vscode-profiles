@@ -12,3 +12,10 @@ edition = "2021"
 license = "MIT"
 repository = "https://github.com/trumpyla/artagon-vscode-profiles"
 description = "Unified CLI and deterministic profile compiler for Artagon VS Code profiles"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+# Keep default `panic = "unwind"` because `crates/vsp/src/vsix.rs` relies on
+# scoped worker thread panic isolation without aborting the process.

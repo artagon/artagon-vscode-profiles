@@ -1,23 +1,55 @@
 # Homebrew formula template for the `artagon/homebrew-aitools` tap.
 #
-# The release workflow copies this file to the tap and replaces `url` and `sha256`
-# with the values of the published release archive. The all-zero `sha256` below is a
-# placeholder: `brew install` fails closed until a real digest is set.
+# Installs the prebuilt cross-platform `vsp` release tarballs built by
+# `.github/workflows/release.yml` (ADR D4) without requiring a Rust toolchain
+# on stable installs. `--HEAD` builds from source with `cargo`.
+#
+# The release workflow substitutes `version` and each platform's `sha256` from
+# `SHA256SUMS`, verifies `ruby -c`, uploads the rendered `Formula/vsp.rb` as a
+# release asset and workflow artifact, and optionally publishes to the tap when
+# `vars.HOMEBREW_TAP_REPO` and `secrets.HOMEBREW_TAP_TOKEN` are configured.
+#
+# The all-zero `sha256` digests below are fail-closed placeholders: `brew install`
+# refuses to install until a tagged release populates real digests.
 class Vsp < Formula
   desc "Unified CLI and deterministic profile compiler for Artagon VS Code profiles"
   homepage "https://github.com/trumpyla/artagon-vscode-profiles"
-  url "https://github.com/trumpyla/artagon-vscode-profiles/archive/refs/tags/v3.0.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  version "3.0.0"
   # This value mirrors `license` in the `[workspace.package]` table of `Cargo.toml`, which
   # is the only license statement in the repository. The source tree has no `LICENSE`
   # file, so this formula installs none. Keep the two values the same.
   license "MIT"
-  head "https://github.com/trumpyla/artagon-vscode-profiles.git", branch: "main"
 
-  depends_on "rust" => :build
+  on_macos do
+    on_arm do
+      url "https://github.com/trumpyla/artagon-vscode-profiles/releases/download/v#{version}/vsp-v#{version}-aarch64-apple-darwin.tar.gz"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+    end
+
+    on_intel do
+      url "https://github.com/trumpyla/artagon-vscode-profiles/releases/download/v#{version}/vsp-v#{version}-x86_64-apple-darwin.tar.gz"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+    end
+  end
+
+  on_linux do
+    on_intel do
+      url "https://github.com/trumpyla/artagon-vscode-profiles/releases/download/v#{version}/vsp-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+    end
+  end
+
+  head do
+    url "https://github.com/trumpyla/artagon-vscode-profiles.git", branch: "main"
+    depends_on "rust" => :build
+  end
 
   def install
-    system "cargo", "install", *std_cargo_args(path: "crates/vsp")
+    if build.head?
+      system "cargo", "install", *std_cargo_args(path: "crates/vsp")
+    else
+      bin.install "vsp"
+    end
 
     # `vspcli` is the legacy command name. The binary starts its compatibility mode
     # when the basename of argv[0] is `vspcli`.
