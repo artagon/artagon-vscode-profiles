@@ -30,12 +30,16 @@ MOCK
   install_code_mock "${TEST_TMP}/bin"
   install_empty_marketplace_curl_mock "${TEST_TMP}/mp-bin"
 
-  # Never document unsupported --ux flag on import-profile.sh/vspcli import or retired v2 script invocations.
+  # Never document unsupported --ux flag on import-profile.sh/vspcli import, retired v2 script invocations,
+  # or dead raw-branch exports/*.code-profile markdown links.
   ! grep -E 'import-profile\.sh.*--ux|vspcli[[:space:]]+import.*--ux' "${REPO_ROOT}/README.md"
   ! grep -Eq 'bash[[:space:]]+scripts/(setup-rust-toolchain|setup-cpp-toolchain)\.sh|source[[:space:]]+scripts/\.vspcli-completion\.' "${REPO_ROOT}/README.md"
+  ! grep -Eq '\]\(exports/[^)]+\.code-profile\)' "${REPO_ROOT}/README.md"
 
-  # v3.0 README documents core unified `vsp` commands.
-  for expected_cmd in "vsp --version" "vsp list" "vsp show" "vsp detect" "vsp diff" "vsp sync" "vsp open" "vsp doctor"; do
+  # v3.0 README uses native Packs matrix headers and documents core unified `vsp` commands.
+  grep -Fq '| Profile | Description | Included Packs | Extensions | Bundle Artifact |' "${REPO_ROOT}/README.md"
+  grep -Fq '### Packs (`packs/`)' "${REPO_ROOT}/README.md"
+  for expected_cmd in "vsp --version" "vsp list" "vsp show" "vsp detect" "vsp diff" "vsp sync" "vsp use" "vsp open" "vsp doctor"; do
     grep -Fq "${expected_cmd}" "${REPO_ROOT}/README.md"
   done
 
@@ -73,7 +77,9 @@ MOCK
   mkdir -p "${vsp_shim_bin}"
   cat > "${vsp_shim_bin}/vsp" <<EOF
 #!/usr/bin/env bash
-exec env VSP_FORCE_BASH=1 "${REPO_ROOT}/bin/vsp" "\$@"
+unset VSP_BIN
+export VSP_FORCE_BASH=1
+exec "${REPO_ROOT}/bin/vsp" "\$@"
 EOF
   chmod 0755 "${vsp_shim_bin}/vsp"
 
@@ -98,9 +104,9 @@ EOF
       echo "README command failed flag/arg validation (exit=${rc}): ${cmd}" >&2
       return 1
     fi
-    # Core read/sync/export/open examples must succeed cleanly offline (doctor --strict may exit 1 on clean Default profile).
+    # Core read/sync/export/open/use examples must succeed cleanly offline (doctor --strict may exit 1 on clean Default profile).
     case "${cmd}" in
-      "vsp --version"|"vsp list "*|"vsp show "*|"vsp detect "*|"vsp diff "*|"vsp sync "*|"vsp open "*|"vsp export "*)
+      "vsp --version"|"vsp list "*|"vsp show "*|"vsp detect "*|"vsp diff "*|"vsp sync "*|"vsp open "*|"vsp use "*|"vsp export "*)
         if [[ "${rc}" -ne 0 ]]; then
           echo "README vsp command failed (exit=${rc}): ${cmd}" >&2
           return 1

@@ -23,9 +23,9 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y jq openssl bats fish zsh shellcheck
 
-      - name: Verify required tools (jq, bats, cargo, fish, zsh, shellcheck)
+      - name: Verify required tools (jq, bats, cargo, fish, zsh, shellcheck, ruby)
         run: |
-          for tool in jq openssl bats fish zsh shellcheck cargo; do
+          for tool in jq openssl bats fish zsh shellcheck cargo ruby; do
             command -v "${tool}" >/dev/null || { echo "missing required CI tool: ${tool}" >&2; exit 1; }
           done
 
@@ -92,14 +92,15 @@ jobs:
             fish -n "${s}"
           done
 
-      - name: Run Rust test, clippy, rustdoc, validate, and deterministic double-run dev dist
+      - name: Run Rust test, clippy, rustdoc, release build, validate, and deterministic double-run dev dist
         run: |
           cargo fmt --all -- --check
-          cargo test --workspace
-          cargo clippy --workspace --all-targets -- -D warnings
-          RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
-          cargo build --workspace
-          VSP_BIN="$(pwd -P)/target/debug/vsp"
+          cargo test --locked --workspace
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps
+          cargo build --locked --release --bin vsp
+          ls -lh target/release/vsp
+          VSP_BIN="$(pwd -P)/target/release/vsp"
           "${VSP_BIN}" --catalog "$(pwd -P)" dev validate
           EMPTY_CWD="$(mktemp -d)"
           DIST1="$(mktemp -d)"
@@ -115,7 +116,7 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
-          VSP_BIN="$(pwd -P)/target/debug/vsp"
+          VSP_BIN="$(pwd -P)/target/release/vsp"
           PR_DIST="$(mktemp -d)"
           BASE_WORK="$(mktemp -d)"
           BASE_DIST="$(mktemp -d)"
@@ -148,12 +149,13 @@ jobs:
             fi
           fi
 
-      - name: Validate catalog, packs, modules, UX symmetry, Rust docs policy, and README matrix
+      - name: Validate catalog, packs, modules, UX symmetry, Rust docs policy, Homebrew formula, and README matrix
         run: |
           bash scripts/validate-json.sh
           bash scripts/tests/check-ux-symmetry.sh
           bash scripts/lib/apply-rust-policy.sh --check
-          bash scripts/generate-readme-matrix.sh --check
+          ./target/release/vsp --catalog . dev docs --check
+          ruby -c Formula/vsp.rb
 
       - name: Assert BATS test layout
         run: |
@@ -165,11 +167,12 @@ jobs:
         env:
           CI: "true"
         run: |
+          VSP_BIN="$(pwd -P)/target/release/vsp"
           ISO_DIR="$(mktemp -d)"
           trap 'rm -rf "${ISO_DIR}"' EXIT
           mkdir -p "${ISO_DIR}/repo"
           tar --exclude='./target' -cf - . | (cd "${ISO_DIR}/repo" && tar -xf -)
-          bash "${ISO_DIR}/repo/scripts/tests/run.sh"
+          VSP_BIN="${VSP_BIN}" bash "${ISO_DIR}/repo/scripts/tests/run.sh"
 
   validate-and-test-macos:
     name: macOS (Bash, Zsh, Fish, ShellCheck, BATS, Rust)
@@ -184,7 +187,7 @@ jobs:
 
       - name: Verify required tools and run shell syntax checks
         run: |
-          for tool in jq openssl bats fish zsh shellcheck cargo; do
+          for tool in jq openssl bats fish zsh shellcheck cargo ruby; do
             command -v "${tool}" >/dev/null || { echo "missing required macOS CI tool: ${tool}" >&2; exit 1; }
           done
           tracked_gen="$(git ls-files _merged exports 'profiles/*/extensions.json' 'profiles/*/settings.json')"
@@ -234,14 +237,15 @@ jobs:
             fish -n "${s}"
           done
 
-      - name: Run Rust test, clippy, rustdoc, validate, and deterministic double-run dev dist
+      - name: Run Rust test, clippy, rustdoc, release build, validate, and deterministic double-run dev dist
         run: |
           cargo fmt --all -- --check
-          cargo test --workspace
-          cargo clippy --workspace --all-targets -- -D warnings
-          RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
-          cargo build --workspace
-          VSP_BIN="$(pwd -P)/target/debug/vsp"
+          cargo test --locked --workspace
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps
+          cargo build --locked --release --bin vsp
+          ls -lh target/release/vsp
+          VSP_BIN="$(pwd -P)/target/release/vsp"
           "${VSP_BIN}" --catalog "$(pwd -P)" dev validate
           EMPTY_CWD="$(mktemp -d)"
           DIST1="$(mktemp -d)"
@@ -252,19 +256,21 @@ jobs:
           (cd "${EMPTY_CWD}" && "${VSP_BIN}" dev dist --out "${DIST2}")
           diff -ru "${DIST1}" "${DIST2}"
 
-      - name: Validate clean checkout (catalog, packs, modules, UX symmetry, docs policy, README matrix)
+      - name: Validate clean checkout (catalog, packs, modules, UX symmetry, docs policy, Homebrew formula, README matrix)
         run: |
           bash scripts/validate-json.sh
           bash scripts/tests/check-ux-symmetry.sh
           bash scripts/lib/apply-rust-policy.sh --check
-          bash scripts/generate-readme-matrix.sh --check
+          ./target/release/vsp --catalog . dev docs --check
+          ruby -c Formula/vsp.rb
 
       - name: Run full script + BATS test suite in isolated copy
         env:
           CI: "true"
         run: |
+          VSP_BIN="$(pwd -P)/target/release/vsp"
           ISO_DIR="$(mktemp -d)"
           trap 'rm -rf "${ISO_DIR}"' EXIT
           mkdir -p "${ISO_DIR}/repo"
           tar --exclude='./target' -cf - . | (cd "${ISO_DIR}/repo" && tar -xf -)
-          bash "${ISO_DIR}/repo/scripts/tests/run.sh"
+          VSP_BIN="${VSP_BIN}" bash "${ISO_DIR}/repo/scripts/tests/run.sh"

@@ -4,6 +4,8 @@ The unified `vsp` CLI and composition engine live in `crates/vsp/`. Install Rust
 
 ## Edit source definitions
 
+Edit the canonical v3 source definitions below. Legacy `modules/`, `profiles/`, and `catalog/*.json` trees remain in the repository only for legacy BATS compatibility suites.
+
 | Change | Source |
 | --- | --- |
 | Capability, detection signal, or toolchain | `packs/*.jsonc` and `packs/rtk-terminal/` |
@@ -20,17 +22,18 @@ Keep pack dependencies and conflicts explicit. Update both scope and policy meta
 From the repository root:
 
 ```sh
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
-cargo build --workspace
-./target/debug/vsp --catalog . dev validate
-./target/debug/vsp --catalog . dev dist --out ./dist
-bash scripts/generate-readme-matrix.sh --check
+cargo test --locked --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps
+cargo build --locked --release --bin vsp
+./target/release/vsp --catalog . dev validate
+./target/release/vsp --catalog . dev dist --out ./dist
+./target/release/vsp --catalog . dev docs --check
 bash scripts/lib/apply-rust-policy.sh --check
+ruby -c Formula/vsp.rb
 ```
 
-The `vsp dev validate` command checks the source catalog, packs, dependency graph, scope rules, and extension policy. Use `vsp dev dist` to render release bundles. For changes to composition or export, compare two distribution runs in separate directories and review `SHA256SUMS`. Also run validation with the embedded catalog for changes to the snapshot or its loader.
+The `vsp --catalog . dev validate` command checks the canonical catalog, packs, dependency graph, scope rules, and extension policy. The `vsp --catalog . dev docs --check` command verifies both the `README.md` matrix block and the `docs/rust.md` §12 policy blocks. Use `vsp dev dist` to render release bundles. For changes to composition or export, compare two distribution runs in separate directories and review `SHA256SUMS`. Also run validation with the embedded catalog for changes to the snapshot or its loader.
 
 For changes under `packs/rtk-terminal/scripts/`, run:
 
@@ -49,7 +52,7 @@ fish -n packs/rtk-terminal/scripts/rtk-init.fish
 ## Prepare a change
 
 1. Stage source and test changes. Leave `_merged/`, `exports/`, `dist/`, and `profiles/*/{extensions,settings}.json` outside the commit.
-2. If the matrix check reports drift, regenerate its marked section with `bash scripts/generate-readme-matrix.sh --write`.
+2. If `dev docs --check` reports drift, regenerate the marked sections with `./target/release/vsp --catalog . dev docs --write` (or `cargo run --quiet --bin vsp -- --catalog . dev docs --write`) and re-run `--check`.
 3. Include relevant test results and any change to a CLI flag, generated bundle, or security policy in the pull request.
 
 The optional `bash scripts/install-hooks.sh` command sets `core.hooksPath` to `scripts/git-hooks` when the setting is unset. The hook validates the repository and rejects staged generated profile artifacts.

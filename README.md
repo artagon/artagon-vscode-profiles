@@ -3,12 +3,12 @@
 [![CI](https://github.com/Artagon/artagon-vscode-profiles/actions/workflows/ci.yml/badge.svg)](https://github.com/Artagon/artagon-vscode-profiles/actions/workflows/ci.yml)
 [![Platforms: macOS & Linux](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-0969da)](ABOUT.md#overview)
 [![Runtime: Rust](https://img.shields.io/badge/runtime-Rust-4a7bbb)](ABOUT.md#design-guarantees)
-[![VS Code: 1.147+](https://img.shields.io/badge/VS%20Code-1.147%2B-007acc)](#profile--module-matrix)
+[![VS Code: 1.147+](https://img.shields.io/badge/VS%20Code-1.147%2B-007acc)](#profile--pack-matrix)
 [![VSIX Pins: SHA-256](https://img.shields.io/badge/VSIX%20pins-SHA--256-2ea44f)](#security--supply-chain-controls)
 
 **vsp** is the unified CLI for Visual Studio Code profiles, workspace toolchains, and extension management. The v3.0.0 cutover uses a native Rust binary with an embedded catalog. It composes 15 profiles from editor, AI, language, and UX packs.
 
-[Installation](#installation) · [Quick Start](#quick-start) · [Composition](#composition) · [Personal Configuration](#personal-configuration) · [Profiles & Modules](#profile--module-matrix) · [Security](#security--supply-chain-controls) · [CLI Reference](#cli-quick-reference) · [Migrating from v2](#migrating-from-v2)
+[Installation](#installation) · [Quick Start](#quick-start) · [Composition](#composition) · [Personal Configuration](#personal-configuration) · [Profiles & Packs](#profile--pack-matrix) · [Security](#security--supply-chain-controls) · [CLI Reference](#cli-quick-reference) · [Migrating from v2](#migrating-from-v2)
 
 ## Installation
 
@@ -42,15 +42,19 @@ vsp sync --workspace /path/to/repo --preset rust
 
 # Sync the Rust profile directly from the built-in catalog, then open it
 vsp sync -p rust
-vsp open --profile rust /path/to/repo
+vsp use rust
+vsp open . -p rust
 
 # Audit installed profiles, including Default
 vsp doctor --strict
 ```
 
-Use `vsp sync --dry-run` with the same selector and composition flags to preview a standard sync. Use `vsp diff --check` to detect drift in automation.
+- Use `vsp use <profile> [path]` to open a profile unambiguously even when a local directory shares the profile name (such as `./shell`). Use `vsp open [path] -p <profile>` for workspace-first opening.
+- Use `vsp sync --dry-run` with the same selector and composition flags to preview a standard sync. Use `vsp diff --check` to detect drift in automation.
+- `vsp doctor --strict` audits Default-profile application settings, catalog and lock integrity, and installed extensions. On a clean install it passes without opt-in `rtk-terminal` wrappers unless `rtkTerminal: true` is configured or a synced profile enables `rtk-terminal`.
+- If `vsp.lock.json` contains `pending_refresh` Tier 1 entries for your platform, `vsp sync` fails closed before writing (exit `5`). Pass `--allow-unlocked` to relax only pending or missing Tier 1 entries while continuing to enforce verified SHA-256 digests, approved HTTPS Marketplace URLs, and Tier 0 blocks.
 
-To import from a local bundle, first export it or download and extract the profile archive from [GitHub Releases](https://github.com/Artagon/artagon-vscode-profiles/releases). Keep `SHA256SUMS` beside the bundle.
+To import from a local bundle, first export it with `vsp export` or download and extract the profile archive from [GitHub Releases](https://github.com/Artagon/artagon-vscode-profiles/releases). Keep `SHA256SUMS` beside the bundle.
 
 ```bash
 vsp export rust --out ./bundles
@@ -59,13 +63,20 @@ vsp sync --from ./bundles/rust.code-profile -p rust
 
 ## Composition
 
+`vsp` distinguishes three concepts:
+
+1. **Shipped presets** — the 15 built-in recipes defined in [`presets.jsonc`](presets.jsonc) (`vsp list presets`, `vsp show <name>`).
+2. **Custom user recipes** — personal recipes declared under `profiles` in `~/.config/vsp/config.jsonc` (`vsp init`) that extend shipped presets or packs with overrides and `extraExtensions`.
+3. **Installed VS Code profiles** — live profiles registered in VS Code's `storage.json` (`vsp list installed`), targeted with `-p/--profile <name>` and launched via `vsp use <profile> [path]` or `vsp open [path] -p <profile>`.
+
+- Use `vsp show --pack <id>` (for example `vsp show --pack rust` or `vsp show --pack shell`) to inspect a pack explicitly when a shipped preset shares the same name.
 - `--with` and `--without` add or exclude packs. The resolver loads required packs and rejects conflicting combinations. For example, `vsp diff /path/to/astro-repo --preset astro --with biome --without ts-eslint-prettier` previews changing the Astro formatter.
 - `--profile NAME` selects a named VS Code profile. `--preset NAME` selects a recipe and can be combined with a profile or workspace selector. Use `--user` for the Default VS Code profile.
 - Use `--ux retina` or `--ux crisp` on a profile or user target for personal typography and themes. Workspace sync can apply an explicitly selected UX preset. Leave `--ux` out of team workspace commands to keep personal display settings out of the workspace.
 
 ## Personal Configuration
 
-Run `vsp init` to create `~/.config/vsp/config.jsonc`, or `$XDG_CONFIG_HOME/vsp/config.jsonc` when `XDG_CONFIG_HOME` is an absolute path. `--config PATH` replaces that source for one invocation. For security, `vsp` ignores repo-local `.vsp.toml` and `.vsp.jsonc`.
+Run `vsp init` to create `~/.config/vsp/config.jsonc`, or `$XDG_CONFIG_HOME/vsp/config.jsonc` when `XDG_CONFIG_HOME` is an absolute path. To share team recipes explicitly, pass `vsp --config <file>` (for example `vsp --config ./team-vsp.jsonc sync -p team-rust`) to replace the personal config source for that invocation. For security, `vsp` ignores repo-local `.vsp.toml` and `.vsp.jsonc` files automatically.
 
 ```jsonc
 {
@@ -104,7 +115,7 @@ The Rust engine in [`crates/vsp`](crates/vsp) resolves capability and toolchain 
 
 The 83 generated files formerly tracked in `_merged/`, `exports/`, and `profiles/*/{extensions,settings}.json` are built in memory on demand. Use `vsp export rust --out ./bundles` for a single bundle or `vsp dev dist --out ./dist` for all 15 canonical bundles, 22 legacy aliases, and their `SHA256SUMS`. The tag release workflow publishes binary and profile archives as GitHub Release assets with `SHA256SUMS` and signed build provenance attestations. [GitHub Releases](https://github.com/Artagon/artagon-vscode-profiles/releases)
 
-| Domain | Included Capabilities & Tuning | Modules |
+| Domain | Included Capabilities & Tuning | Packs |
 | :--- | :--- | :--- |
 | **Core Editor & IntelliJ-Grade DX** | Native inlay hints, sticky scroll, semantic highlighting, bracket-pair guides, Project Explorer file nesting (`explorer.fileNesting.*`), Terminal IntelliSense (`terminal.integrated.suggest.*`), Kitty graphics protocol (`enableImages`), macOS Option-as-Meta, SCM Graph & inline diffs, Error Lens, spell check; opt-in Bookmarks, Project Manager, Scratchpads, Better Comments, Regex Previewer, Peacock, Bruno HTTP, Draw.io, and IntelliJ keymap | `core-editor`, `dx-pro`, `intellij-keybindings` |
 | **Universal Shell & Data Formats** | Built into **all 15 profiles**: Bash IDE, ShellCheck, `shfmt`, Fish, Better ShellScript syntax, BATS Test Runner, JSON/JSONC, YAML (`redhat.vscode-yaml`), TOML (`even-better-toml`), XML (`redhat.vscode-xml`), CSV (`rainbow-csv`), DotEnv, INI/Properties, EditorConfig, and Markdown + Mermaid | `core-editor`, `shell`, `markdown` |
@@ -115,34 +126,34 @@ The 83 generated files formerly tracked in `_merged/`, `exports/`, and `profiles
 
 ---
 
-## Profile & Module Matrix
+## Profile & Pack Matrix
 
-The generated table retains historical `exports/` paths as bundle names. Generate the bundles locally or download the profile archive from GitHub Releases.
+Bundle artifacts are not tracked in git. Generate any bundle locally with `vsp export <name> --out ./bundles` (or all bundles with `vsp dev dist --out ./dist`), or download the verified profile archive from [GitHub Releases](https://github.com/Artagon/artagon-vscode-profiles/releases).
 
 <!-- BEGIN GENERATED-MATRIX -->
 ### Profiles (15 Compiled Recipes)
 
-| Profile | Description | Included Modules | Extensions | Export Bundle |
+| Profile | Description | Included Packs | Extensions | Bundle Artifact |
 | --- | --- | --- | ---: | --- |
-| `ai` | AI-first multi-agent workflow profile (Google Antigravity default, Claude Code, OpenAI Codex, and unified GitHub Copilot Chat) | `core-editor, ai-agents, markdown, shell` | 28 | [`ai.code-profile`](exports/ai.code-profile) |
-| `ai-copilot` | Strict Copilot-only AI profile (unified GitHub Copilot Chat without Antigravity, Claude Code, or Codex; target of legacy ai-profile-* links) | `core-editor, markdown, shell, ai-copilot` | 25 | [`ai-copilot.code-profile`](exports/ai-copilot.code-profile) |
-| `ai-plus` | Full-stack AI power profile adding GitLens + GitHub PRs, Container Tools, SonarQube for IDE, DX Pro (Bookmarks/Scratchpads/Project Manager/Bruno), and curated extra themes | `core-editor, ai-agents, markdown, shell, containers, dx-pro, git-pro, quality, themes-pack` | 64 | [`ai-plus.code-profile`](exports/ai-plus.code-profile) |
-| `astro` | Astro + TypeScript web development with Tailwind CSS, Stylelint, and ESLint+Prettier (swap with --with biome) | `core-editor, ai-agents, markdown, shell, ts-base, astro, ts-eslint-prettier` | 39 | [`astro.code-profile`](exports/astro.code-profile) |
-| `cpp-clangd` | C/C++ development with LLVM clangd, CMake Tools, and CodeLLDB | `core-editor, ai-agents, markdown, shell, cpp-base, cpp-clangd` | 32 | [`cpp-clangd.code-profile`](exports/cpp-clangd.code-profile) |
-| `cpp-intellisense` | C/C++ development with Microsoft C/C++ IntelliSense, CMake Tools, and CodeLLDB | `core-editor, ai-agents, markdown, shell, cpp-base, cpp-intellisense` | 32 | [`cpp-intellisense.code-profile`](exports/cpp-intellisense.code-profile) |
-| `general` | General-purpose developer profile with slim core editor, default AI agent suite (Antigravity + Claude + Codex + Copilot), Markdown, and Shell | `core-editor, ai-agents, markdown, shell` | 28 | [`general.code-profile`](exports/general.code-profile) |
-| `general-minimal` | AI-free general developer profile (excludes ai-agents and disables built-in VS Code AI features) | `core-editor, markdown, shell` | 24 | [`general-minimal.code-profile`](exports/general-minimal.code-profile) |
-| `github-workflows` | GitHub Actions CI/CD workflow authoring with YAML schema validation and Shell support | `core-editor, ai-agents, markdown, shell, github-workflows` | 29 | [`github-workflows.code-profile`](exports/github-workflows.code-profile) |
-| `java-gradle` | Java development with Red Hat JDT LS (native Lombok), Gradle, JUnit, and Checkstyle | `core-editor, ai-agents, markdown, shell, java-base, java-gradle` | 34 | [`java-gradle.code-profile`](exports/java-gradle.code-profile) |
-| `java-maven` | Java development with Red Hat JDT LS (native Lombok), Apache Maven, JUnit, and Checkstyle | `core-editor, ai-agents, markdown, shell, java-base, java-maven` | 34 | [`java-maven.code-profile`](exports/java-maven.code-profile) |
-| `java-spring` | Spring Boot development layered on Gradle (for Maven Spring, compose java-maven --with java-spring) | `core-editor, ai-agents, markdown, shell, java-base, java-gradle, java-spring` | 37 | [`java-spring.code-profile`](exports/java-spring.code-profile) |
-| `python` | Python development with Ruff, BasedPyright, Python Environments (venv/uv), Debugpy, and pytest (swap BasedPyright with --with python-ty --without python) | `core-editor, ai-agents, markdown, shell, python-base, python` | 33 | [`python.code-profile`](exports/python.code-profile) |
-| `rust` | Rust development with rust-analyzer, CodeLLDB, Dependi, Coverage Gutters, and strict docs policy | `core-editor, ai-agents, markdown, shell, rust` | 32 | [`rust.code-profile`](exports/rust.code-profile) |
-| `shell` | Shell scripting profile with Bash IDE, ShellCheck, shfmt, Fish, and BATS Test Runner | `core-editor, ai-agents, markdown, shell` | 28 | [`shell.code-profile`](exports/shell.code-profile) |
+| `ai` | AI-first multi-agent workflow profile (Google Antigravity default, Claude Code, OpenAI Codex, and unified GitHub Copilot Chat) | `core-editor, ai-agents, markdown, shell` | 28 | `ai.code-profile` |
+| `ai-copilot` | Strict Copilot-only AI profile (unified GitHub Copilot Chat without Antigravity, Claude Code, or Codex; target of legacy ai-profile-* links) | `core-editor, markdown, shell, ai-copilot` | 25 | `ai-copilot.code-profile` |
+| `ai-plus` | Full-stack AI power profile adding GitLens + GitHub PRs, Container Tools, SonarQube for IDE, DX Pro (Bookmarks/Scratchpads/Project Manager/Bruno), and curated extra themes | `core-editor, ai-agents, markdown, shell, containers, dx-pro, git-pro, quality, themes-pack` | 64 | `ai-plus.code-profile` |
+| `astro` | Astro + TypeScript web development with Tailwind CSS, Stylelint, and ESLint+Prettier (swap with --with biome) | `core-editor, ai-agents, markdown, shell, ts-base, astro, ts-eslint-prettier` | 39 | `astro.code-profile` |
+| `cpp-clangd` | C/C++ development with LLVM clangd, CMake Tools, and CodeLLDB | `core-editor, ai-agents, markdown, shell, cpp-base, cpp-clangd` | 32 | `cpp-clangd.code-profile` |
+| `cpp-intellisense` | C/C++ development with Microsoft C/C++ IntelliSense, CMake Tools, and CodeLLDB | `core-editor, ai-agents, markdown, shell, cpp-base, cpp-intellisense` | 32 | `cpp-intellisense.code-profile` |
+| `general` | General-purpose developer profile with slim core editor, default AI agent suite (Antigravity + Claude + Codex + Copilot), Markdown, and Shell | `core-editor, ai-agents, markdown, shell` | 28 | `general.code-profile` |
+| `general-minimal` | AI-free general developer profile (excludes ai-agents and disables built-in VS Code AI features) | `core-editor, markdown, shell` | 24 | `general-minimal.code-profile` |
+| `github-workflows` | GitHub Actions CI/CD workflow authoring with YAML schema validation and Shell support | `core-editor, ai-agents, markdown, shell, github-workflows` | 29 | `github-workflows.code-profile` |
+| `java-gradle` | Java development with Red Hat JDT LS (native Lombok), Gradle, JUnit, and Checkstyle | `core-editor, ai-agents, markdown, shell, java-base, java-gradle` | 34 | `java-gradle.code-profile` |
+| `java-maven` | Java development with Red Hat JDT LS (native Lombok), Apache Maven, JUnit, and Checkstyle | `core-editor, ai-agents, markdown, shell, java-base, java-maven` | 34 | `java-maven.code-profile` |
+| `java-spring` | Spring Boot development layered on Gradle (for Maven Spring, compose java-maven --with java-spring) | `core-editor, ai-agents, markdown, shell, java-base, java-gradle, java-spring` | 37 | `java-spring.code-profile` |
+| `python` | Python development with Ruff, BasedPyright, Python Environments (venv/uv), Debugpy, and pytest (swap BasedPyright with --with python-ty --without python) | `core-editor, ai-agents, markdown, shell, python-base, python` | 33 | `python.code-profile` |
+| `rust` | Rust development with rust-analyzer, CodeLLDB, Dependi, Coverage Gutters, and strict docs policy | `core-editor, ai-agents, markdown, shell, rust` | 32 | `rust.code-profile` |
+| `shell` | Shell scripting profile with Bash IDE, ShellCheck, shfmt, Fish, and BATS Test Runner | `core-editor, ai-agents, markdown, shell` | 28 | `shell.code-profile` |
 
-### Modules (`modules/`)
+### Packs (`packs/`)
 
-| Kind | Module ID | Description | Requires | Conflicts |
+| Kind | Pack ID | Description | Requires | Conflicts |
 | --- | --- | --- | --- | --- |
 | `capability` | `ai-agents` | Default AI agent suite: Google Antigravity (default), Claude Code, OpenAI Codex IDE, and unified GitHub Copilot Chat (inline completions & NES) | core-editor | ai-copilot |
 | `capability` | `ai-copilot` | Strict Copilot-only AI capability (unified GitHub Copilot Chat, excludes Antigravity, Claude Code, and Codex) | core-editor | ai-agents |
@@ -238,9 +249,9 @@ Need extra color or icon themes beyond Tokyo Night and Catppuccin Mocha? Include
 
 ## Security & Supply-Chain Controls
 
-- **Autonomy policy.** The settings deny-list checks dotted and nested paths, including case-insensitive execution overrides and boolean strings. It catches automatic approval and process-wrapper bypass settings before writes. Profile defaults prompt for Workspace Trust and disable telemetry. Use `vsp doctor --strict` to audit the Default profile's application-scoped settings.
+- **Autonomy policy.** The settings deny-list checks dotted and nested paths, including case-insensitive execution overrides and boolean strings. It catches automatic approval and process-wrapper bypass settings before writes. Profile defaults prompt for Workspace Trust and disable telemetry. Use `vsp doctor --strict` to audit the Default profile's application-scoped settings; it passes cleanly without opt-in `rtk-terminal` wrappers unless `rtkTerminal: true` or a synced profile enables them.
 - **GlassWorm remediation.** Named-profile sync removes installed compromised or removed extensions in Step 0 before settings writes and extension installs. `vsp sync --all --compromised-only` sweeps every registered profile and Default. `vsp doctor` reports compromised extensions such as `jscearcy.rust-doc-viewer` and returns exit `7` if a required extension listing fails.
-- **Four-tier VSIX lock.** Tier 0 records compromised or removed IDs in `catalog/extensions.jsonc` for Step 0. [`vsp.lock.json`](vsp.lock.json) records tiers 1–3. Tier 1 uses SHA-256 hashes and platform-specific VSIX URLs. Tier 2 records version locks for executable extensions. Tier 3 covers unlocked declarative extensions such as themes, grammars, and keymaps. Entries marked `pending_refresh` represent incomplete verification. Available VSIX pins require approved HTTPS Marketplace hosts and matching hashes before installation.
+- **Four-tier VSIX lock & selective `--allow-unlocked`.** Tier 0 records compromised or removed IDs in `catalog/extensions.jsonc` for Step 0. [`vsp.lock.json`](vsp.lock.json) records tiers 1–3. Tier 1 uses SHA-256 hashes and platform-specific VSIX URLs. Tier 2 records version locks for executable extensions. Tier 3 covers unlocked declarative extensions such as themes, grammars, and keymaps. Pre-write VSIX lock preflight runs before mutating `storage.json`, settings, extensions, or provenance and exits `5` with zero mutations on refusal. Passing `--allow-unlocked` selectively relaxes only `pending_refresh` or missing Tier 1 entries (recorded in provenance as `WARN` in `vsp doctor`) while continuing to enforce verified SHA-256 digests, approved HTTPS Marketplace hosts, and Tier 0 blocks.
 - **Bundle integrity.** Keep `SHA256SUMS` beside exported bundles. `vsp sync --from BUNDLE -p NAME` checks a matching checksum and rejects mismatches. Verify the release archive against its published checksum and attestation before extracting it.
 - **Lossless JSONC writes.** The concrete syntax tree (CST) merge preserves comments and formatting on untouched settings and keeps user-owned keys. Sync checks workspace symlink containment. Advisory locks and a SHA-256 compare-and-swap guard protect VS Code's `storage.json` updates.
 
@@ -252,18 +263,20 @@ The shell pack ships syntax support for Bash, Fish, and Zsh. Use `shfmt` for POS
 
 | Command | Purpose |
 | --- | --- |
-| `vsp sync --workspace PATH` | Sync a workspace. Other selectors include positional `PATH`, `--profile NAME`, `--preset NAME`, `--user`, bundle import with `--from BUNDLE --profile NAME`, and `--all --compromised-only`. |
+| `vsp sync --workspace PATH` | Sync a workspace. Other selectors include positional `PATH`, `-p/--profile NAME`, `--preset NAME`, `--user`, `--from BUNDLE -p NAME`, `--extensions-only` (profile/`--all`), and `--all --compromised-only`. |
 | `vsp diff --workspace PATH --check` | Preview a workspace, profile, preset, or user plan and report confirmed drift with exit `3`. |
-| `vsp open --profile NAME PATH` | Open a workspace in a named profile. Add `--sync` to sync first. |
-| `vsp doctor --strict` | Audit VS Code profiles, extensions, and Default-profile settings. |
-| `vsp list presets` | List presets. Use `packs`, `ux`, or `installed` for other categories. |
-| `vsp show NAME` | Inspect a preset, pack, UX preset, or legacy alias. |
+| `vsp use PROFILE [PATH]` | Launch a named VS Code profile unconditionally (avoids ambiguity when `./<profile>` exists). |
+| `vsp open [PATH] -p NAME` | Open a workspace in a named profile. Add `--sync` to sync first. |
+| `vsp doctor --strict` | Audit VS Code profiles, extensions, and Default-profile settings (passes cleanly without opt-in `rtk-terminal` wrappers). |
+| `vsp list presets` | List shipped presets. Use `packs`, `ux`, or `installed` for other categories. |
+| `vsp show NAME`, `vsp show --pack ID` | Inspect a preset, pack, UX preset, or legacy alias. Use `--pack` when a pack shares a preset name. |
 | `vsp detect PATH --explain` | Inspect workspace signals without writing files. |
-| `vsp export rust --out DIR` | Export a bundle and checksum. Omit the names to export all canonical profiles. |
-| `vsp init` | Create the personal JSONC configuration. |
+| `vsp export rust --out DIR` | Export a bundle and `SHA256SUMS`. Omit names to export all canonical profiles. |
+| `vsp init` | Create `~/.config/vsp/config.jsonc` for personal defaults and custom user recipes. |
+| `vsp --config FILE ...` | Use an explicit team or alternate JSONC config file for one invocation. |
 | `vsp completions zsh` | Generate completions for Bash, Zsh, or Fish. |
 | `vsp self path`, `vsp self install` | Locate the running binary or install the v3.0.0 binary in your user bin directory. |
-| `vsp dev validate`, `vsp dev dist --out DIR` | Validate composition inputs or build deterministic distribution bundles. |
+| `vsp dev validate`, `vsp dev dist --out DIR`, `vsp dev docs --check` | Validate canonical catalog inputs, build deterministic distribution bundles, or check/regenerate docs. |
 
 Both `sync` and `diff` require an explicit target selector. A missing selector exits `4`.
 
@@ -274,8 +287,8 @@ Both `sync` and `diff` require an explicit target selector. A missing selector e
 | `2` | Target missing |
 | `3` | Complete negative check, such as no detection match or confirmed drift |
 | `4` | Incorrect usage, invalid configuration, or composition conflict |
-| `5` | Safety guard refused a write |
-| `6` | Retryable lock or state conflict, or partial apply |
+| `5` | Safety guard refused before write (zero mutations) |
+| `6` | Retryable lock/CAS conflict or mid-apply partial failure |
 | `7` | Incomplete observation or unavailable verification |
 
 ## Migrating from v2
@@ -287,11 +300,13 @@ In compatibility mode, `doctor`, `reconcile`, and `install-ext` map exits `5`, `
 | v2 workflow | `vsp` workflow |
 | --- | --- |
 | `vspcli apply --target=workspace PATH` | `vsp sync --workspace PATH` |
-| `vspcli reconcile --profile rust` | `vsp sync --profile rust` |
+| `vspcli reconcile --profile rust [--as <recipe>]` | `vsp sync -p rust --extensions-only [--preset <recipe>]` |
 | `vspcli import rust BUNDLE` | `vsp sync --from BUNDLE --profile rust` |
 | `vspcli doctor --strict` | `vsp doctor --strict` |
 | `vspcli build` | `vsp dev dist --out ./dist` |
 | `vspcli validate` | `vsp dev validate` |
+
+`vspcli reconcile` also remains available through the compatibility route and maps to `--extensions-only` (changing only extensions, never `settings.json`, `storage.json`, or RTK wrappers). Drop `--extensions-only` only when you want `vsp sync -p rust` to manage profile settings, registration, and enabled RTK wrappers as well.
 
 Move raw branch export downloads to the release profile archive. The archive materializes the 22 legacy bundle filenames. Both `ai-profile-crisp.code-profile` and `ai-profile-retina.code-profile` contain the Copilot-only bundle.
 

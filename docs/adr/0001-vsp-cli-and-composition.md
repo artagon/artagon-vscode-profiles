@@ -24,7 +24,7 @@ The primary command is `vsp`. Phase 3 provides native compatibility for supporte
 
 | Group | Verbs | Role |
 | --- | --- | --- |
-| Everyday | `sync`, `diff`, `open` (hidden alias `use`), `doctor` | Apply state, preview changes, launch profiles, audit health |
+| Everyday | `sync`, `diff`, `open`, `use`, `doctor` | Apply state, preview changes, launch profiles, audit health |
 | Inspection & Setup | `list`, `show`, `detect`, `export`, `init`, `completions` | Read-only discovery, bundle export, user config bootstrap, shell completion |
 | Maintainer (`dev`) | `dev {validate, dist, pins, compat, docs, hooks, test, release}` (`build` in Phase 1 facade) | Catalog validation, deterministic bundle builds, pin refresh, CI checks |
 | Self (`self`) | `self {path, install, uninstall, update}` | Binary path resolution, symlink management in `${XDG_BIN_HOME:-~/.local/bin}/vsp` |
@@ -32,9 +32,11 @@ The primary command is `vsp`. Phase 3 provides native compatibility for supporte
 Core command invariants:
 
 - **Explicit selector required.** `vsp sync` and `vsp diff` accept `PATH` or `--workspace PATH`, `-p/--profile NAME`, `--preset NAME`, or `--user`. `sync` also accepts bundle import and all-profile selectors. Missing selectors exit `4` before mutation.
+- **Unambiguous `vsp use <PROFILE> [PATH]`.** `vsp use` treats its first positional argument unconditionally as a profile name (preventing path-vs-profile ambiguity when a local directory shares a profile name such as `./shell`), while `vsp open [PATH] -p <PROFILE>` remains workspace-first.
+- **Extensions-only synchronization (`--extensions-only`).** `vsp sync -p <name> --extensions-only [--preset <recipe>]` (and `vsp sync --all --extensions-only`) limits writes to extension remediation, installation, and pruning without modifying `settings.json`, `storage.json`, or RTK wrappers, matching legacy `vspcli reconcile` scope and refusing unregistered profiles.
 - **Read-only detection.** `vsp detect` is strictly read-only and never creates `.vscode/`.
 - **Unified plan.** `vsp diff` and `vsp sync --dry-run` compute the same `vsp-plan/v1` plan for standard workspace, profile, preset, and user targets.
-- **Unconditional Step 0.** `vsp sync -p <name>` runs compromised-extension removal before writing settings or installing extensions.
+- **Unconditional Step 0 & pre-write exit `5` atomicity.** `vsp sync -p <name>` runs compromised-extension checks, autonomy/host-path guards, and VSIX lock preflight before modifying `storage.json`, RTK wrappers, extensions, `settings.json`, or provenance. Any safety refusal exits `5` with zero mutations; mid-apply `code` failures after mutations begin exit `6` with an applied-vs-failed summary.
 
 ### 2. Canonical Exit Code Contract (`0`–`7`)
 
@@ -44,21 +46,21 @@ All `vsp` commands share one exit code table across both the Phase 1 Bash facade
 | ---: | --- | --- |
 | `0` | Ok / clean / preview / info | Successful `sync`, clean `diff --check`, `--help`, `--version` |
 | `1` | Operational, audit, or validation failure | Compromised extension found in `doctor`, `dev validate` failure, failed install |
-| `2` | Target missing | Missing workspace path, unknown profile/preset/module in `show`, missing bundle |
+| `2` | Target missing | Missing workspace path, unknown profile/preset/pack in `show`, missing bundle |
 | `3` | Complete negative check | `detect` found no matching toolchain; `diff --check` confirmed drift |
-| `4` | Usage, config, or composition conflict | Unknown flag, missing selector, clap parse error, conflicting modules |
-| `5` | Safety guard refusal before write | Autonomy deny-list violation, running VS Code without `--force`, symlink escape, non-symlink clobber |
-| `6` | Retryable lock, preimage, or partial apply | Lock contention, `storage.json` CAS preimage mismatch, partial apply |
+| `4` | Usage, config, or composition conflict | Unknown flag, missing selector, clap parse error, conflicting packs |
+| `5` | Safety guard refusal before write (zero mutations) | Autonomy deny-list violation, pending/invalid Tier 1 VSIX lock preflight, running VS Code without `--force`, symlink escape, non-symlink clobber |
+| `6` | Retryable lock, preimage, or mid-apply partial failure | Lock contention, `storage.json` CAS preimage mismatch, mid-apply `code` failure after mutations began |
 | `7` | Incomplete observation / verification unavailable | Failed `code --list-extensions` during `doctor`, unreachable compatibility check |
 
 The native binary selects legacy parsing if the basename of `argv[0]` is `vspcli` (or `vspcli.exe`, ignoring case), if `VSP_COMPAT_VSPCLI=1`, or if the first argument is `compat-vspcli` as in `vsp compat-vspcli …`. Only legacy `doctor`, `reconcile`, and `install-ext` map `5`, `6`, and `7` to `1`. All other exit codes pass through.
 
 ### 3. Locked Architecture Decisions (`D1`–`D5`)
 
-- **D1 — User-only JSONC configuration.** `vsp init` writes `${XDG_CONFIG_HOME:-~/.config}/vsp/config.jsonc`. An explicit `--config PATH` selects a single alternate source. `vsp` ignores repo-local `.vsp.toml` and `.vsp.jsonc`. Workspace intent stays in standard project markers, `.vscode/` files, and explicit CLI selectors.
+- **D1 — User-only JSONC configuration.** `vsp init` writes `${XDG_CONFIG_HOME:-~/.config}/vsp/config.jsonc`. An explicit `--config PATH` selects a single alternate source for team sharing or one-off runs. `vsp` ignores repo-local `.vsp.toml` and `.vsp.jsonc`. Workspace intent stays in standard project markers, `.vscode/` files, and explicit CLI selectors.
 - **D2 — Exit `7` for incomplete observation.** Audit and verification commands must fail closed with exit `7` whenever required observation fails (for example, `code --list-extensions` fails or `storage.json` cannot be enumerated). Incomplete checks never downgrade to warnings or exit `0`.
 - **D3 — Fail-closed lock hardening in `v2.0.1` + `fs4`/CAS in Rust.** Phase 0 (`v2.0.1`) hardened shell lock reclamation and spaced macOS VS Code process detection. Phase 2 replaces shell locks with OS-level advisory locks (`fs4`) paired with pre-publish SHA-256 compare-and-swap (CAS) checks on VS Code `storage.json` and atomic renames.
-- **D4 — Homebrew formula launches with the compiled Rust binary.** A Homebrew formula ships only when the cross-platform Rust `vsp` binary and SLSA-attested release tarballs are ready (Phase 3), avoiding a temporary Bash formula that users would need to migrate.
+- **D4 — Prebuilt tarball Homebrew formula and automated release tap workflow.** `Formula/vsp.rb` installs prebuilt cross-platform release tarballs (`aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`) with zero Rust toolchain requirement on stable installs (using fail-closed all-zero placeholder digests in source until populated by a tag release, and Cargo source builds only for `--HEAD`), links `vspcli`, and generates shell completions. `.github/workflows/release.yml` builds the 3 release tarballs, renders `Formula/vsp.rb` with real tag version and `SHA256SUMS` digests, syntax-checks it via `ruby -c`, uploads it as both the `homebrew-formula` workflow artifact and `vsp.rb` GitHub Release asset with SLSA build provenance attestations, and optionally pushes to `vars.HOMEBREW_TAP_REPO` using `secrets.HOMEBREW_TAP_TOKEN` on tagged releases.
 - **D5 — Preserve `ai` `chat.editor.fontSize=14` override during schema consolidation.** `profiles/ai/profile.json` sets `overrides.profile["chat.editor.fontSize"] = 14`. Schema consolidation keeps this override intact so Rust achieves 100% golden settings parity across all 15 canonical profiles.
 
 The user config requires integer `version: 1`. The optional `defaults` object accepts `ux` (`crisp`, `retina`, `default`), `ai` (`full`, `copilot`, `off`), and boolean `rtkTerminal`. The optional `profiles` map accepts `description`, `extends` (catalog preset or pack), `with` and `without` (pack ID arrays), `overrides` (profile settings), and `extraExtensions` (exact extension ID array) per profile name. The parser permits top-level `$schema` metadata. Defaults apply to personal targets. Explicit CLI selections take precedence, and profile overrides apply after UX settings.
@@ -76,7 +78,7 @@ Tier 0 is declared in `catalog/extensions.jsonc`. `vsp.lock.json` records tiers 
 
 An exact catalog-external ID in `extraExtensions` is also Tier 3, labeled `user-unlocked`. It has no VSIX pin. `vsp doctor` records a `WARN` and includes the ID in the JSON `user_unlocked_extensions` array. With complete observation, `vsp doctor --strict` fails the audit with exit `1` while retaining the `WARN` finding.
 
-`pending_refresh` records indicate incomplete VSIX verification. Target provenance is stored separately under `${XDG_STATE_HOME:-~/.local/state}/vsp/` and tracks managed settings, recommendations, and workspace fingerprints. Distribution checksums live in `SHA256SUMS`.
+`pending_refresh` records indicate incomplete VSIX verification. Passing `--allow-unlocked` (or setting `ARTAGON_VSCODE_ALLOW_UNLOCKED=1`) is selective: it relaxes only pending or missing Tier 1 lock entries, emits a warning, and records `unlocked_bypass` in provenance for `vsp doctor` to flag as `WARN`. It never bypasses verified SHA-256 digest verification, approved HTTPS Marketplace URL checks, extension ID/version validation, or Tier 0 compromised/removed blocks. Target provenance is stored separately under `${XDG_STATE_HOME:-~/.local/state}/vsp/` and tracks managed settings, recommendations, and workspace fingerprints. Distribution checksums live in `SHA256SUMS`.
 
 ### 5. Untracking 83 Generated Files in Phase 2
 
@@ -123,4 +125,4 @@ The v3 workflow retires `scripts/.vspcli-completion.{zsh,fish}`, `scripts/setup-
 | Phase 0 (`v2.0.1`) | `shellcheck`, `zsh -n`, `fish -n`, `validate-json.sh`, `check-ux-symmetry.sh`, `apply-rust-policy.sh --check`, `generate-readme-matrix.sh --check`, full `scripts/tests/run.sh` (verified: 149/149 BATS + smoke) |
 | Phase 1 (`v2.1.0`) | `wc -l bin/vsp <= 400`, `shellcheck --exclude=SC1091 bin/vsp`, `/bin/bash -n bin/vsp`, `bats scripts/tests/bats/vsp-facade.bats`, YAML validation of `.github/workflows/release.yml`, `cargo test --workspace` (15-profile + 22-alias golden parity + N1 + exit codes `0`–`7`), `cargo clippy --workspace --all-targets -- -D warnings`, `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps` |
 | Phase 2 (`v2.2.0`) | Rust mutating `sync`/`open`/`fs4`+CAS integration tests, double-run `vsp dev dist` byte-identical `SHA256SUMS`, git tree verified clean of the 83 generated files |
-| Phase 3 (`v3.0.0`) | Tag release workflow green on all 3 targets, `gh attestation verify` passing on tarballs and `SHA256SUMS`, Homebrew formula audit green |
+| Phase 3 (`v3.0.0`) | Locked CI builds (`cargo test --locked`, `cargo build --locked --release --bin vsp`), native `vsp --catalog . dev docs --check`, `ruby -c Formula/vsp.rb`, tag release workflow green on all 3 targets, `gh attestation verify` passing on tarballs and `SHA256SUMS`, rendered Homebrew formula & optional tap push green |

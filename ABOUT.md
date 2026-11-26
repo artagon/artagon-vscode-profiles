@@ -6,23 +6,26 @@
 
 ## Architecture
 
+Canonical v3 source definitions live in the paths below. Legacy `modules/`, `profiles/`, and `catalog/*.json` files remain in the repository strictly for legacy BATS compatibility suites.
+
 | Source | Role |
 | --- | --- |
-| [`packs/`](packs) | JSONC capability and toolchain packs with dependencies, conflicts, and workspace detection signals. |
+| [`packs/`](packs) | Canonical JSONC capability and toolchain packs with dependencies, conflicts, and workspace detection signals. |
 | [`presets.jsonc`](presets.jsonc) | 15 canonical profile recipes, display presets, and 22 legacy profile aliases. |
 | [`catalog/extensions.jsonc`](catalog/extensions.jsonc) | Extension metadata, defaults, lifecycle status, and publisher policy. |
 | [`catalog/policy.jsonc`](catalog/policy.jsonc) | Setting scopes, forbidden keys, autonomy rules, and Default-profile expectations. |
 | [`vsp.lock.json`](vsp.lock.json) | Per-platform VSIX hashes, version locks, and verification state. |
 | [`crates/vsp/`](crates/vsp) | Rust CLI, embedded schema, resolver, export pipeline, planner, and target synchronization. |
 
-The compiled binary embeds the source catalog and packs. Use `--catalog DIR` to point it at a checkout. The v3 design keeps personal defaults in `~/.config/vsp/config.jsonc` or its XDG equivalent, so users can tailor profiles without forking this repository. A repository cannot supply a `.vsp.toml` configuration file.
+The compiled binary embeds the canonical source catalog and packs. Use `--catalog DIR` to point it at a local checkout. The v3 design keeps personal defaults and custom user recipes in `~/.config/vsp/config.jsonc` or its XDG equivalent, so users can tailor profiles without forking this repository. Teams can share an explicit config file with `vsp --config FILE`. For security, `vsp` never loads repo-local `.vsp.toml` or `.vsp.jsonc` automatically.
 
 ## Design Guarantees
 
 - **Workspace scope.** Workspace sync writes recommendations, workspace-scoped settings, and portable tasks under `.vscode/`. Profile or user sync can apply personal UX and XDG RTK terminal wrappers.
 - **Autonomy policy.** The deny-list scans flattened and nested settings paths for auto-approval and execution-wrapper overrides. Relevant key and string checks also catch case variations and boolean strings.
-- **GlassWorm remediation.** Profile sync removes compromised and removed extensions in Step 0 before installing extensions. Use `vsp sync --all --compromised-only` to sweep registered profiles and Default. `vsp doctor` flags compromised extensions and returns exit `7` on incomplete observation.
-- **Four-tier VSIX policy.** Tier 0 tracks compromised and removed IDs in the extension catalog for uninstall. Tier 1 uses per-platform SHA-256 hashes, Tier 2 records executable extension versions, and Tier 3 permits unlocked declarative extensions. Unverified entries remain marked `pending_refresh`. Verified VSIX packages must match their approved Marketplace URL policy and SHA-256 digest.
+- **Pre-write atomicity.** `vsp sync` validates policies, host-path containment, and VSIX lock preflight before modifying `storage.json`, settings, extensions, or provenance. Pre-write safety refusals exit `5` with zero mutations; mid-apply `code` failures after mutations begin exit `6` with an applied-vs-failed summary.
+- **GlassWorm remediation.** Profile sync removes compromised and removed extensions in Step 0 before installing extensions. Use `vsp sync --all --compromised-only` to sweep registered profiles and Default. `vsp doctor` flags compromised extensions, passes cleanly without opt-in `rtk-terminal` wrappers unless enabled, and returns exit `7` on incomplete observation.
+- **Four-tier VSIX policy.** Tier 0 tracks compromised and removed IDs in `catalog/extensions.jsonc` for uninstall. Tier 1 uses per-platform SHA-256 hashes, Tier 2 records executable extension versions, and Tier 3 permits unlocked declarative extensions. Unverified entries remain marked `pending_refresh`. Selective `--allow-unlocked` relaxes only pending or missing Tier 1 entries while continuing to enforce verified SHA-256 digests, approved HTTPS Marketplace URLs, and Tier 0 blocks.
 - **Lossless JSONC edits.** Concrete syntax tree merges retain untouched comments and user-owned keys. Advisory locks, compare-and-swap checks, and atomic replacement protect VS Code profile registration. Local provenance records track what `vsp` manages for each workspace and profile.
 
 ## File Footprint
@@ -39,7 +42,7 @@ The checkout no longer tracks 83 build outputs. These comprised 15 `_merged/` se
 
 ## Verification
 
-CI runs Rust tests, Clippy, rustdoc with warnings treated as errors, catalog validation, and two distribution builds to compare output bytes. It also checks the README matrix, Rust documentation policy, and shell wrappers on macOS and Linux. The golden tests compare canonical settings, extensions, and bundles against the v2.1 checksums. [CI workflow](.github/workflows/ci.yml)
+CI runs locked Rust tests, Clippy, rustdoc with warnings treated as errors, locked release builds, catalog validation, and two distribution builds to compare output bytes. It also checks the `README.md` matrix natively with `vsp --catalog . dev docs --check`, validates `Formula/vsp.rb` syntax, checks the Rust documentation policy, and tests shell wrappers on macOS and Linux. The golden tests compare canonical settings, extensions, and bundles against the v2.1 checksums. [CI workflow](.github/workflows/ci.yml)
 
 See [README](README.md) for installation and CLI examples, [Contributing](CONTRIBUTING.md) for local gates, and [Security](SECURITY.md) for vulnerability reporting.
 

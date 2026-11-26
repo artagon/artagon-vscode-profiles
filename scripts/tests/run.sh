@@ -89,7 +89,22 @@ log "validate-json.sh + check-ux-symmetry.sh + rust policy + readme matrix"
 "${BASH}" "${ROOT}/scripts/validate-json.sh" >/dev/null
 "${BASH}" "${ROOT}/scripts/tests/check-ux-symmetry.sh" >/dev/null
 "${BASH}" "${ROOT}/scripts/lib/apply-rust-policy.sh" --check >/dev/null
-"${BASH}" "${ROOT}/scripts/generate-readme-matrix.sh" --check >/dev/null
+vsp_bin=""
+for _cand in "${VSP_BIN:-}" "${ROOT}/target/release/vsp" "${ROOT}/target/debug/vsp"; do
+  [[ -n "${_cand}" ]] || continue
+  if [[ "${_cand}" != */* ]]; then
+    _cand="$(command -v -- "${_cand}" 2>/dev/null || true)"
+  fi
+  if [[ -n "${_cand}" && -x "${_cand}" && ! -d "${_cand}" ]]; then
+    vsp_bin="${_cand}"
+    break
+  fi
+done
+if [[ -n "${vsp_bin}" ]]; then
+  "${vsp_bin}" --catalog "${ROOT}" dev docs --check >/dev/null
+else
+  "${BASH}" "${ROOT}/scripts/generate-readme-matrix.sh" --check >/dev/null
+fi
 
 SMOKE_ROOT="${TMP}/smoke-repo"
 mkdir -p "${SMOKE_ROOT}"
