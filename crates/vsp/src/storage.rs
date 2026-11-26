@@ -17,7 +17,7 @@ use fs4::fs_std::FileExt;
 use serde_json::{json, Map, Value};
 
 use crate::exit_codes::{VspError, VspResult};
-use crate::legacy_loader::read_strict_json_value;
+use crate::jsonc::read_strict_json_value;
 use crate::provenance::{
     backup_file_bounded, check_path_contained, write_file_atomic, DEFAULT_BACKUP_RETENTION,
 };

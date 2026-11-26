@@ -3,12 +3,13 @@
 //!
 //! Uses the exact same desired-state compilation and `vsp-plan/v1` model as `vsp diff`,
 //! acquires OS-level `fs4` advisory locks before re-observing and mutating, runs Step 0
-//! compromised/removed extension uninstall BEFORE any network call or install, verifies
-//! pinned VSIXs into XDG cache with bounded concurrency, and writes JSONC settings
-//! losslessly via [`crate::cst_merge`].
+//! compromised/removed extension uninstall BEFORE any network call or install, runs VSIX
+//! lock preflight verification BEFORE mutating `storage.json` / RTK / extensions / settings /
+//! provenance, and writes JSONC settings losslessly via [`crate::cst_merge`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
@@ -22,7 +23,7 @@ use crate::cst_merge::{
 };
 use crate::detect::detect_workspace;
 use crate::exit_codes::{VspError, VspResult};
-use crate::legacy_loader::parse_jsonc_value;
+use crate::jsonc::parse_jsonc_value;
 use crate::model::{AiMode, ExtensionStatus, UxPreset, WorkspaceCatalog};
 use crate::plan::{
     apply_ai_overrides, apply_ux_to_map, compute_formatter_delete_paths, resolve_preset_name,
@@ -49,12 +50,13 @@ use crate::user_config::{ExtensionTrustTier, UserOverlay};
 use crate::vscode::{
     code_command, find_binary, find_code_binary, find_storage_profile_location, home_dir,
     list_installed_extensions, list_storage_profiles, resolve_vscode_store,
-    resolve_xdg_config_home, validate_profile_name, InstalledExtension, VsCodeStore,
+    resolve_xdg_config_home, run_code_command, validate_profile_name, CodeExecOutput,
+    InstalledExtension, VsCodeStore,
 };
 use crate::vsix::{
-    compute_pin_repairs, confirm_pin_downgrades, is_valid_extension_id_syntax,
-    managed_extensions_fully_pinned, resolve_and_verify_batch, resolve_vsix_cache_dir,
-    stage_pin_repairs, VsixVerifyOptions,
+    compute_pin_repairs, confirm_pin_downgrades, format_vsix_refusal_summary,
+    is_valid_extension_id_syntax, managed_extensions_fully_pinned, pins_file_override_path,
+    resolve_and_verify_batch, resolve_vsix_cache_dir, stage_pin_repairs, VsixVerifyOptions,
 };
 
 /// Pruning mode for `vsp sync -p <NAME> --prune[=MODE]`.
@@ -95,7 +97,7 @@ pub struct SyncOptions {
     pub prune: Option<PruneMode>,
     /// Stage, verify, and repair drifted pinned extensions (`--repair-pins`).
     pub repair_pins: bool,
-    /// Bypass fail-closed VSIX pin checks with stderr warning (`--allow-unlocked`).
+    /// Bypass fail-closed VSIX pin checks selectively for pending/missing entries (`--allow-unlocked`).
     pub allow_unlocked: bool,
     /// Allow bundle settings matching autonomy deny-list (`--allow-unsafe-settings`).
     pub allow_unsafe_settings: bool,
@@ -140,9 +142,14 @@ pub struct SyncReport {
     pub storage_mutated: bool,
     /// Whether `--allow-unlocked` bypassed VSIX verification.
     pub unlocked_bypass: bool,
-    /// Non-fatal warnings recorded during sync.
+    /// Non-fatal warnings recorded during sync (including Tier 2 unpinned warnings and
+    /// trimmed `code` stderr fallback notices).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Captured extension operation error details (including child exit code and stderr),
+    /// omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ext_errors: Vec<String>,
 }
 
 /// Returns the canonical OS advisory lock path for a profile target.
@@ -207,13 +214,45 @@ pub fn run_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult<Syn
     }
 
     if opts.profile.is_some() || opts.preset.is_some() {
-        return run_profile_sync(catalog, opts);
+        return run_profile_sync_with_code(catalog, opts, None);
     }
 
     Err(VspError::UsageOrConfig(
         "vsp sync requires an explicit selector (<PATH>, -p/--profile, --preset, --user, --from, or --all)"
             .to_string(),
     ))
+}
+
+fn collect_retire_on_switch_settings(
+    catalog: &WorkspaceCatalog,
+    resolved_modules: &[String],
+    desired_settings: &Map<String, Value>,
+    delete_keys: &mut Vec<String>,
+) {
+    for mod_id in resolved_modules {
+        if let Some(retire) = catalog.retire_on_switch.get(mod_id) {
+            for key in &retire.settings {
+                if !desired_settings.contains_key(key) && !delete_keys.contains(key) {
+                    delete_keys.push(key.clone());
+                }
+            }
+        }
+    }
+}
+
+fn collect_retire_on_switch_extensions(
+    catalog: &WorkspaceCatalog,
+    resolved_modules: &[String],
+) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for mod_id in resolved_modules {
+        if let Some(retire) = catalog.retire_on_switch.get(mod_id) {
+            for ext in &retire.extensions {
+                out.insert(ext.to_ascii_lowercase());
+            }
+        }
+    }
+    out
 }
 
 fn run_workspace_sync(
@@ -341,6 +380,12 @@ fn run_workspace_sync(
             }
         }
     }
+    collect_retire_on_switch_settings(
+        catalog,
+        &resolved_modules,
+        &desired_settings,
+        &mut delete_keys,
+    );
     let delete_paths = compute_formatter_delete_paths(&resolved_modules);
 
     let existing_settings_text = read_optional_file_text(&settings_file)?;
@@ -355,9 +400,7 @@ fn run_workspace_sync(
     )?;
 
     // Post-emit host-path leak lint on the final MERGED workspace settings, scoped to the
-    // managed keys. The merge keeps existing object members and array items of a managed
-    // key, so the merged value can contain a host path that the desired value does not.
-    // Keys that only the user owns are not examined.
+    // managed keys.
     let merged_map = parse_optional_object(&merged_settings);
     let merged_managed: Map<String, Value> = desired_settings
         .keys()
@@ -388,9 +431,6 @@ fn run_workspace_sync(
     })?;
 
     let mut files_written = Vec::new();
-    // Keep a bounded `0600` backup of an existing settings file before a real change. The
-    // backup goes to the private XDG state directory, never into the team `.vscode/`
-    // directory (which is usually tracked by git). An unchanged file needs no backup.
     if settings_file.is_file() && existing_settings_text != merged_settings {
         backup_workspace_file(&ws_canon, &settings_file, DEFAULT_BACKUP_RETENTION)?;
     }
@@ -443,6 +483,7 @@ fn run_workspace_sync(
         storage_mutated: false,
         unlocked_bypass: false,
         warnings: Vec::new(),
+        ext_errors: Vec::new(),
     })
 }
 
@@ -502,7 +543,19 @@ fn run_user_default_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspR
         desired_settings.remove(&ux_key);
     }
 
-    // Ensure Default-profile APPLICATION-scope security baseline keys are explicitly set.
+    // Apply declarative Default-profile expectations from `catalog/policy.jsonc` on top of
+    // the built-in APPLICATION-scope security floor.
+    if let Some(policy) = &catalog.policy {
+        for (key, exp) in &policy.default_profile_expectations {
+            if key == "extensions.autoUpdate" {
+                desired_settings.insert(key.clone(), exp.expected.clone());
+            } else {
+                desired_settings
+                    .entry(key.clone())
+                    .or_insert_with(|| exp.expected.clone());
+            }
+        }
+    }
     desired_settings
         .entry("telemetry.telemetryLevel".to_string())
         .or_insert_with(|| Value::String("off".to_string()));
@@ -521,25 +574,19 @@ fn run_user_default_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspR
     if let Some(ux) = effective_ux {
         apply_ux_to_map(catalog, ux, &mut desired_settings, &mut delete_keys);
     }
-    // Personal overrides are the last settings layer (they win over the UX preset). The
-    // autonomy gate below still checks the final map.
     if let Some(p_name) = &preset_name {
         opts.user_overlay
             .apply_final_overrides(p_name, &mut desired_settings, &mut delete_keys);
     }
-    // A personal override cannot re-enable extension auto-update in the Default profile:
-    // auto-update would move installed extensions past their verified VSIX pins.
+    // A personal override cannot re-enable extension auto-update in the Default profile.
     desired_settings.insert("extensions.autoUpdate".to_string(), Value::Bool(false));
 
-    // The deny-list runs on catalog and personal input BEFORE vsp adds its own RTK terminal
-    // profile. The deny-list rejects `terminal.integrated.profiles.*` from any other source.
     enforce_autonomy_gate(
         &desired_settings,
         &settings_path.display().to_string(),
         opts.allow_unsafe_settings,
     )?;
 
-    // If rtk-terminal is active, install XDG RTK wrappers and merge terminal settings.
     if !opts.no_rtk && resolved_modules.iter().any(|m| m == "rtk-terminal") {
         let rtk_dir = install_rtk_xdg_wrappers(&catalog.root)?;
         let rtk_settings = build_rtk_terminal_settings(&rtk_dir);
@@ -562,6 +609,12 @@ fn run_user_default_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspR
             }
         }
     }
+    collect_retire_on_switch_settings(
+        catalog,
+        &resolved_modules,
+        &desired_settings,
+        &mut delete_keys,
+    );
     let delete_paths = compute_formatter_delete_paths(&resolved_modules);
 
     if settings_path.is_file() {
@@ -578,7 +631,7 @@ fn run_user_default_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspR
     )?;
     write_file_atomic(&settings_path, merged.as_bytes(), 0o600, true)?;
 
-    // A settings-only sync verifies no extension, so it keeps the earlier bypass records.
+    // A settings-only sync verifies no extension, so it preserves earlier bypass records.
     let prov = ProfileProvenance {
         version: 1,
         profile: "default".to_string(),
@@ -586,13 +639,17 @@ fn run_user_default_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspR
         preset: preset_name,
         resolved_modules,
         managed_settings_keys: desired_settings.keys().cloned().collect(),
-        managed_extensions: Vec::new(),
+        managed_extensions: prev_prov
+            .as_ref()
+            .map_or_else(Vec::new, |p| p.managed_extensions.clone()),
         ux: effective_ux,
         ai_mode: opts.ai,
         unlocked_bypass: prev_prov.as_ref().is_some_and(|p| p.unlocked_bypass),
         publisher_trust_bypass: prev_prov.as_ref().is_some_and(|p| p.publisher_trust_bypass),
-        pins_file_override: false,
-        tier2_unpinned: Vec::new(),
+        pins_file_override: prev_prov.as_ref().is_some_and(|p| p.pins_file_override),
+        tier2_unpinned: prev_prov
+            .as_ref()
+            .map_or_else(Vec::new, |p| p.tier2_unpinned.clone()),
         last_sync_at: now_rfc3339_utc(),
     };
     save_profile_provenance(&prov)?;
@@ -608,10 +665,15 @@ fn run_user_default_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspR
         storage_mutated: false,
         unlocked_bypass: false,
         warnings: Vec::new(),
+        ext_errors: Vec::new(),
     })
 }
 
-fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult<SyncReport> {
+fn run_profile_sync_with_code(
+    catalog: &WorkspaceCatalog,
+    opts: &SyncOptions,
+    resolved_code_bin: Option<&Path>,
+) -> VspResult<SyncReport> {
     let raw_profile = opts
         .profile
         .as_deref()
@@ -625,12 +687,27 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
     // rewriting legacy profile display names or touching settings.json!
     if opts.compromised_only {
         let store = resolve_vscode_store(opts.vscode_data_dir.as_deref(), true)?;
-        let code_bin = require_code_binary()?;
+        let code_bin = match resolved_code_bin {
+            Some(p) => p.to_path_buf(),
+            None => require_code_binary()?,
+        };
         let lock_path = profile_sync_lock_path(&store.user_dir, raw_profile);
         let _lock = acquire_advisory_lock(&lock_path, effective_lock_timeout())?;
-        let installed = list_installed_extensions(&code_bin, &store, raw_profile)?;
-        let (uninstalled, failures) =
-            execute_step0_remediation(catalog, &code_bin, &store, raw_profile, &installed);
+        let registered = raw_profile == "default"
+            || find_storage_profile_location(&store.user_dir, raw_profile)?.is_some();
+        let installed = if registered {
+            list_installed_extensions(&code_bin, &store, raw_profile)?
+        } else {
+            Vec::new()
+        };
+        let (uninstalled, failures) = execute_step0_remediation(
+            catalog,
+            &code_bin,
+            &store,
+            raw_profile,
+            &installed,
+            !opts.no_batch,
+        )?;
         if !failures.is_empty() {
             return Err(step0_failure(raw_profile, &failures));
         }
@@ -645,6 +722,7 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
             storage_mutated: false,
             unlocked_bypass: false,
             warnings: Vec::new(),
+            ext_errors: Vec::new(),
         });
     }
 
@@ -718,8 +796,6 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
     if let Some(ux) = effective_ux {
         apply_ux_to_map(catalog, ux, &mut desired_settings, &mut delete_keys);
     }
-    // Personal overrides are the last settings layer (they win over the UX preset). The
-    // autonomy gate below still checks the final map.
     if let Some(p_name) = &preset_name {
         opts.user_overlay
             .apply_final_overrides(p_name, &mut desired_settings, &mut delete_keys);
@@ -734,12 +810,6 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
             .collect::<Vec<_>>(),
     );
 
-    // Exact-ID extra extensions from a custom user profile (personal user configuration).
-    // Catalog-known IDs join the normal allowlist + VSIX pin path. Catalog-external IDs are
-    // Tier 3 "user-unlocked": trusted by exact ID only and installed without a catalog pin.
-    // `effective_extras` checks each entry again before install (blocked publisher, trust
-    // tier, ID syntax; exit 5) and applies the AI mode, so an extra can neither use a blocked
-    // publisher nor override `--ai` / `defaults.ai`.
     let mut user_unlocked_ids: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     if let Some(p_name) = &preset_name {
@@ -789,12 +859,8 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
     )?;
     check_path_contained(&store.user_dir, &store.user_dir.join("profiles"))?;
 
-    // If profile is brand new and VS Code is running without --force, refuse in pre-flight
-    // BEFORE running Step 0 or invoking `code`!
     let pre_existing_loc = find_storage_profile_location(&store.user_dir, &profile_name)?;
     if opts.extensions_only {
-        // Extensions-only mode never creates a profile: not in storage.json, and not
-        // implicitly through `code --profile=<new>`. The profile must exist already.
         if pre_existing_loc.is_none() && profile_name != "default" {
             return Err(VspError::TargetMissing(format!(
                 "VS Code profile '{profile_name}' is not registered; extensions-only sync does not create profiles (run 'vsp sync -p {profile_name}' first)"
@@ -806,13 +872,25 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
         ));
     }
 
-    let code_bin = require_code_binary()?;
+    let code_bin = match resolved_code_bin {
+        Some(p) => p.to_path_buf(),
+        None => require_code_binary()?,
+    };
 
     // Acquire OS advisory target lock and re-observe live state under lock!
     let lock_path = profile_sync_lock_path(&store.user_dir, &profile_name);
     let _target_lock = acquire_advisory_lock(&lock_path, effective_lock_timeout())?;
 
-    let observed_installed = list_installed_extensions(&code_bin, &store, &profile_name)?;
+    // FABLE-01: When the profile is not yet registered in `storage.json`, treat the installed
+    // extension set as empty instead of calling `code --list-extensions --profile=<name>`
+    // (real VS Code exits 1 "Profile '<name>' not found." before registration).
+    let profile_registered = profile_name == "default"
+        || find_storage_profile_location(&store.user_dir, &profile_name)?.is_some();
+    let observed_installed = if profile_registered {
+        list_installed_extensions(&code_bin, &store, &profile_name)?
+    } else {
+        Vec::new()
+    };
 
     // STEP 0: Unconditionally uninstall all compromised/removed extensions BEFORE any network
     // call, storage write, or install!
@@ -822,17 +900,82 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
         &store,
         &profile_name,
         &observed_installed,
-    );
-    // A compromised extension that cannot be removed stops the sync here: no network call,
-    // no storage.json write, no install, and no settings write follows.
+        !opts.no_batch,
+    )?;
     if !step0_failures.is_empty() {
         return Err(step0_failure(&profile_name, &step0_failures));
     }
+
+    let mut installed_lc: BTreeSet<String> = observed_installed
+        .iter()
+        .map(|e| e.id.to_ascii_lowercase())
+        .collect();
+    for removed in &step0_uninstalled {
+        installed_lc.remove(&removed.to_ascii_lowercase());
+    }
+
+    let missing_ids: Vec<String> = desired_ext_ids
+        .iter()
+        .filter(|id| !installed_lc.contains(&id.to_ascii_lowercase()))
+        .cloned()
+        .collect();
+
+    let missing_unlocked_ids: Vec<String> = user_unlocked_ids
+        .iter()
+        .filter(|id| !installed_lc.contains(&id.to_ascii_lowercase()))
+        .cloned()
+        .collect();
+
+    // PRE-WRITE VSIX LOCK PREFLIGHT (OPUS-02 / CARBON-02 / ASTRA-08):
+    // Resolve and verify every missing catalog extension BEFORE Step 1 `ensure_storage_profile`,
+    // RTK wrappers, `code --install-extension`, `settings.json`, or provenance writes!
+    // Any Tier 1 safety refusal returns exit 5 immediately with ZERO mutations.
+    let mut install_targets: Vec<(String, String)> = Vec::new();
+    let mut unlocked_bypass = false;
+    let mut pins_file_override = false;
+    let mut run_tier2_unpinned: Vec<String> = Vec::new();
+
+    if !missing_ids.is_empty() {
+        let resolved_targets = resolve_and_verify_batch(
+            catalog,
+            &missing_ids,
+            &VsixVerifyOptions {
+                allow_unlocked: opts.allow_unlocked,
+                cache_dir: None,
+            },
+        )?;
+        if !resolved_targets.failures.is_empty() {
+            let has_safety = resolved_targets
+                .failures
+                .iter()
+                .any(|f| f.is_safety_refusal);
+            let summary =
+                format_vsix_refusal_summary(catalog, &profile_name, &resolved_targets.failures);
+            return Err(if has_safety {
+                VspError::SafetyRefusal(summary)
+            } else {
+                VspError::Operational(summary)
+            });
+        }
+        unlocked_bypass = resolved_targets.unlocked_bypass;
+        pins_file_override = resolved_targets.pins_file_override;
+        run_tier2_unpinned = resolved_targets.tier2_unpinned;
+        if !run_tier2_unpinned.is_empty() {
+            warnings.push(format!(
+                "Tier 2 unpinned (pending_refresh): {} installed without a verified version lock",
+                run_tier2_unpinned.join(", ")
+            ));
+        }
+        install_targets = resolved_targets.targets;
+    }
+    // Tier 3 user-unlocked extensions have no catalog pin: install by exact ID.
+    for id in &missing_unlocked_ids {
+        install_targets.push((id.clone(), id.clone()));
+    }
+
     let mut ext_errors: Vec<String> = Vec::new();
 
     // STEP 1: Ensure storage.json entry (ONLY if new profile!) + write XDG RTK wrappers if enabled.
-    // Extensions-only mode skips Step 1 and Step 4: no storage.json entry, no RTK wrappers,
-    // and no settings.json write.
     let ensure_outcome = if opts.extensions_only {
         None
     } else {
@@ -864,85 +1007,36 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
         }
     }
 
-    // STEP 2: Verify pinned VSIXs into XDG cache + batched `code --install-extension` (serial fallback).
-    let mut installed_lc: BTreeSet<String> = observed_installed
-        .iter()
-        .map(|e| e.id.to_ascii_lowercase())
-        .collect();
-    for removed in &step0_uninstalled {
-        installed_lc.remove(&removed.to_ascii_lowercase());
-    }
-
-    let missing_ids: Vec<String> = desired_ext_ids
-        .iter()
-        .filter(|id| !installed_lc.contains(&id.to_ascii_lowercase()))
-        .cloned()
-        .collect();
-
-    let missing_unlocked_ids: Vec<String> = user_unlocked_ids
-        .iter()
-        .filter(|id| !installed_lc.contains(&id.to_ascii_lowercase()))
-        .cloned()
-        .collect();
-
+    // STEP 2: Batched `code --install-extension` with smart re-list + missing-only serial fallback.
     let mut installed_now = Vec::new();
     let mut failed_install_ids = Vec::new();
-    let mut unlocked_bypass = false;
-    let mut had_vsix_safety_refusal = false;
 
-    if !missing_ids.is_empty() || !missing_unlocked_ids.is_empty() {
-        let mut install_targets: Vec<(String, String)> = Vec::new();
-        if !missing_ids.is_empty() {
-            let resolved_targets = resolve_and_verify_batch(
-                catalog,
-                &missing_ids,
-                &VsixVerifyOptions {
-                    allow_unlocked: opts.allow_unlocked,
-                    cache_dir: None,
-                },
-            )?;
-            unlocked_bypass = resolved_targets.unlocked_bypass;
-            for failure in resolved_targets.failures {
-                if failure.is_safety_refusal {
-                    had_vsix_safety_refusal = true;
-                }
-                failed_install_ids.push(failure.id.clone());
-                ext_errors.push(format!("{}: {}", failure.id, failure.message));
-            }
-            install_targets = resolved_targets.targets;
-        }
-        // Tier 3 user-unlocked extensions have no catalog pin: install by exact ID.
-        for id in &missing_unlocked_ids {
-            install_targets.push((id.clone(), id.clone()));
-        }
-
-        let (ok_ids, fail_ids) = install_extensions_batched_with_fallback(
+    if !install_targets.is_empty() {
+        let (ok_ids, fail_details, fallback_warnings) = install_extensions_batched_with_fallback(
             &code_bin,
             &store,
             &profile_name,
             &install_targets,
             !opts.no_batch,
-        );
+        )?;
+        warnings.extend(fallback_warnings);
         for ok in ok_ids {
             installed_lc.insert(ok.to_ascii_lowercase());
             installed_now.push(ok);
         }
-        for fail in fail_ids {
-            failed_install_ids.push(fail.clone());
-            ext_errors.push(format!("failed to install {fail}"));
+        for (fail_id, detail) in fail_details {
+            failed_install_ids.push(fail_id.clone());
+            ext_errors.push(format!("failed to install {fail_id} ({detail})"));
         }
     }
 
-    // From here on, user-unlocked extensions are managed like the other desired extensions
-    // (never pruned as unmanaged, and recorded in provenance).
+    // From here on, user-unlocked extensions are managed like the other desired extensions.
     let catalog_managed_ids = desired_ext_ids.clone();
     desired_ext_ids.extend(user_unlocked_ids);
 
-    // STEP 3: Prune superseded/retired/opt-in unmanaged extensions + optional `--repair-pins`.
+    // STEP 3: `--ai off`, declarative `retireOnSwitch`, Step 3 prune, and `--repair-pins`.
     let mut pruned = Vec::new();
 
-    // `--ai off` also removes catalog AI-group extensions that are already installed.
-    // `chat.disableAIFeatures` alone does not stop third-party AI agents.
     if opts.ai == Some(AiMode::Off) {
         let (ai_uninstalled, ai_errs) = uninstall_ai_extensions(
             catalog,
@@ -951,9 +1045,39 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
             &profile_name,
             &observed_installed,
             &mut installed_lc,
-        );
+            !opts.no_batch,
+        )?;
         pruned.extend(ai_uninstalled);
         ext_errors.extend(ai_errs);
+    }
+
+    // Declarative `retireOnSwitch.extensions` from `WorkspaceCatalog` (CARBON-05).
+    let retire_exts = collect_retire_on_switch_extensions(catalog, &resolved_modules);
+    if !retire_exts.is_empty() {
+        let desired_lc: BTreeSet<String> = desired_ext_ids
+            .iter()
+            .map(|id| id.to_ascii_lowercase())
+            .collect();
+        let to_retire: Vec<String> = retire_exts
+            .into_iter()
+            .filter(|id| installed_lc.contains(id) && !desired_lc.contains(id))
+            .collect();
+        if !to_retire.is_empty() {
+            let (ok_ret, fail_ret) = uninstall_extensions_batched_with_fallback(
+                &code_bin,
+                &store,
+                &profile_name,
+                &to_retire,
+                !opts.no_batch,
+            )?;
+            for id in ok_ret {
+                installed_lc.remove(&id.to_ascii_lowercase());
+                pruned.push(id);
+            }
+            for (id, detail) in fail_ret {
+                ext_errors.push(format!("failed to retire rival extension {id} ({detail})"));
+            }
+        }
     }
 
     let (pruned_ids, prune_errs) = execute_step3_prune(
@@ -965,7 +1089,8 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
         &desired_ext_ids,
         &installed_lc,
         opts.prune,
-    );
+        !opts.no_batch,
+    )?;
     pruned.extend(pruned_ids);
     ext_errors.extend(prune_errs);
 
@@ -973,6 +1098,7 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
     // `true` only when `--repair-pins` ran without error and every catalog-managed
     // extension is then installed at its hash-locked version.
     let mut repair_reverified_all = false;
+    let env_pins_override = pins_file_override_path().is_some();
     if opts.repair_pins {
         let post_installed = list_installed_extensions(&code_bin, &store, &profile_name)?;
         let repairs = compute_pin_repairs(catalog, &post_installed, opts.allow_unlocked)?;
@@ -982,17 +1108,22 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
             let cache_dir = resolve_vsix_cache_dir(None);
             let staged = stage_pin_repairs(&repairs, &cache_dir)?;
             for (item, vsix_path) in staged {
-                if run_code_install_single(
+                let exec = run_code_install_single(
                     &code_bin,
                     &store,
                     &profile_name,
                     &vsix_path.display().to_string(),
                     true,
-                ) {
+                )?;
+                if exec.success {
                     repaired_pins.push(format!("{}@{}", item.id, item.pinned_version));
                 } else {
                     repair_failed = true;
-                    ext_errors.push(format!("failed to repair pin for {}", item.id));
+                    ext_errors.push(format!(
+                        "failed to repair pin for {} ({})",
+                        item.id,
+                        exec.format_failure()
+                    ));
                 }
             }
         }
@@ -1006,15 +1137,33 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
 
     let prev_prov = load_profile_provenance(&store.user_dir, &profile_name);
 
-    // The unlocked-bypass record is sticky. A later sync that finds the extensions already
-    // installed verifies nothing, so it must not clear the record. Only a `--repair-pins`
-    // run that re-verified every catalog-managed extension clears it.
+    // Sticky bypass records: only `--repair-pins` re-verifying all managed extensions clears
+    // `unlocked_bypass` and (when run without `ARTAGON_VSCODE_PINS_FILE`) `pins_file_override`.
     let prev_unlocked = prev_prov.as_ref().is_some_and(|p| p.unlocked_bypass);
     let recorded_unlocked_bypass = unlocked_bypass || (prev_unlocked && !repair_reverified_all);
-    // The publisher-trust bypass record is sticky too: a subsequent sync without
-    // `ARTAGON_VSCODE_TRUST_UNKNOWN_PUBLISHER=1` must not erase the audit flag.
     let prev_publisher_trust_bypass = prev_prov.as_ref().is_some_and(|p| p.publisher_trust_bypass);
     let recorded_publisher_trust_bypass = publisher_trust_bypass || prev_publisher_trust_bypass;
+    let prev_pins_override = prev_prov.as_ref().is_some_and(|p| p.pins_file_override);
+    let clear_pins_override = repair_reverified_all && !env_pins_override;
+    let recorded_pins_file_override =
+        pins_file_override || (prev_pins_override && !clear_pins_override);
+
+    let desired_lc_set: BTreeSet<String> = desired_ext_ids
+        .iter()
+        .map(|id| id.to_ascii_lowercase())
+        .collect();
+    let mut recorded_tier2_unpinned: BTreeSet<String> = run_tier2_unpinned.into_iter().collect();
+    if !repair_reverified_all {
+        if let Some(prev) = &prev_prov {
+            for id in &prev.tier2_unpinned {
+                let lc = id.to_ascii_lowercase();
+                if desired_lc_set.contains(&lc) {
+                    recorded_tier2_unpinned.insert(lc);
+                }
+            }
+        }
+    }
+    let recorded_tier2_unpinned: Vec<String> = recorded_tier2_unpinned.into_iter().collect();
 
     if let Some(outcome) = &ensure_outcome {
         // STEP 4: Theme failure fallback + lossless CST merge of settings.json + save XDG
@@ -1043,6 +1192,12 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
                 }
             }
         }
+        collect_retire_on_switch_settings(
+            catalog,
+            &resolved_modules,
+            &desired_settings,
+            &mut delete_keys,
+        );
         let delete_paths = compute_formatter_delete_paths(&resolved_modules);
 
         if settings_path.is_file() {
@@ -1073,17 +1228,20 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
             ai_mode: opts.ai,
             unlocked_bypass: recorded_unlocked_bypass,
             publisher_trust_bypass: recorded_publisher_trust_bypass,
-            pins_file_override: false,
-            tier2_unpinned: Vec::new(),
+            pins_file_override: recorded_pins_file_override,
+            tier2_unpinned: recorded_tier2_unpinned,
             last_sync_at: now_rfc3339_utc(),
         };
         save_profile_provenance(&prov)?;
     } else {
         // Extensions-only mode wrote no settings, so the managed-settings record of an
-        // earlier full sync stays as it is. Only the extension facts are updated, and a
-        // bypass in this run is always recorded.
-        let bypass_now = recorded_unlocked_bypass || recorded_publisher_trust_bypass;
-        if prev_prov.is_some() || bypass_now {
+        // earlier full sync stays as it is. Only the extension facts are updated, and any
+        // bypass or unpinned Tier 2 state is always recorded.
+        let audit_state_now = recorded_unlocked_bypass
+            || recorded_publisher_trust_bypass
+            || recorded_pins_file_override
+            || !recorded_tier2_unpinned.is_empty();
+        if prev_prov.is_some() || audit_state_now {
             let mut prov = prev_prov.unwrap_or_else(|| ProfileProvenance {
                 version: 1,
                 profile: profile_name.clone(),
@@ -1103,22 +1261,27 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
             prov.managed_extensions = desired_ext_ids;
             prov.unlocked_bypass = recorded_unlocked_bypass;
             prov.publisher_trust_bypass = recorded_publisher_trust_bypass;
+            prov.pins_file_override = recorded_pins_file_override;
+            prov.tier2_unpinned = recorded_tier2_unpinned;
             prov.last_sync_at = now_rfc3339_utc();
             save_profile_provenance(&prov)?;
         }
     }
 
+    // Mid-apply external `code` failures after mutations began return exit `6` (`RetryableLock`
+    // / PartialApply) with an explicit applied-vs-failed summary!
     if !ext_errors.is_empty() {
-        let msg = format!(
-            "profile '{}' synced with {} extension error(s): {}",
-            profile_name,
-            ext_errors.len(),
-            ext_errors.join("; ")
+        let msg = format_partial_apply_summary(
+            &profile_name,
+            storage_mutated,
+            &files_written,
+            &step0_uninstalled,
+            &installed_now,
+            &pruned,
+            &repaired_pins,
+            &ext_errors,
         );
-        if had_vsix_safety_refusal {
-            return Err(VspError::SafetyRefusal(msg));
-        }
-        return Err(VspError::Operational(msg));
+        return Err(VspError::RetryableLock(msg));
     }
 
     Ok(SyncReport {
@@ -1132,6 +1295,7 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
         storage_mutated,
         unlocked_bypass,
         warnings,
+        ext_errors,
     })
 }
 
@@ -1147,7 +1311,7 @@ fn run_profile_sync(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult
 ///   profile while VS Code runs.
 /// - [`VspError::TargetMissing`] (exit `2`): the profile is not registered in
 ///   `storage.json`. This command never creates a profile.
-/// - [`VspError::IncompleteObservation`] (exit `7`): the `code` CLI is not on `PATH`.
+/// - [`VspError::IncompleteObservation`] (exit `7`): the `code` CLI is not on `PATH` or timed out.
 /// - [`VspError::Operational`] (exit `1`): VSIX download failure or `code` install failure.
 pub fn install_single_extension(
     catalog: &WorkspaceCatalog,
@@ -1156,7 +1320,6 @@ pub fn install_single_extension(
     vscode_data_dir: Option<&Path>,
     allow_unlocked: bool,
 ) -> VspResult<()> {
-    // The name goes to the `code` command line and to the lock path: validate it first.
     validate_profile_name(profile_name)?;
     if !is_valid_extension_id_syntax(ext_id) {
         return Err(VspError::SafetyRefusal(format!(
@@ -1179,10 +1342,6 @@ pub fn install_single_extension(
 
     let store = resolve_vscode_store(vscode_data_dir, true)?;
 
-    // `code --profile=<new> --install-extension` creates a profile that is not registered.
-    // This command installs into an existing profile only. For a missing profile, the
-    // running-editor guard of `vsp sync` applies first: VS Code must not be open while a
-    // profile is created.
     if profile_name != "default"
         && find_storage_profile_location(&store.user_dir, profile_name)?.is_none()
     {
@@ -1200,8 +1359,6 @@ pub fn install_single_extension(
     let lock_path = profile_sync_lock_path(&store.user_dir, profile_name);
     let _lock = acquire_advisory_lock(&lock_path, effective_lock_timeout())?;
 
-    // STEP 0, the same as `vsp sync`: uninstall compromised and removed extensions before
-    // any network call or install. A failed removal stops the command (exit 5).
     let observed_installed = list_installed_extensions(&code_bin, &store, profile_name)?;
     let (_step0_uninstalled, step0_failures) = execute_step0_remediation(
         catalog,
@@ -1209,7 +1366,8 @@ pub fn install_single_extension(
         &store,
         profile_name,
         &observed_installed,
-    );
+        true,
+    )?;
     if !step0_failures.is_empty() {
         return Err(step0_failure(profile_name, &step0_failures));
     }
@@ -1222,9 +1380,10 @@ pub fn install_single_extension(
             cache_dir: None,
         },
     )?;
-    if let Some(failure) = resolved.failures.first() {
-        let msg = format!("{}: {}", failure.id, failure.message);
-        return Err(if failure.is_safety_refusal {
+    if !resolved.failures.is_empty() {
+        let has_safety = resolved.failures.iter().any(|f| f.is_safety_refusal);
+        let msg = format_vsix_refusal_summary(catalog, profile_name, &resolved.failures);
+        return Err(if has_safety {
             VspError::SafetyRefusal(msg)
         } else {
             VspError::Operational(msg)
@@ -1235,9 +1394,11 @@ pub fn install_single_extension(
             "no install target resolved for '{ext_id}'"
         )));
     };
-    if !run_code_install_single(&code_bin, &store, profile_name, install_arg, false) {
+    let exec = run_code_install_single(&code_bin, &store, profile_name, install_arg, false)?;
+    if !exec.success {
         return Err(VspError::Operational(format!(
-            "failed to install {ext_id} into profile '{profile_name}'"
+            "failed to install {ext_id} into profile '{profile_name}' ({})",
+            exec.format_failure()
         )));
     }
     Ok(())
@@ -1305,7 +1466,6 @@ pub fn prepare_bundle_import(
         )));
     }
 
-    // 1. Canonicalize bundle path and read bytes ONCE (zero TOCTOU).
     let canon_bundle = resolve_canonical_path(bundle_path)?;
     let raw_bytes = fs::read(&canon_bundle).map_err(|err| {
         VspError::Operational(format!(
@@ -1314,11 +1474,9 @@ pub fn prepare_bundle_import(
         ))
     })?;
 
-    // 2. Verify adjacent SHA256SUMS before any parsing or mutation.
     let mut warnings = Vec::new();
     verify_bundle_sha256sums(catalog, &canon_bundle, &raw_bytes, &mut warnings)?;
 
-    // 3. Parse and validate strict `.code-profile` schema.
     let bundle_val: Value = serde_json::from_slice(&raw_bytes).map_err(|err| {
         VspError::Operational(format!(
             "invalid JSON in bundle {}: {err}",
@@ -1375,14 +1533,12 @@ pub fn prepare_bundle_import(
         }
     };
 
-    // 4. Pre-flight nested-safe autonomy/exec-override deny-list check (exits 5 on ALL 5 N1 payloads!).
     enforce_autonomy_gate(
         &desired_settings,
         &bundle_path.display().to_string(),
         opts.allow_unsafe_settings,
     )?;
 
-    // Determine target profile name & legacy `ai-profile-* -> ai-copilot` invariant.
     let bundle_stem = bundle_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -1399,8 +1555,6 @@ pub fn prepare_bundle_import(
         ));
     }
 
-    // The name can come from the untrusted bundle `.name` field. Validate it before it can
-    // reach the `code` command line or storage.json.
     validate_profile_name(raw_target_name)?;
 
     let (profile_name, legacy_ux) = match catalog.resolve_alias(raw_target_name) {
@@ -1416,7 +1570,6 @@ pub fn prepare_bundle_import(
         || bundle_stem.starts_with("ai-profile-")
         || raw_target_name.starts_with("ai-profile-");
 
-    // 5. Filter & validate bundle extensions pre-mutation.
     let mut install_ids = Vec::new();
     for eid in raw_ext_ids {
         if !is_valid_extension_id_syntax(&eid) {
@@ -1457,10 +1610,8 @@ pub fn prepare_bundle_import(
         install_ids.push(eid);
     }
 
-    // Active publisher allowlist gate (pre-mutation, exit 5).
     let publisher_trust_bypass = enforce_publisher_allowlist(catalog, &install_ids)?;
 
-    // Apply --ai off / --ux settings transformations.
     let mut delete_keys = Vec::new();
     if opts.ai == Some(AiMode::Off) {
         let strip_keys = retired_ai_off_keys(catalog, &desired_settings);
@@ -1499,7 +1650,7 @@ fn run_bundle_import_apply(
         mut delete_keys,
         install_ids,
         publisher_trust_bypass,
-        warnings,
+        mut warnings,
         ..
     } = plan;
     let store = resolve_vscode_store(opts.vscode_data_dir.as_deref(), true)?;
@@ -1520,20 +1671,82 @@ fn run_bundle_import_apply(
     let lock_path = profile_sync_lock_path(&store.user_dir, &profile_name);
     let _target_lock = acquire_advisory_lock(&lock_path, effective_lock_timeout())?;
 
-    let observed_installed = list_installed_extensions(&code_bin, &store, &profile_name)?;
+    let profile_registered = profile_name == "default"
+        || find_storage_profile_location(&store.user_dir, &profile_name)?.is_some();
+    let observed_installed = if profile_registered {
+        list_installed_extensions(&code_bin, &store, &profile_name)?
+    } else {
+        Vec::new()
+    };
 
-    // Step 0: unconditional compromised/removed remediation first! A failure stops the
-    // import before any network call, storage.json write, install, or settings write.
+    // Step 0: unconditional compromised/removed remediation first!
     let (step0_uninstalled, step0_failures) = execute_step0_remediation(
         catalog,
         &code_bin,
         &store,
         &profile_name,
         &observed_installed,
-    );
+        !opts.no_batch,
+    )?;
     if !step0_failures.is_empty() {
         return Err(step0_failure(&profile_name, &step0_failures));
     }
+
+    let mut installed_lc: BTreeSet<String> = observed_installed
+        .iter()
+        .map(|e| e.id.to_ascii_lowercase())
+        .collect();
+    for rem in &step0_uninstalled {
+        installed_lc.remove(&rem.to_ascii_lowercase());
+    }
+
+    let ordered_ids = order_extensions_by_group(catalog, &install_ids);
+    let missing_ids: Vec<String> = ordered_ids
+        .iter()
+        .filter(|id| !installed_lc.contains(&id.to_ascii_lowercase()))
+        .cloned()
+        .collect();
+
+    // PRE-WRITE VSIX LOCK PREFLIGHT BEFORE Step 1 `ensure_storage_profile`!
+    let mut install_targets: Vec<(String, String)> = Vec::new();
+    let mut unlocked_bypass = false;
+    let mut pins_file_override = false;
+    let mut run_tier2_unpinned: Vec<String> = Vec::new();
+
+    if !missing_ids.is_empty() {
+        let resolved_targets = resolve_and_verify_batch(
+            catalog,
+            &missing_ids,
+            &VsixVerifyOptions {
+                allow_unlocked: opts.allow_unlocked,
+                cache_dir: None,
+            },
+        )?;
+        if !resolved_targets.failures.is_empty() {
+            let has_safety = resolved_targets
+                .failures
+                .iter()
+                .any(|f| f.is_safety_refusal);
+            let summary =
+                format_vsix_refusal_summary(catalog, &profile_name, &resolved_targets.failures);
+            return Err(if has_safety {
+                VspError::SafetyRefusal(summary)
+            } else {
+                VspError::Operational(summary)
+            });
+        }
+        unlocked_bypass = resolved_targets.unlocked_bypass;
+        pins_file_override = resolved_targets.pins_file_override;
+        run_tier2_unpinned = resolved_targets.tier2_unpinned;
+        if !run_tier2_unpinned.is_empty() {
+            warnings.push(format!(
+                "Tier 2 unpinned (pending_refresh): {} installed without a verified version lock",
+                run_tier2_unpinned.join(", ")
+            ));
+        }
+        install_targets = resolved_targets.targets;
+    }
+
     let mut ext_errors: Vec<String> = Vec::new();
 
     // Step 1: ensure storage.json entry (skips write if profile already exists!).
@@ -1554,64 +1767,30 @@ fn run_bundle_import_apply(
         );
     }
 
-    // Step 2: verify pinned VSIXs & install extensions (batched with serial fallback).
-    let mut installed_lc: BTreeSet<String> = observed_installed
-        .iter()
-        .map(|e| e.id.to_ascii_lowercase())
-        .collect();
-    for rem in &step0_uninstalled {
-        installed_lc.remove(&rem.to_ascii_lowercase());
-    }
-
-    let ordered_ids = order_extensions_by_group(catalog, &install_ids);
-    let missing_ids: Vec<String> = ordered_ids
-        .iter()
-        .filter(|id| !installed_lc.contains(&id.to_ascii_lowercase()))
-        .cloned()
-        .collect();
-
+    // Step 2: install extensions (batched with smart re-list + missing-only serial fallback).
     let mut installed_now = Vec::new();
     let mut failed_install_ids = Vec::new();
-    let mut unlocked_bypass = false;
-    let mut had_vsix_safety_refusal = false;
 
-    if !missing_ids.is_empty() {
-        let resolved_targets = resolve_and_verify_batch(
-            catalog,
-            &missing_ids,
-            &VsixVerifyOptions {
-                allow_unlocked: opts.allow_unlocked,
-                cache_dir: None,
-            },
-        )?;
-        unlocked_bypass = resolved_targets.unlocked_bypass;
-        for failure in resolved_targets.failures {
-            if failure.is_safety_refusal {
-                had_vsix_safety_refusal = true;
-            }
-            failed_install_ids.push(failure.id.clone());
-            ext_errors.push(format!("{}: {}", failure.id, failure.message));
-        }
-
-        let (ok_ids, fail_ids) = install_extensions_batched_with_fallback(
+    if !install_targets.is_empty() {
+        let (ok_ids, fail_details, fallback_warnings) = install_extensions_batched_with_fallback(
             &code_bin,
             &store,
             &profile_name,
-            &resolved_targets.targets,
+            &install_targets,
             !opts.no_batch,
-        );
+        )?;
+        warnings.extend(fallback_warnings);
         for ok in ok_ids {
             installed_lc.insert(ok.to_ascii_lowercase());
             installed_now.push(ok);
         }
-        for fail in fail_ids {
-            failed_install_ids.push(fail.clone());
-            ext_errors.push(format!("failed to install {fail}"));
+        for (fail_id, detail) in fail_details {
+            failed_install_ids.push(fail_id.clone());
+            ext_errors.push(format!("failed to install {fail_id} ({detail})"));
         }
     }
 
-    // Step 3: `--ai off` also removes catalog AI-group extensions that are already installed,
-    // matching `run_profile_sync`.
+    // Step 3: `--ai off` also removes catalog AI-group extensions that are already installed.
     let mut pruned = Vec::new();
     if opts.ai == Some(AiMode::Off) {
         let (ai_uninstalled, ai_errs) = uninstall_ai_extensions(
@@ -1621,7 +1800,8 @@ fn run_bundle_import_apply(
             &profile_name,
             &observed_installed,
             &mut installed_lc,
-        );
+            !opts.no_batch,
+        )?;
         pruned.extend(ai_uninstalled);
         ext_errors.extend(ai_errs);
     }
@@ -1661,6 +1841,20 @@ fn run_bundle_import_apply(
     let prev_prov = load_profile_provenance(&store.user_dir, &profile_name);
     let prev_unlocked = prev_prov.as_ref().is_some_and(|p| p.unlocked_bypass);
     let prev_publisher_trust_bypass = prev_prov.as_ref().is_some_and(|p| p.publisher_trust_bypass);
+    let prev_pins_override = prev_prov.as_ref().is_some_and(|p| p.pins_file_override);
+    let desired_lc_set: BTreeSet<String> = ordered_ids
+        .iter()
+        .map(|id| id.to_ascii_lowercase())
+        .collect();
+    let mut recorded_tier2_unpinned: BTreeSet<String> = run_tier2_unpinned.into_iter().collect();
+    if let Some(prev) = &prev_prov {
+        for id in &prev.tier2_unpinned {
+            let lc = id.to_ascii_lowercase();
+            if desired_lc_set.contains(&lc) {
+                recorded_tier2_unpinned.insert(lc);
+            }
+        }
+    }
     let prov = ProfileProvenance {
         version: 1,
         profile: profile_name.clone(),
@@ -1673,23 +1867,24 @@ fn run_bundle_import_apply(
         ai_mode: opts.ai,
         unlocked_bypass: unlocked_bypass || prev_unlocked,
         publisher_trust_bypass: publisher_trust_bypass || prev_publisher_trust_bypass,
-        pins_file_override: false,
-        tier2_unpinned: Vec::new(),
+        pins_file_override: pins_file_override || prev_pins_override,
+        tier2_unpinned: recorded_tier2_unpinned.into_iter().collect(),
         last_sync_at: now_rfc3339_utc(),
     };
     save_profile_provenance(&prov)?;
 
     if !ext_errors.is_empty() {
-        let msg = format!(
-            "bundle import into '{}' had {} extension error(s): {}",
-            profile_name,
-            ext_errors.len(),
-            ext_errors.join("; ")
+        let msg = format_partial_apply_summary(
+            &profile_name,
+            ensure_outcome.created,
+            &files_written,
+            &step0_uninstalled,
+            &installed_now,
+            &pruned,
+            &[],
+            &ext_errors,
         );
-        if had_vsix_safety_refusal {
-            return Err(VspError::SafetyRefusal(msg));
-        }
-        return Err(VspError::Operational(msg));
+        return Err(VspError::RetryableLock(msg));
     }
 
     Ok(SyncReport {
@@ -1703,11 +1898,13 @@ fn run_bundle_import_apply(
         storage_mutated: ensure_outcome.created,
         unlocked_bypass,
         warnings,
+        ext_errors,
     })
 }
 
 fn run_all_sweep(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult<SyncReport> {
     let store = resolve_vscode_store(opts.vscode_data_dir.as_deref(), true)?;
+    // Resolve `code` binary ONCE for the entire sweep (OPUS-09).
     let code_bin = require_code_binary()?;
 
     let mut targets = vec!["default".to_string()];
@@ -1718,7 +1915,9 @@ fn run_all_sweep(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult<Sy
     let mut all_installed = Vec::new();
     let mut all_pruned = Vec::new();
     let mut all_written = Vec::new();
+    let mut all_warnings = Vec::new();
     let mut incomplete_errors = Vec::new();
+    let mut partial_errors = Vec::new();
     let mut op_errors = Vec::new();
     // Safety refusals keep exit 5 for the whole sweep (never downgraded to exit 1).
     let mut safety_errors: Vec<String> = Vec::new();
@@ -1737,22 +1936,36 @@ fn run_all_sweep(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult<Sy
                 Err(err) => {
                     incomplete_errors.push(format!("{prof}: {err}"));
                 }
-                Ok(installed) => {
-                    let (uninstalled, failures) =
-                        execute_step0_remediation(catalog, &code_bin, &store, prof, &installed);
-                    for u in uninstalled {
-                        all_step0.push(format!("{prof}:{u}"));
+                Ok(installed) => match execute_step0_remediation(
+                    catalog,
+                    &code_bin,
+                    &store,
+                    prof,
+                    &installed,
+                    !opts.no_batch,
+                ) {
+                    Ok((uninstalled, failures)) => {
+                        for u in uninstalled {
+                            all_step0.push(format!("{prof}:{u}"));
+                        }
+                        if !failures.is_empty() {
+                            safety_errors.push(step0_failure(prof, &failures).to_string());
+                        }
                     }
-                    if !failures.is_empty() {
-                        safety_errors.push(step0_failure(prof, &failures).to_string());
+                    Err(VspError::IncompleteObservation(msg)) => {
+                        incomplete_errors.push(format!("{prof}: {msg}"));
                     }
-                }
+                    Err(VspError::SafetyRefusal(msg)) => {
+                        safety_errors.push(format!("{prof}: {msg}"));
+                    }
+                    Err(err) => op_errors.push(format!("{prof}: {err}")),
+                },
             }
         } else {
             let mut single_opts = opts.clone();
             single_opts.all = false;
             single_opts.profile = Some(prof.clone());
-            match run_profile_sync(catalog, &single_opts) {
+            match run_profile_sync_with_code(catalog, &single_opts, Some(&code_bin)) {
                 Ok(rep) => {
                     for u in rep.step0_uninstalled {
                         all_step0.push(format!("{prof}:{u}"));
@@ -1760,9 +1973,11 @@ fn run_all_sweep(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult<Sy
                     all_installed.extend(rep.installed);
                     all_pruned.extend(rep.pruned);
                     all_written.extend(rep.files_written);
+                    all_warnings.extend(rep.warnings);
                 }
                 Err(VspError::IncompleteObservation(msg)) => incomplete_errors.push(msg),
                 Err(VspError::SafetyRefusal(msg)) => safety_errors.push(format!("{prof}: {msg}")),
+                Err(VspError::RetryableLock(msg)) => partial_errors.push(format!("{prof}: {msg}")),
                 Err(err) => op_errors.push(format!("{prof}: {err}")),
             }
         }
@@ -1770,23 +1985,30 @@ fn run_all_sweep(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult<Sy
 
     if !safety_errors.is_empty() {
         return Err(VspError::SafetyRefusal(format!(
-            "sweep refused for {} profile(s): {}",
+            "sweep refused for {} profile(s):\n{}",
             safety_errors.len(),
-            safety_errors.join("; ")
+            safety_errors.join("\n")
         )));
     }
     if !incomplete_errors.is_empty() {
         return Err(VspError::IncompleteObservation(format!(
-            "sweep incomplete across {} profile(s): {}",
+            "sweep incomplete across {} profile(s):\n{}",
             incomplete_errors.len(),
-            incomplete_errors.join("; ")
+            incomplete_errors.join("\n")
+        )));
+    }
+    if !partial_errors.is_empty() {
+        return Err(VspError::RetryableLock(format!(
+            "sweep partially applied across {} profile(s):\n{}",
+            partial_errors.len(),
+            partial_errors.join("\n")
         )));
     }
     if !op_errors.is_empty() {
         return Err(VspError::Operational(format!(
-            "sweep encountered {} error(s): {}",
+            "sweep encountered {} error(s):\n{}",
             op_errors.len(),
-            op_errors.join("; ")
+            op_errors.join("\n")
         )));
     }
 
@@ -1800,8 +2022,43 @@ fn run_all_sweep(catalog: &WorkspaceCatalog, opts: &SyncOptions) -> VspResult<Sy
         repaired_pins: Vec::new(),
         storage_mutated: false,
         unlocked_bypass: false,
-        warnings: Vec::new(),
+        warnings: all_warnings,
+        ext_errors: Vec::new(),
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn format_partial_apply_summary(
+    profile_name: &str,
+    storage_mutated: bool,
+    files_written: &[String],
+    step0_uninstalled: &[String],
+    installed: &[String],
+    pruned: &[String],
+    repaired_pins: &[String],
+    ext_errors: &[String],
+) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "partial apply for profile '{profile_name}': {} extension operation(s) failed after mutations began:",
+        ext_errors.len()
+    );
+    let _ = writeln!(
+        out,
+        "  Applied: storage_mutated={storage_mutated}, files_written={}, step0_uninstalled={}, installed={}, pruned={}, repaired_pins={}",
+        files_written.len(),
+        step0_uninstalled.len(),
+        installed.len(),
+        pruned.len(),
+        repaired_pins.len()
+    );
+    let _ = writeln!(out, "  Failed:");
+    for err in ext_errors {
+        let _ = writeln!(out, "    - {err}");
+    }
+    let _ = write!(out, "  Remedy: inspect the failed extension error(s) above and re-run `vsp sync -p {profile_name}` to converge remaining state.");
+    out
 }
 
 fn execute_step0_remediation(
@@ -1810,27 +2067,36 @@ fn execute_step0_remediation(
     store: &VsCodeStore,
     profile_name: &str,
     installed: &[InstalledExtension],
-) -> (Vec<String>, Vec<String>) {
-    let mut uninstalled = Vec::new();
-    let mut failures = Vec::new();
+    batch: bool,
+) -> VspResult<(Vec<String>, Vec<String>)> {
+    let to_remove: Vec<String> = installed
+        .iter()
+        .filter_map(|ext| {
+            let rec = catalog.extension_record(&ext.id)?;
+            matches!(
+                rec.status,
+                ExtensionStatus::Compromised | ExtensionStatus::Removed
+            )
+            .then(|| ext.id.clone())
+        })
+        .collect();
 
-    for ext in installed {
-        let Some(rec) = catalog.extension_record(&ext.id) else {
-            continue;
-        };
-        if matches!(
-            rec.status,
-            ExtensionStatus::Compromised | ExtensionStatus::Removed
-        ) {
-            if run_code_uninstall(code_bin, store, profile_name, &ext.id) {
-                uninstalled.push(ext.id.clone());
-            } else {
-                failures.push(ext.id.clone());
-            }
-        }
+    if to_remove.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
     }
 
-    (uninstalled, failures)
+    let (uninstalled, failed) = uninstall_extensions_batched_with_fallback(
+        code_bin,
+        store,
+        profile_name,
+        &to_remove,
+        batch,
+    )?;
+    let failures = failed
+        .into_iter()
+        .map(|(id, detail)| format!("{id} ({detail})"))
+        .collect();
+    Ok((uninstalled, failures))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1843,7 +2109,8 @@ fn execute_step3_prune(
     desired_ids: &[String],
     installed_now_lc: &BTreeSet<String>,
     prune_mode: Option<PruneMode>,
-) -> (Vec<String>, Vec<String>) {
+    batch: bool,
+) -> VspResult<(Vec<String>, Vec<String>)> {
     let desired_lc: BTreeSet<String> = desired_ids.iter().map(|s| s.to_ascii_lowercase()).collect();
     let prune_retired = prune_mode.is_some();
     let prune_unmanaged = prune_mode == Some(PruneMode::Unmanaged);
@@ -1868,7 +2135,6 @@ fn execute_step3_prune(
         }
     }
 
-    // Build set of all known pack_members across the catalog for safe uninstall gating.
     let mut known_pack_members = BTreeSet::new();
     for rec in catalog.extensions.extensions.values() {
         for pm in &rec.pack_members {
@@ -1876,15 +2142,14 @@ fn execute_step3_prune(
         }
     }
 
-    let mut pruned = Vec::new();
-    let mut errors = Vec::new();
-
+    let mut candidates: Vec<(String, &'static str)> = Vec::new();
     for ext in observed_installed {
         let lc = ext.id.to_ascii_lowercase();
+        if !installed_now_lc.contains(&lc) {
+            continue;
+        }
         match catalog.extension_record(&lc) {
             Some(rec) => match rec.status {
-                // Compromised and removed extensions were remediated in Step 0. An
-                // extension with an unrecognized status is never pruned here.
                 ExtensionStatus::Compromised
                 | ExtensionStatus::Removed
                 | ExtensionStatus::Unknown(_) => {}
@@ -1895,20 +2160,12 @@ fn execute_step3_prune(
                         .map(str::to_ascii_lowercase)
                         .is_some_and(|rep| installed_now_lc.contains(&rep));
                     if rep_installed {
-                        if run_code_uninstall(code_bin, store, profile_name, &lc) {
-                            pruned.push(lc);
-                        } else {
-                            errors.push(format!("failed to uninstall superseded {lc}"));
-                        }
+                        candidates.push((lc, "superseded"));
                     }
                 }
                 ExtensionStatus::Retired => {
                     if prune_retired {
-                        if run_code_uninstall(code_bin, store, profile_name, &lc) {
-                            pruned.push(lc);
-                        } else {
-                            errors.push(format!("failed to uninstall retired {lc}"));
-                        }
+                        candidates.push((lc, "retired"));
                     }
                 }
                 ExtensionStatus::Active => {
@@ -1916,11 +2173,7 @@ fn execute_step3_prune(
                         && !desired_lc.contains(&lc)
                         && !retained_pack_members.contains(&lc)
                     {
-                        if run_code_uninstall(code_bin, store, profile_name, &lc) {
-                            pruned.push(lc);
-                        } else {
-                            errors.push(format!("failed to uninstall unmanaged {lc}"));
-                        }
+                        candidates.push((lc, "unmanaged"));
                     }
                 }
             },
@@ -1930,17 +2183,28 @@ fn execute_step3_prune(
                     && !desired_lc.contains(&lc)
                     && !retained_pack_members.contains(&lc)
                 {
-                    if run_code_uninstall(code_bin, store, profile_name, &lc) {
-                        pruned.push(lc);
-                    } else {
-                        errors.push(format!("failed to uninstall unmanaged pack member {lc}"));
-                    }
+                    candidates.push((lc, "unmanaged pack member"));
                 }
             }
         }
     }
 
-    (pruned, errors)
+    if candidates.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    let reason_map: BTreeMap<String, &'static str> = candidates.iter().cloned().collect();
+    let ids: Vec<String> = candidates.into_iter().map(|(id, _)| id).collect();
+    let (pruned, failed) =
+        uninstall_extensions_batched_with_fallback(code_bin, store, profile_name, &ids, batch)?;
+    let errors = failed
+        .into_iter()
+        .map(|(id, detail)| {
+            let kind = reason_map.get(&id).copied().unwrap_or("extension");
+            format!("failed to uninstall {kind} {id} ({detail})")
+        })
+        .collect();
+    Ok((pruned, errors))
 }
 
 fn verify_bundle_sha256sums(
@@ -2052,9 +2316,6 @@ fn step0_failure(profile_name: &str, failures: &[String]) -> VspError {
     ))
 }
 
-/// Returns the Unix file mode for an atomic workspace file write, preserving restrictive
-/// permissions on an existing target (such as `0o600` or `0o640`) instead of widening them
-/// to `0o644`.
 fn workspace_file_mode(path: &Path) -> u32 {
     const DEFAULT_MODE: u32 = 0o644;
     #[cfg(unix)]
@@ -2069,8 +2330,6 @@ fn workspace_file_mode(path: &Path) -> u32 {
     DEFAULT_MODE
 }
 
-/// Returns the lowercase IDs of installed extensions that the catalog puts in the `AI`
-/// group. `--ai off` uninstalls them.
 fn installed_ai_extensions(
     catalog: &WorkspaceCatalog,
     installed: &[InstalledExtension],
@@ -2086,9 +2345,6 @@ fn installed_ai_extensions(
         .collect()
 }
 
-/// Uninstalls already-installed catalog `AI`-group extensions when `--ai off` is active.
-///
-/// `chat.disableAIFeatures` alone does not stop third-party AI agents.
 fn uninstall_ai_extensions(
     catalog: &WorkspaceCatalog,
     code_bin: &Path,
@@ -2096,32 +2352,32 @@ fn uninstall_ai_extensions(
     profile_name: &str,
     observed_installed: &[InstalledExtension],
     installed_lc: &mut BTreeSet<String>,
-) -> (Vec<String>, Vec<String>) {
-    let mut uninstalled = Vec::new();
-    let mut errors = Vec::new();
-    for ext_id in installed_ai_extensions(catalog, observed_installed) {
-        if !installed_lc.contains(&ext_id) {
-            continue;
-        }
-        if run_code_uninstall(code_bin, store, profile_name, &ext_id) {
-            installed_lc.remove(&ext_id);
-            uninstalled.push(ext_id);
-        } else {
-            errors.push(format!(
-                "failed to uninstall AI extension {ext_id} (--ai off)"
-            ));
-        }
+    batch: bool,
+) -> VspResult<(Vec<String>, Vec<String>)> {
+    let to_remove: Vec<String> = installed_ai_extensions(catalog, observed_installed)
+        .into_iter()
+        .filter(|id| installed_lc.contains(id))
+        .collect();
+    if to_remove.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
     }
-    (uninstalled, errors)
+    let (uninstalled, failed) = uninstall_extensions_batched_with_fallback(
+        code_bin,
+        store,
+        profile_name,
+        &to_remove,
+        batch,
+    )?;
+    for id in &uninstalled {
+        installed_lc.remove(&id.to_ascii_lowercase());
+    }
+    let errors = failed
+        .into_iter()
+        .map(|(id, detail)| format!("failed to uninstall AI extension {id} (--ai off) ({detail})"))
+        .collect();
+    Ok((uninstalled, errors))
 }
 
-/// Checks each extension publisher against the catalog allowlist.
-///
-/// Returns `Ok(true)` when `ARTAGON_VSCODE_TRUST_UNKNOWN_PUBLISHER=1` bypassed the check.
-/// The bypass prints a warning on standard error, and the caller records it in provenance
-/// so that `vsp doctor` reports it. An empty or missing allowlist is a safety refusal: the
-/// check never passes because there is nothing to compare with. A publisher in
-/// [`WorkspaceCatalog::blocked_publishers`] is always refused; the bypass does not apply.
 fn enforce_publisher_allowlist(catalog: &WorkspaceCatalog, ext_ids: &[String]) -> VspResult<bool> {
     if ext_ids.is_empty() {
         return Ok(false);
@@ -2133,8 +2389,6 @@ fn enforce_publisher_allowlist(catalog: &WorkspaceCatalog, ext_ids: &[String]) -
             )));
         }
     }
-    // A blocked publisher is refused before the bypass below: the bypass is for an unknown
-    // publisher, never for a publisher that the catalog blocks.
     if let Some(id) = ext_ids.iter().find(|id| catalog.is_blocked_publisher(id)) {
         return Err(VspError::SafetyRefusal(format!(
             "extension '{id}' is refused: publisher '{}' is blocked by the catalog",
@@ -2325,16 +2579,11 @@ fn restore_quick_suggestions_if_needed(
 /// Returns [`VspError::Operational`] or [`VspError::SafetyRefusal`] if source scripts are
 /// missing or writing fails.
 pub fn install_rtk_xdg_wrappers(catalog_root: &Path) -> VspResult<PathBuf> {
-    // The XDG config root is the trust boundary. Every path component beneath it is checked
-    // for a symbolic link BEFORE any directory creation, chmod, or file write, so a linked
-    // `vsp`, `vsp/rtk`, or `vsp/rtk/zsh` directory cannot redirect shell startup files.
     let xdg_root = resolve_xdg_config_home();
     let dest_dir = xdg_root.join("vsp/rtk");
     let zsh_dir = dest_dir.join("zsh");
     ensure_no_symlink_components(&xdg_root, &zsh_dir)?;
 
-    // Only directories that this call creates get mode 0755. An existing directory keeps
-    // its mode (it can be private on purpose).
     let created: Vec<PathBuf> = [xdg_root.join("vsp"), dest_dir.clone(), zsh_dir.clone()]
         .into_iter()
         .filter(|dir| !dir.exists())
@@ -2354,7 +2603,6 @@ pub fn install_rtk_xdg_wrappers(catalog_root: &Path) -> VspResult<PathBuf> {
     }
     #[cfg(not(unix))]
     let _ = &created;
-    // Check again after creation, and check each destination file path before its write.
     ensure_no_symlink_components(&xdg_root, &zsh_dir)?;
     let write_script = |dest: &Path, bytes: &[u8]| -> VspResult<()> {
         ensure_no_symlink_components(&xdg_root, dest)?;
@@ -2491,18 +2739,62 @@ fn require_code_binary() -> VspResult<PathBuf> {
     })
 }
 
-fn run_code_uninstall(
+fn run_code_uninstall_single(
     code_bin: &Path,
     store: &VsCodeStore,
     profile_name: &str,
     ext_id: &str,
-) -> bool {
-    // An unsafe profile name never reaches `code`: the command is not built.
-    let Ok(mut cmd) = code_command(code_bin, store, profile_name) else {
-        return false;
-    };
+) -> VspResult<CodeExecOutput> {
+    let mut cmd = code_command(code_bin, store, profile_name)?;
     cmd.arg("--uninstall-extension").arg(ext_id);
-    cmd.output().is_ok_and(|o| o.status.success())
+    run_code_command(
+        &mut cmd,
+        &format!("code --uninstall-extension {ext_id} (profile '{profile_name}')"),
+    )
+}
+
+type BatchUninstallResult = (Vec<String>, Vec<(String, String)>);
+
+fn uninstall_extensions_batched_with_fallback(
+    code_bin: &Path,
+    store: &VsCodeStore,
+    profile_name: &str,
+    ext_ids: &[String],
+    batch: bool,
+) -> VspResult<BatchUninstallResult> {
+    if ext_ids.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    if batch && ext_ids.len() > 1 {
+        let mut cmd = code_command(code_bin, store, profile_name)?;
+        for id in ext_ids {
+            cmd.arg("--uninstall-extension").arg(id);
+        }
+        let exec = run_code_command(
+            &mut cmd,
+            &format!("code batched --uninstall-extension (profile '{profile_name}')"),
+        )?;
+        if exec.success {
+            return Ok((ext_ids.to_vec(), Vec::new()));
+        }
+        eprintln!(
+            "vsp: batched extension uninstall for profile '{profile_name}' failed ({}); falling back to per-extension uninstall",
+            exec.format_failure()
+        );
+    }
+
+    let mut succeeded = Vec::new();
+    let mut failed = Vec::new();
+    for id in ext_ids {
+        let exec = run_code_uninstall_single(code_bin, store, profile_name, id)?;
+        if exec.success {
+            succeeded.push(id.clone());
+        } else {
+            failed.push((id.clone(), exec.format_failure()));
+        }
+    }
+    Ok((succeeded, failed))
 }
 
 fn run_code_install_single(
@@ -2511,16 +2803,19 @@ fn run_code_install_single(
     profile_name: &str,
     target: &str,
     force: bool,
-) -> bool {
-    let Ok(mut cmd) = code_command(code_bin, store, profile_name) else {
-        return false;
-    };
+) -> VspResult<CodeExecOutput> {
+    let mut cmd = code_command(code_bin, store, profile_name)?;
     cmd.arg("--install-extension").arg(target);
     if force {
         cmd.arg("--force");
     }
-    cmd.output().is_ok_and(|o| o.status.success())
+    run_code_command(
+        &mut cmd,
+        &format!("code --install-extension {target} (profile '{profile_name}')"),
+    )
 }
+
+type BatchInstallResult = (Vec<String>, Vec<(String, String)>, Vec<String>);
 
 fn install_extensions_batched_with_fallback(
     code_bin: &Path,
@@ -2528,36 +2823,68 @@ fn install_extensions_batched_with_fallback(
     profile_name: &str,
     targets: &[(String, String)],
     batch: bool,
-) -> (Vec<String>, Vec<String>) {
+) -> VspResult<BatchInstallResult> {
     if targets.is_empty() {
-        return (Vec::new(), Vec::new());
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
 
-    if batch && targets.len() > 1 {
-        if let Ok(mut cmd) = code_command(code_bin, store, profile_name) {
-            for (_, arg) in targets {
-                cmd.arg("--install-extension").arg(arg);
-            }
-            if cmd.output().is_ok_and(|o| o.status.success()) {
-                return (
-                    targets.iter().map(|(id, _)| id.clone()).collect(),
-                    Vec::new(),
-                );
-            }
-        }
-    }
-
-    // Automatic serial fallback for exact per-extension attribution and theme fallback.
     let mut succeeded = Vec::new();
     let mut failed = Vec::new();
-    for (id, arg) in targets {
-        if run_code_install_single(code_bin, store, profile_name, arg, false) {
-            succeeded.push(id.clone());
-        } else {
-            failed.push(id.clone());
+    let mut fallback_warnings = Vec::new();
+    let mut remaining: Vec<(String, String)> = targets.to_vec();
+
+    if batch && targets.len() > 1 {
+        let mut cmd = code_command(code_bin, store, profile_name)?;
+        for (_, arg) in targets {
+            cmd.arg("--install-extension").arg(arg);
+        }
+        let exec = run_code_command(
+            &mut cmd,
+            &format!("code batched --install-extension (profile '{profile_name}')"),
+        )?;
+        if exec.success {
+            return Ok((
+                targets.iter().map(|(id, _)| id.clone()).collect(),
+                Vec::new(),
+                Vec::new(),
+            ));
+        }
+
+        let notice = format!(
+            "batched extension install for profile '{profile_name}' failed ({}); re-listing installed extensions and retrying missing ones serially",
+            exec.format_failure()
+        );
+        eprintln!("vsp: {notice}");
+        fallback_warnings.push(notice);
+
+        // Re-list installed extensions after partial batched failure and retry ONLY the
+        // extensions that are still missing!
+        if let Ok(after_batch) = list_installed_extensions(code_bin, store, profile_name) {
+            let now_installed: BTreeSet<String> = after_batch
+                .iter()
+                .map(|e| e.id.to_ascii_lowercase())
+                .collect();
+            let mut still_missing = Vec::new();
+            for (id, arg) in remaining {
+                if now_installed.contains(&id.to_ascii_lowercase()) {
+                    succeeded.push(id);
+                } else {
+                    still_missing.push((id, arg));
+                }
+            }
+            remaining = still_missing;
         }
     }
-    (succeeded, failed)
+
+    for (id, arg) in remaining {
+        let exec = run_code_install_single(code_bin, store, profile_name, &arg, false)?;
+        if exec.success {
+            succeeded.push(id);
+        } else {
+            failed.push((id, exec.format_failure()));
+        }
+    }
+    Ok((succeeded, failed, fallback_warnings))
 }
 
 fn read_optional_file_text(path: &Path) -> VspResult<String> {
@@ -2604,9 +2931,7 @@ mod tests {
             err.to_string().contains("allowlist is empty or missing"),
             "{err}"
         );
-        // Nothing to install needs no allowlist.
         assert!(!enforce_publisher_allowlist(&catalog, &[]).expect("no extensions"));
-        // An invalid ID is refused before any allowlist decision.
         assert_eq!(
             enforce_publisher_allowlist(&catalog, &["not an id".to_string()])
                 .expect_err("invalid id")
@@ -2646,5 +2971,25 @@ mod tests {
                 "github.copilot-chat".to_string()
             ]
         );
+    }
+
+    /// CARBON-05: declarative `retireOnSwitch` settings and extensions come from catalog.
+    #[test]
+    fn retire_on_switch_collects_settings_and_extensions_from_catalog() {
+        let catalog = load_embedded().expect("embedded catalog");
+        let desired = Map::new();
+        let mut delete_keys = Vec::new();
+        collect_retire_on_switch_settings(
+            &catalog,
+            &["biome".to_string()],
+            &desired,
+            &mut delete_keys,
+        );
+        assert!(delete_keys.contains(&"eslint.workingDirectories".to_string()));
+        assert!(delete_keys.contains(&"eslint.validate".to_string()));
+
+        let exts = collect_retire_on_switch_extensions(&catalog, &["biome".to_string()]);
+        assert!(exts.contains("dbaeumer.vscode-eslint"));
+        assert!(exts.contains("esbenp.prettier-vscode"));
     }
 }

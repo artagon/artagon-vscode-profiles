@@ -1,8 +1,10 @@
-//! VSIX supply-chain lock verifier, bounded 4-worker concurrent downloader with per-hop
-//! HTTPS + host allowlist redirect validation, zero-TOCTOU XDG cache, and `--repair-pins`.
+//! VSIX supply-chain lock verifier, bounded 4-worker concurrent downloader with shared
+//! connection pooling and per-hop HTTPS + host allowlist redirect validation, XDG VSIX
+//! cache verification, and `--repair-pins`.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::env;
+use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -11,7 +13,6 @@ use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
-use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -19,14 +20,16 @@ use crate::exit_codes::{VspError, VspResult};
 use crate::model::{ExtensionPin, PinsLoadState, WorkspaceCatalog};
 use crate::policy::{check_vsix_url, is_valid_sha256_hex};
 use crate::provenance::resolve_xdg_cache_home;
-use crate::schema_loader::{embedded_snapshot_files, EMBEDDED_ROOT_LABEL};
+use crate::schema_loader::{
+    embedded_snapshot_files, LockEntryStatus, LockfileManifest, EMBEDDED_ROOT_LABEL,
+};
 use crate::vscode::InstalledExtension;
 
 /// Maximum number of concurrent VSIX download/verification worker threads.
 pub const MAX_VSIX_WORKERS: usize = 4;
 
-/// Result of one VSIX job: the install argument, or `(message, is_safety_refusal)`.
-type WorkerOutcome = Result<String, (String, bool)>;
+/// Result of one VSIX job: the install argument, or `(message, is_safety_refusal, kind)`.
+type WorkerOutcome = Result<String, (String, bool, VsixFailureKind)>;
 
 /// Maximum number of HTTP redirects followed while validating every hop.
 const MAX_REDIRECT_HOPS: usize = 10;
@@ -36,7 +39,7 @@ const MAX_VSIX_BYTES: u64 = 256 * 1024 * 1024;
 
 static STAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Resolved VSIX lock entry sourced from `catalog/extension-pins.json` or 4-tier `vsp.lock.json`.
+/// Resolved VSIX lock entry sourced from `vsp.lock.json` or `catalog/extension-pins.json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockPinEntry {
     /// Lowercase extension identifier (`publisher.name`).
@@ -52,6 +55,8 @@ pub struct LockPinEntry {
     /// Lock tier from `vsp.lock.json` (`1` = hash-locked, `2` = version-locked). `None` for
     /// entries from a flat pin manifest.
     pub tier: Option<u8>,
+    /// `true` when the lockfile entry is marked `status: "pending_refresh"`.
+    pub status_pending: bool,
 }
 
 impl LockPinEntry {
@@ -63,55 +68,21 @@ impl LockPinEntry {
     }
 }
 
-/// Optional 4-tier `vsp.lock.json` document shape supporting v2.2 lockfiles and legacy layouts.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VspLockFile {
-    #[serde(default)]
-    pin_required: bool,
-    #[serde(default)]
-    pins: BTreeMap<String, LockPinRecord>,
-    #[serde(default)]
-    extensions: BTreeMap<String, LockPinRecord>,
-    #[serde(default)]
-    tier2: Option<Tier2LockSection>,
+/// Returns `true` when `catalog` was loaded from the compile-time embedded snapshot rather
+/// than an explicit external `--catalog <DIR>`.
+#[must_use]
+pub fn catalog_is_embedded(catalog: &WorkspaceCatalog) -> bool {
+    catalog.root == Path::new(EMBEDDED_ROOT_LABEL)
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Tier2LockSection {
-    #[serde(default)]
-    pin_required: bool,
-    #[serde(default)]
-    pins: BTreeMap<String, LockPinRecord>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LockTargetRecord {
-    #[serde(default)]
-    sha256: Option<String>,
-    #[serde(default, alias = "vsix_url")]
-    vsix_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LockPinRecord {
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    sha256: Option<String>,
-    #[serde(default, alias = "vsix_url")]
-    vsix_url: Option<String>,
-    #[serde(default)]
-    tier: Option<u8>,
-    #[serde(default)]
-    universal: Option<bool>,
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    targets: BTreeMap<String, LockTargetRecord>,
+/// Returns the trimmed path from `ARTAGON_VSCODE_PINS_FILE` when set and non-empty.
+#[must_use]
+pub fn pins_file_override_path() -> Option<PathBuf> {
+    env::var("ARTAGON_VSCODE_PINS_FILE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
 }
 
 /// Returns the Marketplace/lockfile target platform key for the running host.
@@ -127,13 +98,54 @@ pub fn current_lock_platform() -> &'static str {
     }
 }
 
+/// Builds a shared `ureq::Agent` configured for VSIX artifact downloads with manual
+/// redirect handling (`max_redirects(0)`) so every hop is validated against the strict
+/// Marketplace host allowlist.
+#[must_use]
+pub fn build_vsix_http_agent(allow_test_urls: bool) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .https_only(!allow_test_urls)
+        .timeout_global(Some(Duration::from_secs(60)))
+        .build()
+        .into()
+}
+
+/// Builds a shared `ureq::Agent` for Visual Studio Marketplace JSON API queries.
+#[must_use]
+pub fn build_marketplace_http_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into()
+}
+
 /// Options controlling VSIX pin resolution and download verification.
 #[derive(Debug, Clone, Default)]
 pub struct VsixVerifyOptions {
-    /// Explicit `--allow-unlocked` bypass (prints stderr warning & records unverified state).
+    /// Explicit `--allow-unlocked` bypass (selectively relaxes `pending_refresh` / missing
+    /// target entries while still verifying pinned SHA-256 digests).
     pub allow_unlocked: bool,
     /// Override VSIX cache directory (defaults to `VSCODE_VSIX_CACHE_DIR` or `${XDG_CACHE_HOME:-~/.cache}/vsp/vsix`).
     pub cache_dir: Option<PathBuf>,
+}
+
+/// Machine-readable cause category for a [`VsixFailure`], enabling grouped refusal diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum VsixFailureKind {
+    /// Tier 1 lock entry is marked `pending_refresh` (not yet refreshed with a verified digest).
+    Tier1PendingRefresh,
+    /// Tier 1 lock entry has no verified VSIX digest for the running host platform.
+    Tier1MissingHostTarget,
+    /// `pinRequired=true` lock policy has no pin entry for the extension.
+    PinRequiredMissing,
+    /// Version lock string is not valid semver.
+    InvalidVersion,
+    /// Cryptographic or URL policy refusal (SHA-256 mismatch, off-host URL/redirect, bad ID).
+    VerificationRefusal,
+    /// Non-safety operational download or I/O failure.
+    Operational,
 }
 
 /// Failure detail for a single VSIX resolution/verification entry.
@@ -145,18 +157,26 @@ pub struct VsixFailure {
     pub message: String,
     /// `true` when the failure is a fail-closed security/policy refusal (exit `5`).
     pub is_safety_refusal: bool,
+    /// Structured cause category for grouped diagnostics.
+    pub kind: VsixFailureKind,
 }
 
 /// Result of resolving install targets for a list of extension IDs.
 #[derive(Debug, Clone)]
 pub struct ResolvedInstallTargets {
     /// Ordered `(extension_id, install_arg)` pairs where `install_arg` is either a verified
-    /// local `.vsix` path or an extension ID (when unpinned and permitted).
+    /// local `.vsix` path or an extension ID (or `id@version` for Tier 2).
     pub targets: Vec<(String, String)>,
     /// Extensions that failed pin lookup or VSIX verification.
     pub failures: Vec<VsixFailure>,
-    /// `true` if `--allow-unlocked` / `ARTAGON_VSCODE_ALLOW_UNLOCKED=1` bypassed pin checks.
+    /// `true` if `--allow-unlocked` / `ARTAGON_VSCODE_ALLOW_UNLOCKED=1` actually relaxed at
+    /// least one pending/missing lock entry or a missing/invalid pin manifest.
     pub unlocked_bypass: bool,
+    /// `true` when `ARTAGON_VSCODE_PINS_FILE` overrode `vsp.lock.json` for this resolution.
+    pub pins_file_override: bool,
+    /// Sorted unique Tier 2 extension IDs that lacked a verified version pin (`pending_refresh`
+    /// or `version == None`) and therefore resolved unpinned.
+    pub tier2_unpinned: Vec<String>,
 }
 
 /// Planned pin-repair operation for `--repair-pins`.
@@ -172,6 +192,19 @@ pub struct PinRepairItem {
     pub is_downgrade: bool,
     /// Lock entry backing the repair.
     pub pin: LockPinEntry,
+}
+
+/// Single version record returned by a Marketplace `extensionquery` response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketplaceVersionInfo {
+    /// Extension version string.
+    pub version: String,
+    /// Target platform (`None` or `Some("universal")` for universal VSIXs, or e.g. `darwin-arm64`).
+    pub target_platform: Option<String>,
+    /// Marketplace `VSIXPackage` download URL, if present.
+    pub vsix_url: Option<String>,
+    /// `true` when `Microsoft.VisualStudio.Code.PreRelease == "true"`.
+    pub is_prerelease: bool,
 }
 
 /// Resolves the XDG VSIX cache directory (`VSCODE_VSIX_CACHE_DIR` or `${XDG_CACHE_HOME:-~/.cache}/vsp/vsix`).
@@ -224,10 +257,61 @@ pub fn validate_vsix_url(url: &str, allow_test_urls: bool) -> VspResult<()> {
         .map_err(|reason| VspError::SafetyRefusal(format!("vsix: {reason}")))
 }
 
-/// Resolves a VSIX lock index combining `catalog/extension-pins.json` and optional `vsp.lock.json`.
+/// Unified fail-closed loader for the 4-tier `vsp.lock.json` lockfile shared by `vsix.rs`,
+/// `doctor.rs`, and `dev_ops.rs`.
 ///
-/// Fails closed with [`VspError::SafetyRefusal`] (exit `5`) when the pins manifest is missing
-/// or invalid and `allow_unlocked` is `false`.
+/// - For embedded catalogs, returns the already-parsed [`WorkspaceCatalog::lockfile`] directly
+///   without re-parsing JSON.
+/// - For external catalog directories, reads and strictly parses `<root>/vsp.lock.json` when
+///   present on disk (failing closed with [`VspError::SafetyRefusal`] on unreadable or malformed
+///   JSON, never silently returning empty), falling back to `catalog.lockfile` if no file exists
+///   at `<root>/vsp.lock.json`.
+///
+/// # Errors
+///
+/// Returns [`VspError::SafetyRefusal`] (exit `5`) if `vsp.lock.json` exists but is unreadable
+/// or malformed.
+pub fn load_lockfile_strict(catalog: &WorkspaceCatalog) -> VspResult<Option<LockfileManifest>> {
+    if catalog_is_embedded(catalog) {
+        if let Some(lockfile) = &catalog.lockfile {
+            return Ok(Some(lockfile.clone()));
+        }
+        if let Some((_, bytes)) = embedded_snapshot_files()
+            .iter()
+            .find(|(p, _)| *p == "vsp.lock.json")
+        {
+            let doc = parse_lockfile_bytes(bytes, "<embedded>/vsp.lock.json")?;
+            return Ok(Some(doc));
+        }
+        return Ok(None);
+    }
+
+    let lock_path = catalog.root.join("vsp.lock.json");
+    if lock_path.is_file() {
+        let bytes = fs::read(&lock_path).map_err(|err| {
+            VspError::SafetyRefusal(format!(
+                "vsix: unreadable vsp.lock.json {}: {err}",
+                lock_path.display()
+            ))
+        })?;
+        let doc = parse_lockfile_bytes(&bytes, &lock_path.display().to_string())?;
+        return Ok(Some(doc));
+    }
+
+    Ok(catalog.lockfile.clone())
+}
+
+fn parse_lockfile_bytes(raw_bytes: &[u8], label: &str) -> VspResult<LockfileManifest> {
+    serde_json::from_slice::<LockfileManifest>(raw_bytes).map_err(|err| {
+        VspError::SafetyRefusal(format!("vsix: malformed vsp.lock.json {label}: {err}"))
+    })
+}
+
+/// Resolves a VSIX lock index combining `vsp.lock.json` and `catalog/extension-pins.json`
+/// (or an explicit `ARTAGON_VSCODE_PINS_FILE` override).
+///
+/// Fails closed with [`VspError::SafetyRefusal`] (exit `5`) when the pins manifest or lockfile
+/// is missing or invalid and `allow_unlocked` is `false`.
 ///
 /// # Errors
 ///
@@ -237,112 +321,90 @@ pub fn load_combined_pin_index(
     catalog: &WorkspaceCatalog,
     allow_unlocked: bool,
 ) -> VspResult<(BTreeMap<String, LockPinEntry>, bool, bool)> {
+    load_combined_pin_index_internal(catalog, allow_unlocked, true)
+}
+
+fn load_combined_pin_index_internal(
+    catalog: &WorkspaceCatalog,
+    allow_unlocked: bool,
+    emit_override_warning: bool,
+) -> VspResult<(BTreeMap<String, LockPinEntry>, bool, bool)> {
     let bypass = unlocked_bypass_active(allow_unlocked);
     let mut entries: BTreeMap<String, LockPinEntry> = BTreeMap::new();
     let mut pin_required = false;
-    let pins_env_override = env::var("ARTAGON_VSCODE_PINS_FILE")
-        .ok()
-        .is_some_and(|s| !s.trim().is_empty());
+    let override_path = pins_file_override_path();
 
     // 1. Authoritative 4-tier `vsp.lock.json` entries (unless explicitly overridden by ARTAGON_VSCODE_PINS_FILE).
-    let lock_bytes: Option<(String, Vec<u8>)> = if pins_env_override {
-        None
-    } else if catalog.root == Path::new(EMBEDDED_ROOT_LABEL) {
-        embedded_snapshot_files()
-            .iter()
-            .find(|(p, _)| *p == "vsp.lock.json")
-            .map(|(_, b)| ("<embedded>/vsp.lock.json".to_string(), b.to_vec()))
-    } else {
-        let lock_path = catalog.root.join("vsp.lock.json");
-        if lock_path.is_file() {
-            let bytes = fs::read(&lock_path).map_err(|err| {
-                VspError::SafetyRefusal(format!(
-                    "vsix: unreadable vsp.lock.json {}: {err}",
-                    lock_path.display()
-                ))
-            })?;
-            Some((lock_path.display().to_string(), bytes))
-        } else {
-            None
+    if let Some(ref path) = override_path {
+        if emit_override_warning {
+            eprintln!(
+                "vsix: WARNING: ARTAGON_VSCODE_PINS_FILE={} overrides catalog vsp.lock.json; supply-chain lock verification is overridden",
+                path.display()
+            );
         }
-    };
-
-    if let Some((lock_label, raw_bytes)) = lock_bytes {
-        let lock_doc: VspLockFile = serde_json::from_slice(&raw_bytes).map_err(|err| {
-            VspError::SafetyRefusal(format!("vsix: malformed vsp.lock.json {lock_label}: {err}"))
-        })?;
-        if lock_doc.pin_required || lock_doc.tier2.as_ref().is_some_and(|t2| t2.pin_required) {
+    } else if let Some(lock_doc) = load_lockfile_strict(catalog)? {
+        if lock_doc.pin_required {
             pin_required = true;
         }
         let host_platform = current_lock_platform();
         // Tier 1 and Tier 2 records always stay in the index, also when they are
         // `pending_refresh` or have no digest for this platform. Such a record has an empty
-        // digest, and `resolve_and_verify_batch` fails closed on it for Tier 1.
-        let mut insert_lock_map = |map: &BTreeMap<String, LockPinRecord>,
-                                   section_tier: Option<u8>| {
-            for (k, rec) in map {
-                let tier = rec.tier.or(section_tier);
-                let pending = rec.status.as_deref() == Some("pending_refresh");
-                let native_only = rec.universal == Some(false);
-                let (sha, url) = if pending {
-                    ("", "")
-                } else if native_only {
-                    // Platform-specific record (`universal: false`): require a matching
-                    // host-platform target; never fall back to `"universal"` or flat
-                    // top-level `sha256`/`vsixUrl`.
-                    let target = (host_platform != "universal")
-                        .then(|| rec.targets.get(host_platform))
-                        .flatten();
-                    (
-                        target.and_then(|t| t.sha256.as_deref()).unwrap_or(""),
-                        target.and_then(|t| t.vsix_url.as_deref()).unwrap_or(""),
-                    )
-                } else {
-                    let platform_target = rec
-                        .targets
-                        .get(host_platform)
-                        .or_else(|| rec.targets.get("universal"));
-                    (
-                        platform_target
-                            .and_then(|t| t.sha256.as_deref())
-                            .or(rec.sha256.as_deref())
-                            .unwrap_or(""),
-                        platform_target
-                            .and_then(|t| t.vsix_url.as_deref())
-                            .or(rec.vsix_url.as_deref())
-                            .unwrap_or(""),
-                    )
-                };
-                let keep = match tier {
-                    Some(1 | 2) => true,
-                    Some(_) => false,
-                    None => !sha.is_empty() || !url.is_empty(),
-                };
-                if !keep {
-                    continue;
-                }
-                let lc = k.to_ascii_lowercase();
-                entries.insert(
-                    lc.clone(),
-                    LockPinEntry {
-                        id: lc,
-                        version: rec.version.clone().unwrap_or_default(),
-                        sha256: sha.to_ascii_lowercase(),
-                        vsix_url: url.to_string(),
-                        required: tier == Some(1) || pin_required,
-                        tier,
-                    },
-                );
+        // digest, and `resolve_and_verify_batch` fails closed on it for Tier 1 (or warns and
+        // records provenance for Tier 2).
+        for (k, rec) in &lock_doc.extensions {
+            let tier = Some(rec.tier);
+            let pending = rec.status == Some(LockEntryStatus::PendingRefresh);
+            let native_only = rec.universal == Some(false);
+            let (sha, url) = if pending {
+                ("", "")
+            } else if native_only {
+                // Platform-specific record (`universal: false`): require a matching
+                // host-platform target; never fall back to `"universal"` or flat
+                // top-level `sha256`/`vsixUrl`.
+                let target = (host_platform != "universal")
+                    .then(|| rec.targets.get(host_platform))
+                    .flatten();
+                (
+                    target.map_or("", |t| t.sha256.as_str()),
+                    target.map_or("", |t| t.vsix_url.as_str()),
+                )
+            } else {
+                let platform_target = rec
+                    .targets
+                    .get(host_platform)
+                    .or_else(|| rec.targets.get("universal"));
+                (
+                    platform_target
+                        .map(|t| t.sha256.as_str())
+                        .or(rec.sha256.as_deref())
+                        .unwrap_or(""),
+                    platform_target
+                        .map(|t| t.vsix_url.as_str())
+                        .or(rec.vsix_url.as_deref())
+                        .unwrap_or(""),
+                )
+            };
+            let keep = matches!(rec.tier, 1 | 2);
+            if !keep {
+                continue;
             }
-        };
-        insert_lock_map(&lock_doc.pins, None);
-        insert_lock_map(&lock_doc.extensions, None);
-        if let Some(t2) = &lock_doc.tier2 {
-            insert_lock_map(&t2.pins, Some(2));
+            let lc = k.to_ascii_lowercase();
+            entries.insert(
+                lc.clone(),
+                LockPinEntry {
+                    id: lc,
+                    version: rec.version.clone().unwrap_or_default(),
+                    sha256: sha.to_ascii_lowercase(),
+                    vsix_url: url.to_string(),
+                    required: rec.tier == 1 || pin_required,
+                    tier,
+                    status_pending: pending,
+                },
+            );
         }
     }
 
-    // 2. Mapped pins (`vsp.lock.json` / `catalog/extension-pins.json` / `ARTAGON_VSCODE_PINS_FILE`).
+    // 2. Mapped pins (`catalog/extension-pins.json` / `ARTAGON_VSCODE_PINS_FILE`).
     match &catalog.pins {
         PinsLoadState::Loaded(manifest) => {
             if manifest.pin_required {
@@ -357,6 +419,7 @@ pub fn load_combined_pin_index(
                     vsix_url: pin.vsix_url.clone(),
                     required: manifest.pin_required,
                     tier: None,
+                    status_pending: false,
                 });
             }
             Ok((entries, pin_required, false))
@@ -395,13 +458,123 @@ pub fn load_combined_pin_index(
     }
 }
 
+/// Formats a grouped, multi-line, audience-aware VSIX refusal diagnostic.
+///
+/// Groups failures by cause (one extension ID per line) and appends a single actionable
+/// remedy tailored to whether the user is running the embedded release catalog or an
+/// external `--catalog <DIR>`.
+#[must_use]
+pub fn format_vsix_refusal_summary(
+    catalog: &WorkspaceCatalog,
+    target_label: &str,
+    failures: &[VsixFailure],
+) -> String {
+    let host_platform = current_lock_platform();
+    let mut pending_t1: Vec<&str> = Vec::new();
+    let mut missing_target_t1: Vec<&str> = Vec::new();
+    let mut missing_required: Vec<&str> = Vec::new();
+    let mut other_safety: Vec<(&str, &str)> = Vec::new();
+    let mut operational: Vec<(&str, &str)> = Vec::new();
+
+    for f in failures {
+        match f.kind {
+            VsixFailureKind::Tier1PendingRefresh => pending_t1.push(f.id.as_str()),
+            VsixFailureKind::Tier1MissingHostTarget => missing_target_t1.push(f.id.as_str()),
+            VsixFailureKind::PinRequiredMissing => missing_required.push(f.id.as_str()),
+            VsixFailureKind::InvalidVersion | VsixFailureKind::VerificationRefusal => {
+                other_safety.push((f.id.as_str(), f.message.as_str()));
+            }
+            VsixFailureKind::Operational => {
+                operational.push((f.id.as_str(), f.message.as_str()));
+            }
+        }
+    }
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "profile '{target_label}': VSIX verification refused {} extension(s) before any write:",
+        failures.len()
+    );
+
+    if !pending_t1.is_empty() {
+        let _ = writeln!(
+            out,
+            "  Tier 1 hash lock pending_refresh ({}):",
+            pending_t1.len()
+        );
+        for id in &pending_t1 {
+            let _ = writeln!(out, "    - {id}");
+        }
+    }
+    if !missing_target_t1.is_empty() {
+        let _ = writeln!(
+            out,
+            "  Tier 1 hash lock missing target for '{host_platform}' ({}):",
+            missing_target_t1.len()
+        );
+        for id in &missing_target_t1 {
+            let _ = writeln!(out, "    - {id}");
+        }
+    }
+    if !missing_required.is_empty() {
+        let _ = writeln!(
+            out,
+            "  pinRequired=true missing lock entry ({}):",
+            missing_required.len()
+        );
+        for id in &missing_required {
+            let _ = writeln!(out, "    - {id}");
+        }
+    }
+    if !other_safety.is_empty() {
+        let _ = writeln!(
+            out,
+            "  VSIX integrity / policy refusal ({}):",
+            other_safety.len()
+        );
+        for (id, msg) in &other_safety {
+            let _ = writeln!(out, "    - {id}: {msg}");
+        }
+    }
+    if !operational.is_empty() {
+        let _ = writeln!(out, "  VSIX download error ({}):", operational.len());
+        for (id, msg) in &operational {
+            let _ = writeln!(out, "    - {id}: {msg}");
+        }
+    }
+
+    let has_pending_or_missing =
+        !pending_t1.is_empty() || !missing_target_t1.is_empty() || !missing_required.is_empty();
+    let remedy = if has_pending_or_missing {
+        if catalog_is_embedded(catalog) {
+            "This release ships unverified Tier 1 lock entries; pass `--allow-unlocked` to allow pending entries while still verifying pinned SHA-256 digests, or upgrade `vsp`.".to_string()
+        } else {
+            let dir = catalog.root.display();
+            format!(
+                "Run `vsp --catalog {dir} dev pins --refresh` and retry with `--catalog {dir}`."
+            )
+        }
+    } else if !other_safety.is_empty() {
+        "Verify catalog lockfile digests and Marketplace URLs before retrying; `--allow-unlocked` does not bypass verified SHA-256 or URL checks.".to_string()
+    } else {
+        "Check network connectivity and retry `vsp sync`.".to_string()
+    };
+
+    let _ = write!(out, "  Remedy: {remedy}");
+    out
+}
+
 /// Downloads (or reuses from XDG cache) and SHA-256 verifies a single VSIX package,
 /// returning the verified path inside `cache_dir`.
 ///
 /// Performs:
 /// 1. Strict extension ID & SHA-256 format validation.
-/// 2. Zero-TOCTOU cache lookup: copies cached file into a private `0600` staging file
-///    BEFORE hashing, evicting corrupt cache entries automatically.
+/// 2. Direct streaming cache-hit verification: verifies SHA-256 directly from the open
+///    read-only `File` handle inside the private `0700` XDG cache directory (avoiding
+///    256 MiB staging copies on cache hits) and automatically evicts corrupt entries.
+///    (Note: cache integrity assumes the same-UID XDG cache directory is trusted; a process
+///    running as the same user already controls `$XDG_CACHE_HOME`.)
 /// 3. Per-hop HTTPS + Marketplace host allowlist validation across every 3xx redirect
 ///    (manual redirect loop with `ureq` `max_redirects(0)`).
 /// 4. Streaming download to a private `0600` staging file while hashing with `Sha256`.
@@ -416,6 +589,22 @@ pub fn fetch_and_verify_vsix(
     pin: &LockPinEntry,
     cache_dir: &Path,
     allow_test_urls: bool,
+) -> VspResult<PathBuf> {
+    let agent = build_vsix_http_agent(allow_test_urls);
+    fetch_and_verify_vsix_with_agent(pin, cache_dir, allow_test_urls, &agent)
+}
+
+/// Same as [`fetch_and_verify_vsix`], reusing a caller-supplied [`ureq::Agent`] to share
+/// TCP/TLS connections across a batch of downloads.
+///
+/// # Errors
+///
+/// Same as [`fetch_and_verify_vsix`].
+pub fn fetch_and_verify_vsix_with_agent(
+    pin: &LockPinEntry,
+    cache_dir: &Path,
+    allow_test_urls: bool,
+    agent: &ureq::Agent,
 ) -> VspResult<PathBuf> {
     let id_lc = pin.id.to_ascii_lowercase();
     if !is_valid_extension_id_syntax(&id_lc) {
@@ -433,47 +622,28 @@ pub fn fetch_and_verify_vsix(
     }
     validate_vsix_url(&pin.vsix_url, allow_test_urls)?;
 
-    if cache_dir.is_symlink() {
-        return Err(VspError::SafetyRefusal(format!(
-            "vsix: refusing to use symlink cache directory: {}",
-            cache_dir.display()
-        )));
-    }
-    fs::create_dir_all(cache_dir).map_err(|err| {
-        VspError::Operational(format!(
-            "vsix: failed to create cache dir {}: {err}",
-            cache_dir.display()
-        ))
-    })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(cache_dir, fs::Permissions::from_mode(0o700));
-    }
+    ensure_private_cache_dir(cache_dir)?;
 
     let final_cache_path = cache_dir.join(format!("{id_lc}-{expected}.vsix"));
 
-    // Zero-TOCTOU cache hit verification: copy cached bytes into private staging file FIRST,
-    // then hash the private copy before accepting.
-    if final_cache_path.is_file() && !final_cache_path.is_symlink() {
-        let stage = make_staging_path(cache_dir, "cache");
-        let verify_res = (|| -> io::Result<String> {
-            let mut src = File::open(&final_cache_path)?;
-            let mut dst = create_private_file(&stage)?;
-            let digest = copy_and_sha256(&mut src, &mut dst, MAX_VSIX_BYTES)?;
-            dst.sync_all()?;
-            Ok(digest)
-        })();
-        match verify_res {
-            Ok(actual) if actual == expected => {
-                // Atomically publish verified private copy back to cache path.
-                let _ = fs::rename(&stage, &final_cache_path);
-                let _ = fs::remove_file(&stage);
-                return Ok(final_cache_path);
-            }
-            _ => {
-                let _ = fs::remove_file(&stage);
-                if final_cache_path.is_file() && !final_cache_path.is_symlink() {
+    // Direct streaming cache-hit SHA-256 verification on the open read-only file handle
+    // (avoids staging copy + fsync + rename back over itself on cache hits).
+    if let Ok(sym_meta) = fs::symlink_metadata(&final_cache_path) {
+        if sym_meta.file_type().is_file() {
+            let verify_res = File::open(&final_cache_path).and_then(|mut src| {
+                if !src.metadata()?.is_file() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "cache entry is not a regular file",
+                    ));
+                }
+                hash_reader_sha256(&mut src, MAX_VSIX_BYTES)
+            });
+            match verify_res {
+                Ok(actual) if actual == expected => {
+                    return Ok(final_cache_path);
+                }
+                _ => {
                     let _ = fs::remove_file(&final_cache_path);
                 }
             }
@@ -482,8 +652,14 @@ pub fn fetch_and_verify_vsix(
 
     // Stream download into a private 0600 staging file while validating every redirect hop.
     let stage = make_staging_path(cache_dir, "dl");
-    let download_result =
-        stream_verified_download(&pin.vsix_url, &expected, &stage, allow_test_urls, &pin.id);
+    let download_result = stream_verified_download(
+        agent,
+        &pin.vsix_url,
+        &expected,
+        &stage,
+        allow_test_urls,
+        &pin.id,
+    );
     if let Err(err) = download_result {
         let _ = fs::remove_file(&stage);
         return Err(err);
@@ -509,13 +685,54 @@ pub fn fetch_and_verify_vsix(
     Ok(final_cache_path)
 }
 
+fn ensure_private_cache_dir(cache_dir: &Path) -> VspResult<()> {
+    if cache_dir.is_symlink() {
+        return Err(VspError::SafetyRefusal(format!(
+            "vsix: refusing to use symlink cache directory: {}",
+            cache_dir.display()
+        )));
+    }
+    fs::create_dir_all(cache_dir).map_err(|err| {
+        VspError::Operational(format!(
+            "vsix: failed to create cache dir {}: {err}",
+            cache_dir.display()
+        ))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(cache_dir, fs::Permissions::from_mode(0o700));
+    }
+    Ok(())
+}
+
 fn stream_verified_download(
+    agent: &ureq::Agent,
     initial_url: &str,
     expected_sha256: &str,
     stage_path: &Path,
     allow_test_urls: bool,
     ext_id: &str,
 ) -> VspResult<()> {
+    let (actual, final_url) =
+        download_to_stage_file(agent, initial_url, stage_path, allow_test_urls, ext_id)?;
+    if actual != expected_sha256 {
+        return Err(VspError::SafetyRefusal(format!(
+            "vsix: sha256 mismatch for '{ext_id}' (expected {expected_sha256}, got {actual}, url {final_url})"
+        )));
+    }
+    Ok(())
+}
+
+/// Downloads `initial_url` (validating every redirect hop) into `stage_path` (mode `0600`)
+/// and returns `(sha256_hex, final_url)`.
+fn download_to_stage_file(
+    agent: &ureq::Agent,
+    initial_url: &str,
+    stage_path: &Path,
+    allow_test_urls: bool,
+    ext_id: &str,
+) -> VspResult<(String, String)> {
     if allow_test_urls {
         if let Some(file_path) = initial_url.strip_prefix("file://") {
             let mut src = File::open(file_path).map_err(|err| {
@@ -535,22 +752,9 @@ fn stream_verified_download(
             dst.sync_all().map_err(|err| {
                 VspError::Operational(format!("vsix: sync error for '{ext_id}': {err}"))
             })?;
-            if actual != expected_sha256 {
-                return Err(VspError::SafetyRefusal(format!(
-                    "vsix: sha256 mismatch for '{ext_id}' (expected {expected_sha256}, got {actual})"
-                )));
-            }
-            return Ok(());
+            return Ok((actual, initial_url.to_string()));
         }
     }
-
-    let config = ureq::Agent::config_builder()
-        .max_redirects(0)
-        .http_status_as_error(false)
-        .https_only(!allow_test_urls)
-        .timeout_global(Some(Duration::from_secs(60)))
-        .build();
-    let agent: ureq::Agent = config.into();
 
     let mut current_url = initial_url.to_string();
     for hop in 0..=MAX_REDIRECT_HOPS {
@@ -604,12 +808,7 @@ fn stream_verified_download(
         dst.sync_all().map_err(|err| {
             VspError::Operational(format!("vsix: failed syncing staging file: {err}"))
         })?;
-        if actual != expected_sha256 {
-            return Err(VspError::SafetyRefusal(format!(
-                "vsix: sha256 mismatch for '{ext_id}' (expected {expected_sha256}, got {actual}, url {current_url})"
-            )));
-        }
-        return Ok(());
+        return Ok((actual, current_url));
     }
 
     Err(VspError::SafetyRefusal(format!(
@@ -634,58 +833,75 @@ fn resolve_redirect_url(base: &str, location: &str) -> VspResult<String> {
 }
 
 /// Resolves and verifies a batch of extension IDs concurrently across at most
-/// [`MAX_VSIX_WORKERS`] (`4`) bounded worker threads.
+/// [`MAX_VSIX_WORKERS`] (`4`) bounded worker threads using a single shared [`ureq::Agent`].
+///
+/// - **Selective `--allow-unlocked`:** When `opts.allow_unlocked` (or env bypass) is `true`,
+///   every Tier 1 pin that HAS a verified digest/URL for the host platform is STILL downloaded
+///   and SHA-256 verified. Only `pending_refresh` / missing host-target / missing `pinRequired`
+///   entries are relaxed (with a stderr warning and `unlocked_bypass = true`).
+/// - **Tier 2 auditability:** Tier 2 entries without a verified version (`pending_refresh` or
+///   `version == None`) emit a stderr `WARN` and are recorded in
+///   [`ResolvedInstallTargets::tier2_unpinned`].
 ///
 /// Preserves the exact input ordering of `ext_ids` in the returned [`ResolvedInstallTargets`].
 ///
 /// # Errors
 ///
-/// Returns [`VspError::SafetyRefusal`] (exit `5`) if the pins manifest itself is missing or
-/// invalid and `--allow-unlocked` is not enabled.
+/// Returns [`VspError::SafetyRefusal`] (exit `5`) if the lockfile or pins manifest itself is
+/// missing or invalid and `--allow-unlocked` is not enabled.
 pub fn resolve_and_verify_batch(
     catalog: &WorkspaceCatalog,
     ext_ids: &[String],
     opts: &VsixVerifyOptions,
 ) -> VspResult<ResolvedInstallTargets> {
     let bypass = unlocked_bypass_active(opts.allow_unlocked);
+    let pins_file_override = pins_file_override_path().is_some();
     let (pin_index, pin_required, manifest_bypassed) =
-        load_combined_pin_index(catalog, opts.allow_unlocked)?;
+        load_combined_pin_index_internal(catalog, opts.allow_unlocked, true)?;
     let mut unlocked_bypass = manifest_bypassed;
-
-    if bypass {
-        if !manifest_bypassed {
-            eprintln!("vsix: WARNING: bypassing VSIX pin verification (--allow-unlocked)");
-        }
-        unlocked_bypass = true;
-        return Ok(ResolvedInstallTargets {
-            targets: ext_ids.iter().map(|id| (id.clone(), id.clone())).collect(),
-            failures: Vec::new(),
-            unlocked_bypass,
-        });
-    }
 
     let cache_dir = resolve_vsix_cache_dir(opts.cache_dir.as_deref());
     let allow_test = allow_test_pin_urls();
 
-    // Partition into jobs (pinned downloads) vs pass-through or missing-required errors.
+    // Partition into jobs (verified hash-locked downloads), Tier 2 version pins, relaxed entries,
+    // or fail-closed refusal slots.
     let mut slots: Vec<Option<WorkerOutcome>> = vec![None; ext_ids.len()];
     let mut jobs: VecDeque<(usize, LockPinEntry)> = VecDeque::new();
+    let mut relaxed_ids: Vec<String> = Vec::new();
+    let mut tier2_unpinned: Vec<String> = Vec::new();
 
     let host_platform = current_lock_platform();
     for (idx, id) in ext_ids.iter().enumerate() {
         let lc = id.to_ascii_lowercase();
         match pin_index.get(&lc) {
-            // Hash-locked: download and verify the VSIX.
+            // Hash-locked with a verified artifact: ALWAYS download & verify SHA-256,
+            // even when `--allow-unlocked` is active!
             Some(pin) if pin.has_verified_artifact() => jobs.push_back((idx, pin.clone())),
             // Tier 1 without a verified digest (`pending_refresh`, or no target for this
-            // platform and no universal target): fail closed. Never install unverified.
+            // platform and no universal target): fail closed unless `--allow-unlocked`
+            // selectively relaxes this pending/missing-target entry.
             Some(pin) if pin.tier == Some(1) => {
-                slots[idx] = Some(Err((
-                    format!(
-                        "Tier 1 hash lock for '{id}' has no verified VSIX digest for platform '{host_platform}' (pending_refresh or missing target); run 'vsp dev pins --refresh' or pass --allow-unlocked"
-                    ),
-                    true,
-                )));
+                if bypass {
+                    unlocked_bypass = true;
+                    relaxed_ids.push(id.clone());
+                    slots[idx] = Some(Ok(id.clone()));
+                } else {
+                    let kind = if pin.status_pending {
+                        VsixFailureKind::Tier1PendingRefresh
+                    } else {
+                        VsixFailureKind::Tier1MissingHostTarget
+                    };
+                    let detail = if pin.status_pending {
+                        format!(
+                            "Tier 1 hash lock for '{id}' is pending_refresh (no verified VSIX digest yet)"
+                        )
+                    } else {
+                        format!(
+                            "Tier 1 hash lock for '{id}' has no verified VSIX digest for platform '{host_platform}'"
+                        )
+                    };
+                    slots[idx] = Some(Err((detail, true, kind)));
+                }
             }
             // Tier 2 with a recorded version: install exactly that version.
             Some(pin) if !pin.version.is_empty() => {
@@ -698,23 +914,65 @@ pub fn resolve_and_verify_batch(
                             pin.version
                         ),
                         true,
+                        VsixFailureKind::InvalidVersion,
                     ))
                 });
             }
+            // Tier 2 without a verified version (`pending_refresh` / `version == None`):
+            // warn loudly and record in `tier2_unpinned` for provenance & `vsp doctor`.
+            Some(pin) if pin.tier == Some(2) => {
+                tier2_unpinned.push(lc);
+                slots[idx] = Some(Ok(id.clone()));
+            }
             _ if pin_required => {
-                slots[idx] = Some(Err((
-                    format!("pinRequired=true but no VSIX pin exists for '{id}'"),
-                    true,
-                )));
+                if bypass {
+                    unlocked_bypass = true;
+                    relaxed_ids.push(id.clone());
+                    slots[idx] = Some(Ok(id.clone()));
+                } else {
+                    slots[idx] = Some(Err((
+                        format!("pinRequired=true but no VSIX pin exists for '{id}'"),
+                        true,
+                        VsixFailureKind::PinRequiredMissing,
+                    )));
+                }
             }
             _ => slots[idx] = Some(Ok(id.clone())),
         }
     }
 
-    if !jobs.is_empty() {
+    if !relaxed_ids.is_empty() {
+        eprintln!(
+            "vsix: WARNING: --allow-unlocked relaxed {} unverified/missing lock entry(ies) (pinned SHA-256 digests are still enforced): {}",
+            relaxed_ids.len(),
+            relaxed_ids.join(", ")
+        );
+    }
+
+    tier2_unpinned.sort();
+    tier2_unpinned.dedup();
+    if !tier2_unpinned.is_empty() {
+        eprintln!(
+            "vsix: WARN: {} Tier 2 extension(s) have no verified version pin (pending_refresh) and will install unpinned: {}",
+            tier2_unpinned.len(),
+            tier2_unpinned.join(", ")
+        );
+    }
+
+    // Fail-fast before spawning network downloads: if any pre-download lock check already
+    // failed closed with a safety refusal (e.g., pending_refresh Tier 1 pin, missing host
+    // platform target, or invalid semver), do not download other VSIXs over the network only
+    // to discard them on exit 5.
+    let has_pre_download_safety_refusal = slots
+        .iter()
+        .any(|slot| matches!(slot, Some(Err((_, true, _)))));
+
+    if !jobs.is_empty() && !has_pre_download_safety_refusal {
         let worker_count = jobs.len().min(MAX_VSIX_WORKERS);
         let queue = Mutex::new(jobs);
         let results: Mutex<Vec<(usize, WorkerOutcome)>> = Mutex::new(Vec::new());
+        // Build ONE shared HTTP agent so all worker threads reuse TCP/TLS sessions.
+        let agent = build_vsix_http_agent(allow_test);
 
         // A poisoned lock means that another worker panicked. The queue and the result list
         // are still valid, so the other workers continue. A job without a result is
@@ -722,20 +980,32 @@ pub fn resolve_and_verify_batch(
         thread::scope(|scope| {
             let workers: Vec<_> = (0..worker_count)
                 .map(|_| {
-                    scope.spawn(|| loop {
-                        let next = queue
+                    let agent_ref = &agent;
+                    let cache_ref = &cache_dir;
+                    let queue_ref = &queue;
+                    let results_ref = &results;
+                    scope.spawn(move || loop {
+                        let next = queue_ref
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
                             .pop_front();
                         let Some((idx, pin)) = next else {
                             break;
                         };
-                        let outcome = fetch_and_verify_vsix(&pin, &cache_dir, allow_test)
-                            .map(|path| path.display().to_string())
-                            .map_err(|err| {
-                                (err.to_string(), matches!(err, VspError::SafetyRefusal(_)))
-                            });
-                        results
+                        let outcome = fetch_and_verify_vsix_with_agent(
+                            &pin, cache_ref, allow_test, agent_ref,
+                        )
+                        .map(|path| path.display().to_string())
+                        .map_err(|err| {
+                            let is_safety = matches!(err, VspError::SafetyRefusal(_));
+                            let kind = if is_safety {
+                                VsixFailureKind::VerificationRefusal
+                            } else {
+                                VsixFailureKind::Operational
+                            };
+                            (err.to_string(), is_safety, kind)
+                        });
+                        results_ref
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
                             .push((idx, outcome));
@@ -760,15 +1030,20 @@ pub fn resolve_and_verify_batch(
     for (idx, id) in ext_ids.iter().enumerate() {
         match slots[idx].take() {
             Some(Ok(arg)) => targets.push((id.clone(), arg)),
-            Some(Err((msg, is_safety))) => failures.push(VsixFailure {
+            Some(Err((msg, is_safety, kind))) => failures.push(VsixFailure {
                 id: id.clone(),
                 message: msg,
                 is_safety_refusal: is_safety,
+                kind,
             }),
+            None if has_pre_download_safety_refusal => {
+                // Intentionally skipped downloading because batch already failed closed.
+            }
             None => failures.push(VsixFailure {
                 id: id.clone(),
                 message: "internal VSIX worker missing result".to_string(),
                 is_safety_refusal: false,
+                kind: VsixFailureKind::Operational,
             }),
         }
     }
@@ -777,6 +1052,8 @@ pub fn resolve_and_verify_batch(
         targets,
         failures,
         unlocked_bypass,
+        pins_file_override,
+        tier2_unpinned,
     })
 }
 
@@ -792,7 +1069,7 @@ pub fn compute_pin_repairs(
     installed: &[InstalledExtension],
     allow_unlocked: bool,
 ) -> VspResult<Vec<PinRepairItem>> {
-    let (pin_index, _, _) = load_combined_pin_index(catalog, allow_unlocked)?;
+    let (pin_index, _, _) = load_combined_pin_index_internal(catalog, allow_unlocked, false)?;
     let mut repairs = Vec::new();
 
     for ext in installed {
@@ -901,7 +1178,7 @@ pub fn confirm_pin_downgrades_with_io(
 }
 
 /// Stages and SHA-256 verifies all VSIX packages required for `repairs` BEFORE any replacement
-/// call to `code`.
+/// call to `code`, reusing one shared [`ureq::Agent`].
 ///
 /// # Errors
 ///
@@ -912,9 +1189,10 @@ pub fn stage_pin_repairs(
     cache_dir: &Path,
 ) -> VspResult<Vec<(PinRepairItem, PathBuf)>> {
     let allow_test = allow_test_pin_urls();
+    let agent = build_vsix_http_agent(allow_test);
     let mut staged = Vec::with_capacity(repairs.len());
     for item in repairs {
-        let path = fetch_and_verify_vsix(&item.pin, cache_dir, allow_test)?;
+        let path = fetch_and_verify_vsix_with_agent(&item.pin, cache_dir, allow_test, &agent)?;
         staged.push((item.clone(), path));
     }
     Ok(staged)
@@ -938,8 +1216,9 @@ pub fn is_semver_downgrade(installed_ver: &str, target_ver: &str) -> bool {
 /// Returns `true` when each ID in `managed_ids` has a hash-locked entry with a verified
 /// artifact and its installed version equals the locked version.
 ///
-/// `vsp sync --repair-pins` uses this to decide whether a recorded unlocked bypass is
-/// cleared: only a full re-verification of the managed set clears it.
+/// `vsp sync --repair-pins` uses this to decide whether a recorded unlocked bypass (or
+/// `ARTAGON_VSCODE_PINS_FILE` override) is cleared: only a full re-verification of the managed
+/// set clears it.
 ///
 /// # Errors
 ///
@@ -949,7 +1228,7 @@ pub fn managed_extensions_fully_pinned(
     installed: &[InstalledExtension],
     managed_ids: &[String],
 ) -> VspResult<bool> {
-    let (pin_index, _, bypassed) = load_combined_pin_index(catalog, false)?;
+    let (pin_index, _, bypassed) = load_combined_pin_index_internal(catalog, false, false)?;
     if bypassed {
         return Ok(false);
     }
@@ -997,13 +1276,18 @@ pub fn is_valid_extension_id_syntax(id: &str) -> bool {
     valid_part(pub_part) && valid_part(name_part)
 }
 
-/// Fetches a single extension's latest stable universal VSIX metadata from the Marketplace API.
+/// Queries the Marketplace API for all returned version entries (universal and per-platform)
+/// of `ext_id`, reusing a caller-supplied [`ureq::Agent`].
 ///
 /// # Errors
 ///
 /// Returns [`VspError::IncompleteObservation`] (exit `7`) if the Marketplace API cannot be
 /// reached or returns a malformed response.
-pub fn query_marketplace_universal_pin(ext_id: &str, api_url: &str) -> VspResult<ExtensionPin> {
+pub fn query_marketplace_extension_versions(
+    agent: &ureq::Agent,
+    ext_id: &str,
+    api_url: &str,
+) -> VspResult<Vec<MarketplaceVersionInfo>> {
     let payload = serde_json::json!({
         "filters": [{
             "criteria": [{ "filterType": 7, "value": ext_id }],
@@ -1013,11 +1297,6 @@ pub fn query_marketplace_universal_pin(ext_id: &str, api_url: &str) -> VspResult
         "assetTypes": [],
         "flags": 103
     });
-
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(30)))
-        .build()
-        .into();
 
     let mut resp = agent
         .post(api_url)
@@ -1043,6 +1322,7 @@ pub fn query_marketplace_universal_pin(ext_id: &str, api_url: &str) -> VspResult
             ))
         })?;
 
+    let mut out = Vec::with_capacity(versions.len());
     for ver_obj in versions {
         let is_prerelease = ver_obj
             .get("properties")
@@ -1057,15 +1337,18 @@ pub fn query_marketplace_universal_pin(ext_id: &str, api_url: &str) -> VspResult
         let target_platform = ver_obj
             .get("targetPlatform")
             .and_then(Value::as_str)
-            .unwrap_or("");
-        if is_prerelease || !target_platform.is_empty() {
-            continue;
-        }
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
         let version = ver_obj
             .get("version")
             .and_then(Value::as_str)
             .unwrap_or("")
+            .trim()
             .to_string();
+        if version.is_empty() {
+            continue;
+        }
         let vsix_url = ver_obj
             .get("files")
             .and_then(Value::as_array)
@@ -1076,13 +1359,56 @@ pub fn query_marketplace_universal_pin(ext_id: &str, api_url: &str) -> VspResult
                 })
             })
             .and_then(|f| f.get("source").and_then(Value::as_str))
-            .unwrap_or("")
-            .to_string();
-        if !version.is_empty() && !vsix_url.is_empty() {
-            validate_vsix_url(&vsix_url, allow_test_pin_urls())?;
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        out.push(MarketplaceVersionInfo {
+            version,
+            target_platform,
+            vsix_url,
+            is_prerelease,
+        });
+    }
+    Ok(out)
+}
+
+/// Fetches a single extension's latest stable universal VSIX metadata from the Marketplace API.
+///
+/// # Errors
+///
+/// Returns [`VspError::IncompleteObservation`] (exit `7`) if the Marketplace API cannot be
+/// reached or returns a malformed response.
+pub fn query_marketplace_universal_pin(ext_id: &str, api_url: &str) -> VspResult<ExtensionPin> {
+    let agent = build_marketplace_http_agent();
+    query_marketplace_universal_pin_with_agent(&agent, ext_id, api_url)
+}
+
+/// Same as [`query_marketplace_universal_pin`], reusing a shared [`ureq::Agent`].
+///
+/// # Errors
+///
+/// Same as [`query_marketplace_universal_pin`].
+pub fn query_marketplace_universal_pin_with_agent(
+    agent: &ureq::Agent,
+    ext_id: &str,
+    api_url: &str,
+) -> VspResult<ExtensionPin> {
+    let versions = query_marketplace_extension_versions(agent, ext_id, api_url)?;
+    let allow_test = allow_test_pin_urls();
+
+    for ver in versions {
+        let is_universal = ver
+            .target_platform
+            .as_deref()
+            .is_none_or(|tp| tp.eq_ignore_ascii_case("universal"));
+        if ver.is_prerelease || !is_universal {
+            continue;
+        }
+        if let Some(vsix_url) = ver.vsix_url {
+            validate_vsix_url(&vsix_url, allow_test)?;
             return Ok(ExtensionPin {
                 sha256: String::new(),
-                version,
+                version: ver.version,
                 vsix_url,
                 verified_at: None,
             });
@@ -1094,22 +1420,70 @@ pub fn query_marketplace_universal_pin(ext_id: &str, api_url: &str) -> VspResult
     )))
 }
 
-/// Streams a VSIX URL into a temporary file, validates redirects, and returns its SHA-256 hex digest.
+/// Streams a VSIX URL, validates every redirect hop, computes its SHA-256 hex digest, and
+/// optionally warms the XDG VSIX cache when `cache_dir` is `Some`.
 ///
 /// # Errors
 ///
 /// Returns [`VspError::SafetyRefusal`] on URL/redirect policy rejection or [`VspError::Operational`]
-/// on download error.
-pub fn download_and_hash_vsix_url(url: &str, ext_id: &str) -> VspResult<String> {
-    let allow_test = allow_test_pin_urls();
+/// on download/cache error.
+pub fn download_and_cache_vsix_with_agent(
+    agent: &ureq::Agent,
+    url: &str,
+    ext_id: &str,
+    cache_dir: Option<&Path>,
+    allow_test: bool,
+) -> VspResult<String> {
     validate_vsix_url(url, allow_test)?;
-    let config = ureq::Agent::config_builder()
-        .max_redirects(0)
-        .http_status_as_error(false)
-        .https_only(!allow_test)
-        .timeout_global(Some(Duration::from_secs(60)))
-        .build();
-    let agent: ureq::Agent = config.into();
+
+    if let Some(dir) = cache_dir {
+        let id_lc = ext_id.to_ascii_lowercase();
+        if !is_valid_extension_id_syntax(&id_lc) {
+            return Err(VspError::SafetyRefusal(format!(
+                "vsix: invalid extension id '{ext_id}'"
+            )));
+        }
+        ensure_private_cache_dir(dir)?;
+        let stage = make_staging_path(dir, "refresh");
+        let res = download_to_stage_file(agent, url, &stage, allow_test, ext_id);
+        let (digest, _) = match res {
+            Ok(pair) => pair,
+            Err(err) => {
+                let _ = fs::remove_file(&stage);
+                return Err(err);
+            }
+        };
+        let final_cache_path = dir.join(format!("{id_lc}-{digest}.vsix"));
+        if final_cache_path.is_symlink() || final_cache_path.is_dir() {
+            let _ = fs::remove_file(&stage);
+            return Err(VspError::SafetyRefusal(format!(
+                "vsix: refusing to overwrite non-regular cache target: {}",
+                final_cache_path.display()
+            )));
+        }
+        if let Err(err) = fs::rename(&stage, &final_cache_path) {
+            let _ = fs::remove_file(&stage);
+            return Err(VspError::Operational(format!(
+                "vsix: failed to warm cache for '{ext_id}' at {}: {err}",
+                final_cache_path.display()
+            )));
+        }
+        return Ok(digest);
+    }
+
+    // Dry-run / hash-only path: zero filesystem writes.
+    if allow_test {
+        if let Some(file_path) = url.strip_prefix("file://") {
+            let mut src = File::open(file_path).map_err(|err| {
+                VspError::Operational(format!(
+                    "vsix: failed to open file:// fixture '{file_path}' for '{ext_id}': {err}"
+                ))
+            })?;
+            return hash_reader_sha256(&mut src, MAX_VSIX_BYTES).map_err(|err| {
+                VspError::Operational(format!("vsix: failed hashing '{ext_id}': {err}"))
+            });
+        }
+    }
 
     let mut current_url = url.to_string();
     for hop in 0..=MAX_REDIRECT_HOPS {
@@ -1144,8 +1518,7 @@ pub fn download_and_hash_vsix_url(url: &str, ext_id: &str) -> VspResult<String> 
             )));
         }
         let mut reader = resp.into_body().into_reader();
-        let mut sink = io::sink();
-        let digest = copy_and_sha256(&mut reader, &mut sink, MAX_VSIX_BYTES).map_err(|err| {
+        let digest = hash_reader_sha256(&mut reader, MAX_VSIX_BYTES).map_err(|err| {
             VspError::Operational(format!("vsix: failed hashing '{ext_id}': {err}"))
         })?;
         return Ok(digest);
@@ -1154,6 +1527,18 @@ pub fn download_and_hash_vsix_url(url: &str, ext_id: &str) -> VspResult<String> 
     Err(VspError::SafetyRefusal(format!(
         "vsix: redirect loop for '{ext_id}'"
     )))
+}
+
+/// Streams a VSIX URL, validates redirects, and returns its SHA-256 hex digest.
+///
+/// # Errors
+///
+/// Returns [`VspError::SafetyRefusal`] on URL/redirect policy rejection or [`VspError::Operational`]
+/// on download error.
+pub fn download_and_hash_vsix_url(url: &str, ext_id: &str) -> VspResult<String> {
+    let allow_test = allow_test_pin_urls();
+    let agent = build_vsix_http_agent(allow_test);
+    download_and_cache_vsix_with_agent(&agent, url, ext_id, None, allow_test)
 }
 
 fn make_staging_path(cache_dir: &Path, tag: &str) -> PathBuf {
@@ -1171,6 +1556,30 @@ fn create_private_file(path: &Path) -> io::Result<File> {
         opts.mode(0o600);
     }
     opts.open(path)
+}
+
+fn hash_reader_sha256<R: Read>(reader: &mut R, max_bytes: u64) -> io::Result<String> {
+    let mut hasher = Sha256::new();
+    // Heap buffer: several worker threads run this function concurrently.
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut total: u64 = 0;
+
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        total = total.saturating_add(n as u64);
+        if total > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("VSIX exceeded maximum size limit ({max_bytes} bytes)"),
+            ));
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    Ok(format_sha256_hex(hasher.finalize()))
 }
 
 fn copy_and_sha256<R: Read, W: Write>(
@@ -1199,13 +1608,15 @@ fn copy_and_sha256<R: Read, W: Write>(
         writer.write_all(&buf[..n])?;
     }
 
-    let digest = hasher.finalize();
+    Ok(format_sha256_hex(hasher.finalize()))
+}
+
+fn format_sha256_hex(digest: impl AsRef<[u8]>) -> String {
     let mut hex = String::with_capacity(64);
-    for byte in digest {
-        use std::fmt::Write as _;
+    for byte in digest.as_ref() {
         let _ = write!(&mut hex, "{byte:02x}");
     }
-    Ok(hex)
+    hex
 }
 
 #[cfg(test)]
@@ -1272,11 +1683,30 @@ mod tests {
             vsix_url: format!("file://{}", fixture.display()),
             required: true,
             tier: None,
+            status_pending: false,
         };
 
         let cached = fetch_and_verify_vsix(&pin, &cache_dir, true).expect("verify ok");
         assert!(cached.is_file());
         assert_eq!(fs::read(&cached).expect("read cached"), payload);
+
+        // Cache hit streams directly without creating staging temp files or rewriting the inode.
+        #[cfg(unix)]
+        let inode_before = {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(&cached).expect("meta").ino()
+        };
+        let cached_again = fetch_and_verify_vsix(&pin, &cache_dir, true).expect("cache hit");
+        assert_eq!(cached_again, cached);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                fs::metadata(&cached_again).expect("meta").ino(),
+                inode_before,
+                "cache hit must verify in-place without rewriting the cached file"
+            );
+        }
 
         // Corrupt cache entry must be evicted and re-fetched cleanly.
         fs::write(&cached, b"corrupted").expect("corrupt cache");
@@ -1325,10 +1755,9 @@ mod tests {
                 vsix_url: "https://marketplace.visualstudio.com/x".to_string(),
                 required: true,
                 tier: Some(1),
+                status_pending: false,
             },
         };
-        // The test supplies the streams, so it never reads the process stdin and cannot
-        // block when `cargo test` runs in an interactive terminal.
         let repairs = std::slice::from_ref(&item);
         let run = |assume_yes: bool, is_tty: bool, answer: &str| {
             let mut reader = io::Cursor::new(answer.as_bytes().to_vec());
@@ -1343,7 +1772,6 @@ mod tests {
             (result, String::from_utf8_lossy(&messages).into_owned())
         };
 
-        // Not a terminal and no --yes: refused, and the answer stream is never consulted.
         let (refused, messages) = run(false, false, "y\n");
         assert_eq!(
             refused.expect_err("non-interactive").exit_code().as_i32(),
@@ -1358,10 +1786,8 @@ mod tests {
             "no prompt without a terminal"
         );
 
-        // --yes confirms without a prompt.
         assert!(run(true, false, "").0.is_ok());
 
-        // A terminal: only `y` or `yes` confirms. Empty input (EOF) refuses.
         let (confirmed, prompt) = run(false, true, "YES\n");
         assert!(confirmed.is_ok());
         assert!(prompt.contains("Proceed with pin downgrade(s)? [y/N]: "));
@@ -1371,7 +1797,6 @@ mod tests {
             assert_eq!(err.exit_code().as_i32(), 5, "{answer:?}");
         }
 
-        // No downgrade in the list: nothing to confirm and nothing printed.
         let mut not_downgrade = item.clone();
         not_downgrade.is_downgrade = false;
         let mut reader = io::Cursor::new(Vec::new());
@@ -1417,10 +1842,12 @@ mod tests {
         }
     }
 
-    /// Opus H1 / Astra A08: Tier 1 entries without a verified digest fail closed, Tier 2
-    /// entries with a version install as `id@version`, and `--allow-unlocked` is recorded.
+    /// Opus H1 / Astra A08 / OPUS-01 / OPUS-04: Tier 1 entries without a verified digest fail
+    /// closed, Tier 2 pending entries are recorded in `tier2_unpinned`, and `--allow-unlocked`
+    /// is selective (relaxing pending/missing entries while still enforcing bad versions and
+    /// verified SHA-256 artifacts).
     #[test]
-    fn lock_tiers_fail_closed_and_version_lock_is_enforced() {
+    fn lock_tiers_fail_closed_and_selective_allow_unlocked_enforces_verified_pins() {
         use crate::model::ExtensionPinsManifest;
 
         let tmp = TempDir::new().expect("tmp");
@@ -1449,8 +1876,6 @@ mod tests {
         )
         .expect("write lock");
 
-        // Astra A16 (install side): a platform-only record for THIS platform resolves to a
-        // verified artifact. The same record for another platform does not.
         let host_lock = format!(
             r#"{{"version": 2, "extensions": {{"g.hostnative": {{"tier": 1, "status": "verified",
                 "version": "1.0.0", "universal": false, "targets": {{"{}": {{
@@ -1487,6 +1912,7 @@ mod tests {
         let strict = resolve_and_verify_batch(&catalog, &ids, &VsixVerifyOptions::default())
             .expect("resolve");
         assert!(!strict.unlocked_bypass);
+        assert_eq!(strict.tier2_unpinned, vec!["d.tier2pending".to_string()]);
         let failed: Vec<&str> = strict.failures.iter().map(|f| f.id.as_str()).collect();
         assert_eq!(
             failed,
@@ -1504,10 +1930,23 @@ mod tests {
             ]
         );
 
-        // The explicit bypass installs by ID and is reported so provenance can record it.
+        // Selective `--allow-unlocked` relaxes pending/missing Tier 1 entries while STILL
+        // enforcing Tier 2 version pins (`c.versioned@1.2.3`) and rejecting invalid semver (`c.badversion`).
+        let bypass_ids: Vec<String> = [
+            "a.pending",
+            "a.stale",
+            "b.native",
+            "c.versioned",
+            "d.tier2pending",
+            "e.tier3",
+            "f.unlisted",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
         let bypass = resolve_and_verify_batch(
             &catalog,
-            &ids,
+            &bypass_ids,
             &VsixVerifyOptions {
                 allow_unlocked: true,
                 cache_dir: None,
@@ -1516,7 +1955,24 @@ mod tests {
         .expect("resolve with bypass");
         assert!(bypass.unlocked_bypass);
         assert!(bypass.failures.is_empty());
-        assert_eq!(bypass.targets.len(), ids.len());
+        assert_eq!(bypass.targets.len(), bypass_ids.len());
+        assert!(bypass
+            .targets
+            .contains(&("c.versioned".to_string(), "c.versioned@1.2.3".to_string())));
+        assert_eq!(bypass.tier2_unpinned, vec!["d.tier2pending".to_string()]);
+
+        // Invalid semver injection is STILL refused under `--allow-unlocked`.
+        let bad_ver_bypass = resolve_and_verify_batch(
+            &catalog,
+            &["c.badversion".to_string()],
+            &VsixVerifyOptions {
+                allow_unlocked: true,
+                cache_dir: None,
+            },
+        )
+        .expect("bad version under allow-unlocked");
+        assert_eq!(bad_ver_bypass.failures.len(), 1);
+        assert!(bad_ver_bypass.failures[0].is_safety_refusal);
 
         // A pending entry is never "fully pinned", and it is never a repair candidate.
         let installed = vec![InstalledExtension {
@@ -1531,8 +1987,6 @@ mod tests {
                 .expect("fully pinned")
         );
 
-        // Opus M1 (clear rule): the managed set is "fully pinned" only when each ID has a
-        // verified hash lock AND is installed at the locked version.
         let managed = vec!["h.universal".to_string()];
         let at_lock = vec![InstalledExtension {
             id: "h.universal".to_string(),
@@ -1588,7 +2042,6 @@ mod tests {
             resolve_redirect_url(base, "next").expect("relative"),
             "https://marketplace.visualstudio.com/a/b/next"
         );
-        // A scheme-relative redirect to another host resolves, and validation then rejects it.
         let off = resolve_redirect_url(base, "//evil.example/p").expect("scheme-relative");
         assert!(validate_vsix_url(&off, false).is_err());
     }
@@ -1672,5 +2125,38 @@ mod tests {
                 "https://marketplace.visualstudio.com/host-only"
             );
         }
+    }
+
+    #[test]
+    fn grouped_refusal_summary_is_audience_aware_for_embedded_vs_external() {
+        let embedded = crate::schema_loader::load_embedded().expect("embedded");
+        let failures = vec![
+            VsixFailure {
+                id: "anthropic.claude-code".to_string(),
+                message: "pending".to_string(),
+                is_safety_refusal: true,
+                kind: VsixFailureKind::Tier1PendingRefresh,
+            },
+            VsixFailure {
+                id: "github.copilot-chat".to_string(),
+                message: "pending".to_string(),
+                is_safety_refusal: true,
+                kind: VsixFailureKind::Tier1PendingRefresh,
+            },
+        ];
+
+        let emb_msg = format_vsix_refusal_summary(&embedded, "rust", &failures);
+        assert!(emb_msg.contains("Tier 1 hash lock pending_refresh (2):"));
+        assert!(emb_msg.contains("    - anthropic.claude-code"));
+        assert!(emb_msg.contains("    - github.copilot-chat"));
+        assert!(emb_msg.contains("pass `--allow-unlocked`"));
+        assert!(emb_msg.contains("upgrade `vsp`"));
+        assert!(!emb_msg.contains("dev pins --refresh"));
+
+        let mut external = embedded;
+        external.root = PathBuf::from("/opt/my-catalog");
+        let ext_msg = format_vsix_refusal_summary(&external, "rust", &failures);
+        assert!(ext_msg.contains("vsp --catalog /opt/my-catalog dev pins --refresh"));
+        assert!(ext_msg.contains("retry with `--catalog /opt/my-catalog`"));
     }
 }

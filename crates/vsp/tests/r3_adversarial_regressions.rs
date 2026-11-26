@@ -496,6 +496,12 @@ fn m2_stale_user_config_does_not_block_remediation_or_import() {
         installed: &[installed.as_str()],
         ..Default::default()
     });
+    // Register `rust` and `imported` so `sync` queries their installed extensions (FABLE-01).
+    fs::write(
+        sb.path("data/User/globalStorage/storage.json"),
+        r#"{"userDataProfiles":[{"name":"rust","location":"aaaa1111"},{"name":"imported","location":"bbbb2222"}]}"#,
+    )
+    .expect("register profiles");
 
     // A bundle for the import case, made before the config goes stale.
     let export = sb.vsp(&["export", "rust", "--out", "bundles"]);
@@ -1358,6 +1364,12 @@ fn r3_m3_bundle_import_ai_off_uninstalls_installed_ai_extensions() {
         ],
         ..Default::default()
     });
+    // Register `imported` so `sync --from` queries its installed extensions (FABLE-01).
+    fs::write(
+        sb.path("data/User/globalStorage/storage.json"),
+        r#"{"userDataProfiles":[{"name":"imported","location":"abcd1234"}]}"#,
+    )
+    .expect("register imported profile");
 
     let bundle = sb.path("team.code-profile");
     fs::write(
