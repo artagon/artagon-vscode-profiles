@@ -13,8 +13,8 @@ use crate::sync::{run_sync, SyncOptions};
 use crate::user_config::UserOverlay;
 use crate::vscode::{find_code_binary, resolve_vscode_store, validate_profile_name};
 
-/// Input options for [`run_open`].
-#[derive(Debug, Clone)]
+/// Input options for [`run_open`], [`run_open_report`], and [`run_use`].
+#[derive(Debug, Clone, Default)]
 pub struct OpenOptions {
     /// Optional workspace path to open.
     pub path: Option<PathBuf>,
@@ -47,14 +47,48 @@ pub struct OpenOptions {
     pub no_rtk: bool,
 }
 
-#[derive(Debug, Serialize)]
+/// Structured launch (or dry-run preview) report returned by [`run_use`] and
+/// [`run_open_report`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct OpenPreview {
-    dry_run: bool,
-    profile: Option<String>,
-    path: Option<String>,
-    sync_first: bool,
-    command: Vec<String>,
+pub struct OpenReport {
+    /// `true` when VS Code was not launched and no files were mutated.
+    pub dry_run: bool,
+    /// Resolved canonical VS Code profile name, when targeting a named profile.
+    pub profile: Option<String>,
+    /// Workspace path passed to VS Code, when specified.
+    pub path: Option<String>,
+    /// Whether `--sync` pre-convergence was requested.
+    pub sync_first: bool,
+    /// Exact command line executed (or planned during `--dry-run`).
+    pub command: Vec<String>,
+}
+
+/// Unambiguously opens VS Code with the named `profile` (and optional workspace `path`)
+/// for `vsp use <PROFILE> [PATH]`.
+///
+/// Unlike [`run_open`], the first argument is always treated as the VS Code profile name
+/// even when a same-named directory (such as `shell/` or `python/`) exists in the current
+/// working directory.
+///
+/// # Errors
+///
+/// - [`VspError::TargetMissing`] (exit `2`): `path` was provided and does not exist.
+/// - [`VspError::UsageOrConfig`] (exit `4`): `VSCODE_USER_DIR` cannot be represented as a
+///   `code --user-data-dir` root.
+/// - [`VspError::SafetyRefusal`] (exit `5`): `profile` is empty or unsafe for `code`.
+/// - Any [`VspError`] from [`run_sync`] when `opts.sync_first` is `true`.
+/// - [`VspError::Operational`] (exit `1`): `code` CLI missing or returned non-zero.
+pub fn run_use(
+    catalog: &WorkspaceCatalog,
+    profile: &str,
+    path: Option<&Path>,
+    opts: &OpenOptions,
+) -> VspResult<OpenReport> {
+    let mut effective = opts.clone();
+    effective.profile = Some(profile.to_string());
+    effective.path = path.map(Path::to_path_buf);
+    run_open_report(catalog, &effective)
 }
 
 /// Launches VS Code targeting `opts.path` and/or `opts.profile` in a single window while
@@ -73,6 +107,20 @@ struct OpenPreview {
 /// - Any [`VspError`] from [`run_sync`] when `--sync` fails (launch is aborted).
 /// - [`VspError::Operational`] (exit `1`): `code` CLI missing or returned non-zero.
 pub fn run_open(catalog: &WorkspaceCatalog, opts: &OpenOptions) -> VspResult<ExitCode> {
+    run_open_report(catalog, opts).map(|_| ExitCode::Ok)
+}
+
+/// Launches VS Code (or computes a dry-run preview) and returns the structured [`OpenReport`].
+///
+/// If `opts.profile` is `None` and `opts.path` does not exist on disk but matches a catalog
+/// preset, legacy alias, implicit toolchain preset, or user profile, the returned
+/// [`VspError::TargetMissing`] error explicitly suggests `vsp use <name>` or
+/// `vsp open -p <name>`.
+///
+/// # Errors
+///
+/// See [`run_open`].
+pub fn run_open_report(catalog: &WorkspaceCatalog, opts: &OpenOptions) -> VspResult<OpenReport> {
     if opts.profile.is_none() && opts.path.is_none() {
         return Err(VspError::UsageOrConfig(
             "vsp open requires -p/--profile <NAME> or <PATH>".to_string(),
@@ -81,6 +129,20 @@ pub fn run_open(catalog: &WorkspaceCatalog, opts: &OpenOptions) -> VspResult<Exi
 
     if let Some(ref p) = opts.path {
         if !p.exists() {
+            if opts.profile.is_none() {
+                if let Some(candidate) = p.to_str() {
+                    let matches_profile = catalog.profiles.contains_key(candidate)
+                        || catalog.resolve_alias(candidate).is_some()
+                        || catalog.implicit_toolchain_recipe(candidate).is_some()
+                        || opts.user_overlay.is_user_profile(candidate);
+                    if matches_profile {
+                        return Err(VspError::TargetMissing(format!(
+                            "path does not exist: {} (did you mean profile '{candidate}'? Run 'vsp use {candidate}' or 'vsp open -p {candidate}')",
+                            p.display()
+                        )));
+                    }
+                }
+            }
             return Err(VspError::TargetMissing(format!(
                 "path does not exist: {}",
                 p.display()
@@ -114,19 +176,19 @@ pub fn run_open(catalog: &WorkspaceCatalog, opts: &OpenOptions) -> VspResult<Exi
     if opts.dry_run {
         let mut full_cmd = vec!["code".to_string()];
         full_cmd.extend(launch_args);
+        let report = OpenReport {
+            dry_run: true,
+            profile: resolved_profile,
+            path: opts.path.as_ref().map(|p| p.display().to_string()),
+            sync_first: opts.sync_first,
+            command: full_cmd,
+        };
         if opts.json {
-            let preview = OpenPreview {
-                dry_run: true,
-                profile: resolved_profile,
-                path: opts.path.as_ref().map(|p| p.display().to_string()),
-                sync_first: opts.sync_first,
-                command: full_cmd,
-            };
-            print!("{}", to_canonical_json_string(&preview)?);
+            print!("{}", to_canonical_json_string(&report)?);
         } else if !opts.quiet {
-            println!("DRY-RUN: {}", full_cmd.join(" "));
+            println!("DRY-RUN: {}", report.command.join(" "));
         }
-        return Ok(ExitCode::Ok);
+        return Ok(report);
     }
 
     // Converge target BEFORE launching VS Code when `--sync` is requested.
@@ -178,20 +240,20 @@ pub fn run_open(catalog: &WorkspaceCatalog, opts: &OpenOptions) -> VspResult<Exi
         )));
     }
 
+    let mut full_cmd = vec![code_bin.display().to_string()];
+    full_cmd.extend(launch_args);
+    let report = OpenReport {
+        dry_run: false,
+        profile: resolved_profile,
+        path: opts.path.as_ref().map(|p| p.display().to_string()),
+        sync_first: opts.sync_first,
+        command: full_cmd,
+    };
     if opts.json {
-        let mut full_cmd = vec![code_bin.display().to_string()];
-        full_cmd.extend(launch_args);
-        let payload = OpenPreview {
-            dry_run: false,
-            profile: resolved_profile,
-            path: opts.path.as_ref().map(|p| p.display().to_string()),
-            sync_first: opts.sync_first,
-            command: full_cmd,
-        };
-        print!("{}", to_canonical_json_string(&payload)?);
+        print!("{}", to_canonical_json_string(&report)?);
     }
 
-    Ok(ExitCode::Ok)
+    Ok(report)
 }
 
 /// Builds the exact argument vector passed to `code` for single-window opening.

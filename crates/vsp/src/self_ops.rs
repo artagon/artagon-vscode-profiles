@@ -82,6 +82,17 @@ pub struct SelfLinkReport {
     pub links: Vec<LinkOutcome>,
 }
 
+impl SelfLinkReport {
+    /// Returns the examined or planned link paths in deterministic order.
+    #[must_use]
+    pub fn planned_paths(&self) -> Vec<PathBuf> {
+        self.links
+            .iter()
+            .map(|item| PathBuf::from(&item.link))
+            .collect()
+    }
+}
+
 /// Upgrade guidance returned by [`update_guidance`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UpdateGuidance {

@@ -49,7 +49,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::exit_codes::{VspError, VspResult};
-use crate::legacy_loader::parse_jsonc_value;
+use crate::jsonc::parse_jsonc_value;
 use crate::model::{
     is_valid_module_id, AiMode, ExtensionStatus, ProfileRecipe, UxPreset, WorkspaceCatalog,
 };
@@ -383,6 +383,88 @@ pub fn load_user_config(cli_config: Option<&Path>) -> VspResult<Option<UserConfi
         )));
     }
     parse_user_config(&text, &path).map(Some)
+}
+
+/// Loading policy for the XDG default user configuration (`~/.config/vsp/config.jsonc`).
+///
+/// An explicit `--config <PATH>` always loads and fails closed (`exit 2`/`4`/`5`)
+/// regardless of the selected scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserConfigScope {
+    /// Skip reading the XDG default user configuration (for workspace-scoped,
+    /// catalog-only, or maintainer commands that do not apply personal defaults).
+    /// An explicit `--config <PATH>` still loads and fails closed.
+    SkipDefault,
+    /// Load the XDG default user configuration when present and fail closed on any
+    /// syntax, schema, or permission error (matches [`load_user_config`]).
+    Required,
+    /// Attempt to load the XDG default user configuration when present; if loading or
+    /// parsing fails, record a non-fatal warning in [`LoadedUserConfig::warnings`] and
+    /// return `config: None`. An explicit `--config <PATH>` still fails closed.
+    FallbackOnDefaultError,
+}
+
+/// Result returned by [`load_user_config_scoped`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LoadedUserConfig {
+    /// Loaded and validated user configuration, or `None` when absent, skipped, or fell back.
+    pub config: Option<UserConfig>,
+    /// Non-fatal warnings recorded when [`UserConfigScope::FallbackOnDefaultError`] ignored
+    /// a malformed or unusable default user configuration.
+    pub warnings: Vec<String>,
+}
+
+/// Loads user configuration according to `scope`, while always failing closed on an explicit
+/// `--config <PATH>`.
+///
+/// - When `explicit_path` is `Some(path)`, that file is always read and validated via
+///   [`load_user_config`]; any missing-file (`exit 2`), syntax/schema (`exit 4`), or
+///   permission/deny-list (`exit 5`) failure is returned regardless of `scope`.
+/// - When `explicit_path` is `None`:
+///   - [`UserConfigScope::SkipDefault`] never reads the XDG default file and returns
+///     `Ok(LoadedUserConfig::default())`.
+///   - [`UserConfigScope::Required`] loads the XDG default file if present and fails closed.
+///   - [`UserConfigScope::FallbackOnDefaultError`] loads the XDG default file if present
+///     and converts any load/validation error into a warning with `config: None`.
+///
+/// # Errors
+///
+/// - [`VspError::TargetMissing`] (exit `2`): the explicit `--config` file does not exist.
+/// - [`VspError::UsageOrConfig`] (exit `4`): unreadable, oversized, malformed, or
+///   schema-invalid configuration (explicit `--config`, or default under
+///   [`UserConfigScope::Required`]).
+/// - [`VspError::SafetyRefusal`] (exit `5`): autonomy deny-list violation or unsafe Unix
+///   ownership/permissions (explicit `--config`, or default under
+///   [`UserConfigScope::Required`]).
+pub fn load_user_config_scoped(
+    explicit_path: Option<&Path>,
+    scope: UserConfigScope,
+) -> VspResult<LoadedUserConfig> {
+    if let Some(path) = explicit_path {
+        let config = load_user_config(Some(path))?;
+        return Ok(LoadedUserConfig {
+            config,
+            warnings: Vec::new(),
+        });
+    }
+
+    match scope {
+        UserConfigScope::SkipDefault => Ok(LoadedUserConfig::default()),
+        UserConfigScope::Required => Ok(LoadedUserConfig {
+            config: load_user_config(None)?,
+            warnings: Vec::new(),
+        }),
+        UserConfigScope::FallbackOnDefaultError => match load_user_config(None) {
+            Ok(config) => Ok(LoadedUserConfig {
+                config,
+                warnings: Vec::new(),
+            }),
+            Err(err) => Ok(LoadedUserConfig {
+                config: None,
+                warnings: vec![format!("ignoring unusable default user config: {err}")],
+            }),
+        },
+    }
 }
 
 /// Refuses a user configuration file that another account can change (Unix).

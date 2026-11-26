@@ -22,7 +22,7 @@
 //! | `detect [--json] [path]` | `vsp detect` |
 //! | `--detect [options] [path]` | same as `apply`, with a deprecation warning |
 //! | `apply [options] [path]` | `vsp sync <path>`, `vsp sync -p <name>`, or `vsp sync --user` |
-//! | `reconcile (--profile <n> [--as <r>] \| --all) ...` | `vsp sync -p <n> [--preset <r>]` or `vsp sync --all`, extensions only (no settings, `storage.json`, or RTK wrapper write) |
+//! | `reconcile (--profile <n> [--as <r>] \| --all) ...` | `vsp sync -p <n> --extensions-only [--preset <r>]` or `vsp sync --all --extensions-only` (no settings, `storage.json`, or RTK wrapper write) |
 //! | `doctor [--strict]` | `vsp doctor` |
 //! | `validate`, `--validate` | `vsp dev validate` |
 //! | `open <profile> [path]`, `--open` | `vsp open -p <profile> <path>` |
@@ -380,7 +380,7 @@ pub fn usage_text() -> String {
             "Verbs:\n",
             "  vspcli apply [options] [path]         vsp sync <path> | -p <name> | --user\n",
             "  vspcli detect [--json] [path]         vsp detect (read-only)\n",
-            "  vspcli reconcile [options]            vsp sync -p <name> | --all\n",
+            "  vspcli reconcile [options]            vsp sync -p <name> --extensions-only [--preset <recipe>] | --all\n",
             "  vspcli doctor [--strict]              vsp doctor\n",
             "  vspcli validate                       vsp dev validate\n",
             "  vspcli export [profile...]            vsp export\n",
@@ -872,7 +872,7 @@ fn translate_apply(rest: &[String]) -> Translation {
 }
 
 fn translate_reconcile(rest: &[String]) -> Translation {
-    const USAGE: &str = "Usage: vspcli reconcile (--profile <name> [--as <recipe>] | --all) [--dry-run] [--compromised-only] [--prune-retired] [--prune-unmanaged] [--yes]";
+    const USAGE: &str = "Usage: vspcli reconcile (--profile <name> [--as <recipe>] | --all) [--dry-run] [--compromised-only] [--prune-retired] [--prune-unmanaged] [--yes]\n  Maps to: vsp sync -p <name> --extensions-only [--preset <recipe>] (or vsp sync --all --extensions-only)";
     let mut profile: Option<String> = None;
     let mut recipe: Option<String> = None;
     let mut all = false;
@@ -914,6 +914,11 @@ fn translate_reconcile(rest: &[String]) -> Translation {
 
     if !all && profile.is_none() {
         return Translation::Reject("reconcile: specify --profile <name> or --all".to_string());
+    }
+    if all && (profile.is_some() || recipe.is_some()) {
+        return Translation::Reject(
+            "reconcile: --all cannot be combined with --profile or --as".to_string(),
+        );
     }
 
     let mut argv: Vec<String> = Vec::new();
@@ -1094,6 +1099,15 @@ mod tests {
         );
         assert_reject(&["reconcile"]);
         assert_reject(&["reconcile", "--profile"]);
+        assert_reject(&["reconcile", "--all", "--profile", "rust"]);
+        assert_reject(&["reconcile", "--all", "--as", "rust"]);
+        assert!(usage_text().contains("vsp sync -p <name> --extensions-only [--preset <recipe>]"));
+        match translate(&args(&["reconcile", "--help"])) {
+            Translation::Usage(line) => {
+                assert!(line.contains("vsp sync -p <name> --extensions-only [--preset <recipe>]"));
+            }
+            other => panic!("expected Usage for reconcile --help, got {other:?}"),
+        }
         assert_eq!(
             vsp_argv(&["import", "rust", "b.code-profile", "--ux", "crisp"]),
             args(&[
