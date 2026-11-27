@@ -16,3 +16,11 @@ User/sync/
 .agents/settings.local.json
 .ntm/
 scratch/
+/target/
+/dist/
+
+# Generated compiled artifacts — built on demand via `vsp dev dist` / `vspcli build`
+/_merged/
+/exports/
+profiles/*/extensions.json
+profiles/*/settings.json

@@ -15,6 +15,8 @@ LIB="${SCRIPT_ROOT}/scripts/lib"
 source "${LIB}/common.sh"
 # shellcheck source=scripts/lib/module-resolver.sh
 source "${LIB}/module-resolver.sh"
+# shellcheck source=scripts/lib/compiler.sh
+source "${LIB}/compiler.sh"
 
 MODE="stdout"
 case "${1:-}" in
@@ -33,21 +35,28 @@ render_matrix() {
   cat <<'HEADER'
 ### Profiles (15 Compiled Recipes)
 
-| Profile | Description | Included Modules | Extensions | Export Bundle |
+| Profile | Description | Included Packs | Extensions | Bundle Artifact |
 | --- | --- | --- | ---: | --- |
 HEADER
 
-  local prof recipe desc mods_str ext_count bundle_cell
+  local prof recipe desc mods_str ext_count bundle_cell resolved_str mod_item
   while IFS= read -r prof; do
     [[ -n "${prof}" ]] || continue
     recipe="${ROOT}/profiles/${prof}/profile.json"
     desc="$(jq -r '.description // ""' "${recipe}")"
-    mods_str="$(resolve_profile_recipe "${ROOT}" "${prof}" | awk -F '\t' '{printf "%s%s", (NR > 1 ? ", " : ""), $1}')"
+    resolved_str="$(resolve_profile_recipe "${ROOT}" "${prof}" "" "" "default")"
+    mods_str="$(printf '%s\n' "${resolved_str}" | awk -F '\t' '{printf "%s%s", (NR > 1 ? ", " : ""), $1}')"
     ext_count=0
     if [[ -f "${ROOT}/profiles/${prof}/extensions.json" ]]; then
       ext_count="$(jq 'length' "${ROOT}/profiles/${prof}/extensions.json")"
+    else
+      local mods=()
+      while IFS= read -r mod_item; do
+        [[ -n "${mod_item}" ]] && mods+=("${mod_item}")
+      done <<< "${resolved_str}"
+      ext_count="$(compiler_compile_extensions "${ROOT}" profile "${mods[@]+"${mods[@]}"}" | jq 'length')"
     fi
-    bundle_cell="[\`${prof}.code-profile\`](exports/${prof}.code-profile)"
+    bundle_cell="\`${prof}.code-profile\`"
     # shellcheck disable=SC2016
     printf '| `%s` | %s | `%s` | %s | %s |\n' \
       "${prof}" "${desc}" "${mods_str}" "${ext_count}" "${bundle_cell}"
@@ -55,9 +64,9 @@ HEADER
 
   cat <<'MODHEADER'
 
-### Modules (`modules/`)
+### Packs (`packs/`)
 
-| Kind | Module ID | Description | Requires | Conflicts |
+| Kind | Pack ID | Description | Requires | Conflicts |
 | --- | --- | --- | --- | --- |
 MODHEADER
 

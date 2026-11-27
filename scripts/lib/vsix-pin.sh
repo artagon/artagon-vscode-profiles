@@ -9,16 +9,28 @@
 
 _vsix_pin_sha256() {
   local path="${1}"
+  local raw="" digest=""
+  if [[ ! -r "${path}" || -d "${path}" ]]; then
+    printf 'vsix-pin: cannot read file for sha256 verification: %s\n' "${path}" >&2
+    return 1
+  fi
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum < "${path}" | awk '{print $1}'
-    return 0
+    raw="$(sha256sum < "${path}")" || return 1
+  elif command -v shasum >/dev/null 2>&1; then
+    raw="$(shasum -a 256 < "${path}")" || return 1
+  else
+    echo "vsix-pin: need sha256sum or shasum for VSIX verification" >&2
+    return 1
   fi
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 < "${path}" | awk '{print $1}'
-    return 0
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  digest="${raw%%[[:space:]]*}"
+  digest="$(printf '%s' "${digest}" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  if [[ ! "${digest}" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'vsix-pin: invalid sha256 digest output for %s\n' "${path}" >&2
+    return 1
   fi
-  echo "vsix-pin: need sha256sum or shasum for VSIX verification" >&2
-  return 1
+  printf '%s\n' "${digest}"
+  return 0
 }
 
 pins_file_path() {
@@ -74,19 +86,20 @@ _vsix_pin_validate_url() {
 # lookup_pin <id> <pins_file>
 # Case-insensitive lookup over .pins; prints version, sha256, vsix_url on 3 lines.
 # Fails closed on:
-#   - explicit ARTAGON_VSCODE_PINS_FILE set but missing
+#   - missing or unreadable pins manifest (unless ARTAGON_VSCODE_ALLOW_UNLOCKED=1)
 #   - duplicate case-colliding keys in .pins
 #   - malformed pin entry missing sha256 or vsix_url
 #   - pinRequired=true when id is absent
 lookup_pin() {
   local id="${1}"
   local pins_file="${2}"
-  if [[ ! -f "${pins_file}" ]]; then
-    if [[ -n "${ARTAGON_VSCODE_PINS_FILE:-}" ]]; then
-      printf 'vsix-pin: explicit ARTAGON_VSCODE_PINS_FILE not found: %s\n' "${pins_file}" >&2
-      return 1
+  if [[ ! -f "${pins_file}" || ! -r "${pins_file}" ]]; then
+    if [[ "${ARTAGON_VSCODE_ALLOW_UNLOCKED:-0}" == "1" ]]; then
+      printf 'vsix-pin: WARNING: pins manifest missing or unreadable (%s); proceeding unlocked (ARTAGON_VSCODE_ALLOW_UNLOCKED=1)\n' "${pins_file}" >&2
+      return 0
     fi
-    return 0
+    printf 'vsix-pin: pins manifest missing or unreadable: %s (set ARTAGON_VSCODE_ALLOW_UNLOCKED=1 to bypass)\n' "${pins_file}" >&2
+    return 1
   fi
 
   local pin_required
@@ -152,7 +165,7 @@ fetch_and_verify_vsix() {
 
   local out_dir
   out_dir="$(dirname -- "${out_path}")"
-  mkdir -p -- "${out_dir}"
+  mkdir -p -- "${out_dir}" || return 1
 
   # Content-addressed local cache check: copy to private 0600 temp FIRST, then hash private copy.
   local cache_dir="${VSCODE_VSIX_CACHE_DIR:-}"
@@ -168,9 +181,12 @@ fetch_and_verify_vsix() {
           local cached_sha=""
           cached_sha="$(_vsix_pin_sha256 "${ctmp}" 2>/dev/null || true)"
           if [[ "${cached_sha}" == "${expected}" ]]; then
-            if mv -f -- "${ctmp}" "${out_path}"; then
+            if [[ ! -d "${out_path}" ]] && mv -f -- "${ctmp}" "${out_path}"; then
               return 0
             fi
+            rm -f -- "${ctmp}"
+            printf 'vsix-pin: failed to publish verified cached VSIX for %s to %s\n' "${id}" "${out_path}" >&2
+            return 1
           else
             # Completed read mismatched expected SHA-256: evict non-symlink corrupt cache file and re-fetch.
             if [[ -f "${cache_file}" && ! -L "${cache_file}" ]]; then
@@ -239,6 +255,10 @@ fetch_and_verify_vsix() {
       fi
     fi
   fi
-  mv -f -- "${tmp}" "${out_path}"
+  if [[ -d "${out_path}" ]] || ! mv -f -- "${tmp}" "${out_path}"; then
+    rm -f -- "${tmp}"
+    printf 'vsix-pin: failed to publish verified VSIX for %s to %s\n' "${id}" "${out_path}" >&2
+    return 1
+  fi
   return 0
 }

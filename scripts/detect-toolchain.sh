@@ -19,13 +19,14 @@ source "${LIB_DIR}/common.sh"
 source "${LIB_DIR}/module-resolver.sh"
 
 JSON_MODE=0
+EXPLAIN_MODE=0
 NO_DETECT=0
 OVERRIDE_TOOLCHAINS=()
 TARGET_PATH="."
 
 usage() {
   cat <<'EOF'
-Usage: detect-toolchain.sh [--json] [--toolchain <id>] [--no-detect] [path]
+Usage: detect-toolchain.sh [--json] [--explain] [--toolchain <id>] [--no-detect] [path]
 EOF
 }
 
@@ -33,6 +34,10 @@ while [[ $# -gt 0 ]]; do
   case "${1}" in
     --json)
       JSON_MODE=1
+      shift
+      ;;
+    --explain)
+      EXPLAIN_MODE=1
       shift
       ;;
     --no-detect)
@@ -87,6 +92,7 @@ WS_ROOT="$(canonical_path "${TARGET_PATH}")" || exit 2
 if [[ "${#OVERRIDE_TOOLCHAINS[@]}" -gt 0 ]]; then
   expanded=()
   for entry in "${OVERRIDE_TOOLCHAINS[@]}"; do
+    items_raw="$(printf '%s\n' "${entry}" | tr ',' '\n')" || exit 4
     while IFS= read -r item; do
       [[ -n "${item}" ]] || continue
       if ! module_dir_for_id "${ROOT}" "${item}" >/dev/null 2>&1 && [[ ! -f "${ROOT}/profiles/${item}/profile.json" ]]; then
@@ -94,7 +100,7 @@ if [[ "${#OVERRIDE_TOOLCHAINS[@]}" -gt 0 ]]; then
         exit 4
       fi
       expanded+=("${item}")
-    done < <(printf '%s\n' "${entry}" | tr ',' '\n')
+    done <<< "${items_raw}"
   done
   if [[ "${#expanded[@]}" -eq 0 ]]; then
     echo "detect-toolchain: --toolchain requires at least one valid module/profile id" >&2
@@ -170,39 +176,42 @@ eval_rule() {
       return 1
       ;;
     any_file)
-      local p
+      local paths_raw p
+      paths_raw="$(printf '%s' "${rule_json}" | jq -r '.paths[]?')" || return 2
       while IFS= read -r p; do
         [[ -n "${p}" ]] || continue
         if [[ -f "${WS_ROOT}/${p}" ]]; then
           printf '%s\n' "${p}"
           return 0
         fi
-      done < <(printf '%s' "${rule_json}" | jq -r '.paths[]?')
+      done <<< "${paths_raw}"
       return 1
       ;;
     all_files)
       local matched=()
-      local p
+      local paths_raw p
+      paths_raw="$(printf '%s' "${rule_json}" | jq -r '.paths[]?')" || return 2
       while IFS= read -r p; do
         [[ -n "${p}" ]] || continue
         if [[ ! -f "${WS_ROOT}/${p}" ]]; then
           return 1
         fi
         matched+=("${p}")
-      done < <(printf '%s' "${rule_json}" | jq -r '.paths[]?')
+      done <<< "${paths_raw}"
       [[ "${#matched[@]}" -gt 0 ]] || return 1
 
       local extra_count
-      extra_count="$(printf '%s' "${rule_json}" | jq -r '(.any_extra // []) | length')"
+      extra_count="$(printf '%s' "${rule_json}" | jq -r '(.any_extra // []) | length')" || return 2
       if [[ "${extra_count}" -gt 0 ]]; then
-        local found_extra=""
+        local extra_raw found_extra=""
+        extra_raw="$(printf '%s' "${rule_json}" | jq -r '.any_extra[]?')" || return 2
         while IFS= read -r p; do
           [[ -n "${p}" ]] || continue
           if [[ -f "${WS_ROOT}/${p}" ]]; then
             found_extra="${p}"
             break
           fi
-        done < <(printf '%s' "${rule_json}" | jq -r '.any_extra[]?')
+        done <<< "${extra_raw}"
         [[ -n "${found_extra}" ]] || return 1
         matched+=("${found_extra}")
       fi
@@ -240,21 +249,21 @@ eval_rule() {
       return 1
       ;;
     file_and_grep)
-      local found_manifest=""
-      local p
+      local paths_raw found_manifest="" p
+      paths_raw="$(printf '%s' "${rule_json}" | jq -r '.paths[]?')" || return 2
       while IFS= read -r p; do
         [[ -n "${p}" ]] || continue
         if [[ -f "${WS_ROOT}/${p}" ]]; then
           found_manifest="${p}"
           break
         fi
-      done < <(printf '%s' "${rule_json}" | jq -r '.paths[]?')
+      done <<< "${paths_raw}"
       [[ -n "${found_manifest}" ]] || return 1
 
       local sdir glob_pat grep_pat search_base
-      sdir="$(printf '%s' "${rule_json}" | jq -r '.search_dir // "."')"
-      glob_pat="$(printf '%s' "${rule_json}" | jq -r '.glob // "*"')"
-      grep_pat="$(printf '%s' "${rule_json}" | jq -r '.pattern // empty')"
+      sdir="$(printf '%s' "${rule_json}" | jq -r '.search_dir // "."')" || return 2
+      glob_pat="$(printf '%s' "${rule_json}" | jq -r '.glob // "*"')" || return 2
+      grep_pat="$(printf '%s' "${rule_json}" | jq -r '.pattern // empty')" || return 2
       [[ -n "${grep_pat}" ]] || return 1
       if [[ "${sdir}" == "." ]]; then
         search_base="${WS_ROOT}"
@@ -264,8 +273,16 @@ eval_rule() {
       [[ -d "${search_base}" ]] || return 1
 
       local hit_file=""
-      local tmp_err
+      local tmp_err tmp_list
       tmp_err="$(mktemp "${TMPDIR:-/tmp}/vsp-fgrep-err.XXXXXX")" || return 2
+      tmp_list="$(mktemp "${TMPDIR:-/tmp}/vsp-fgrep-list.XXXXXX")" || { rm -f "${tmp_err}"; return 2; }
+      if ! find "${search_base}" -mindepth 1 -maxdepth 8 \
+        \( -type d \( -name .git -o -name node_modules -o -name target -o -name build -o -name .venv \) -prune \) \
+        -o \( -type f -name "${glob_pat}" -print \) >"${tmp_list}" 2>"${tmp_err}"; then
+        cat "${tmp_err}" >&2 || true
+        rm -f "${tmp_err}" "${tmp_list}"
+        return 2
+      fi
       local cand
       while IFS= read -r cand; do
         [[ -n "${cand}" ]] || continue
@@ -273,12 +290,8 @@ eval_rule() {
           hit_file="${cand#"${WS_ROOT}/"}"
           break
         fi
-      done < <(
-        find "${search_base}" -mindepth 1 -maxdepth 8 \
-          \( -type d \( -name .git -o -name node_modules -o -name target -o -name build -o -name .venv \) -prune \) \
-          -o \( -type f -name "${glob_pat}" -print \) 2>"${tmp_err}"
-      )
-      rm -f "${tmp_err}"
+      done < "${tmp_list}"
+      rm -f "${tmp_err}" "${tmp_list}"
       if [[ -n "${hit_file}" ]]; then
         printf '%s:%s\n' "${found_manifest}" "${hit_file}"
         return 0
@@ -293,19 +306,39 @@ eval_rule() {
 }
 
 # Collect all modules with non-null .detect sorted by (priority, id).
+DISCOVERED_MODULES=""
+if DISCOVERED_MODULES="$(discover_modules "${ROOT}")"; then
+  :
+else
+  disc_rc=$?
+  printf 'detect-toolchain: failed to discover modules (exit=%d)\n' "${disc_rc}" >&2
+  exit "${disc_rc}"
+fi
+
+RAW_CANDIDATES=""
+while IFS=$'\t' read -r mod_id _mod_kind mod_dir; do
+  [[ -n "${mod_id}" ]] || continue
+  manifest="${mod_dir}/module.json"
+  if ! jq -e -s 'length == 1 and (.[0] | type == "object")' "${manifest}" >/dev/null 2>&1; then
+    printf 'detect-toolchain: malformed module manifest: %s\n' "${manifest}" >&2
+    exit 1
+  fi
+  has_detect="$(jq -r 'if .detect != null then "1" else "0" end' "${manifest}")" || exit 1
+  if [[ "${has_detect}" == "1" ]]; then
+    prio="$(jq -r '.detect.priority // 50' "${manifest}")" || exit 1
+    fb="$(jq -r 'if .detect.fallback == true then "1" else "0" end' "${manifest}")" || exit 1
+    row="$(printf '%03d\t%s\t%s\t%s' "${prio}" "${fb}" "${mod_id}" "${mod_dir}")" || exit 1
+    RAW_CANDIDATES="${RAW_CANDIDATES:+${RAW_CANDIDATES}$'\n'}${row}"
+  fi
+done <<< "${DISCOVERED_MODULES}"
+
 CANDIDATES=()
-while IFS= read -r line; do
-  [[ -n "${line}" ]] && CANDIDATES+=("${line}")
-done < <(
-  while IFS=$'\t' read -r mod_id _mod_kind mod_dir; do
-    [[ -n "${mod_id}" ]] || continue
-    if jq -e '.detect != null' "${mod_dir}/module.json" >/dev/null 2>&1; then
-      prio="$(jq -r '.detect.priority // 50' "${mod_dir}/module.json")"
-      fb="$(jq -r 'if .detect.fallback == true then "1" else "0" end' "${mod_dir}/module.json")"
-      printf '%03d\t%s\t%s\t%s\n' "${prio}" "${fb}" "${mod_id}" "${mod_dir}"
-    fi
-  done < <(discover_modules "${ROOT}") | LC_ALL=C sort
-)
+if [[ -n "${RAW_CANDIDATES}" ]]; then
+  SORTED_CANDIDATES="$(printf '%s\n' "${RAW_CANDIDATES}" | LC_ALL=C sort)" || exit 1
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] && CANDIDATES+=("${line}")
+  done <<< "${SORTED_CANDIDATES}"
+fi
 
 PRIMARY_MATCHES=()
 FALLBACK_MATCHES=()
@@ -317,13 +350,14 @@ FALLBACK_SUPERSEDED=""
 for entry in "${CANDIDATES[@]+"${CANDIDATES[@]}"}"; do
   IFS=$'\t' read -r _prio fb mod_id mod_dir <<< "${entry}"
   manifest="${mod_dir}/module.json"
-  match_mode="$(jq -r '.detect.match // "any"' "${manifest}")"
+  match_mode="$(jq -r '.detect.match // "any"' "${manifest}")" || exit 1
 
   mod_signals=()
   matched_any=0
   matched_all=1
   rule_count=0
 
+  rules_raw="$(jq -c '.detect.rules[]?' "${manifest}")" || exit 1
   while IFS= read -r rule_json; do
     [[ -n "${rule_json}" ]] || continue
     rule_count=$((rule_count + 1))
@@ -339,7 +373,7 @@ for entry in "${CANDIDATES[@]+"${CANDIDATES[@]}"}"; do
       fi
       matched_all=0
     fi
-  done < <(jq -c '.detect.rules[]?' "${manifest}")
+  done <<< "${rules_raw}"
 
   is_match=0
   if [[ "${rule_count}" -gt 0 ]]; then
@@ -352,20 +386,21 @@ for entry in "${CANDIDATES[@]+"${CANDIDATES[@]}"}"; do
 
   if [[ "${is_match}" -eq 1 ]]; then
     sig_arr="$(printf '%s\n' "${mod_signals[@]}" | jq -R . | jq -s .)"
+    sup_raw="$(jq -r '.detect.supersedes[]?' "${manifest}")" || exit 1
     if [[ "${fb}" == "1" ]]; then
       FALLBACK_MATCHES+=("${mod_id}")
       FALLBACK_SIGNALS_JSON="$(printf '%s' "${FALLBACK_SIGNALS_JSON}" | jq --arg k "${mod_id}" --argjson v "${sig_arr}" '.[$k] = $v')"
       while IFS= read -r sup; do
         [[ -n "${sup}" ]] || continue
         FALLBACK_SUPERSEDED="${FALLBACK_SUPERSEDED:+${FALLBACK_SUPERSEDED}$'\n'}${mod_id}:${sup}"
-      done < <(jq -r '.detect.supersedes[]?' "${manifest}")
+      done <<< "${sup_raw}"
     else
       PRIMARY_MATCHES+=("${mod_id}")
       PRIMARY_SIGNALS_JSON="$(printf '%s' "${PRIMARY_SIGNALS_JSON}" | jq --arg k "${mod_id}" --argjson v "${sig_arr}" '.[$k] = $v')"
       while IFS= read -r sup; do
         [[ -n "${sup}" ]] || continue
         PRIMARY_SUPERSEDED="${PRIMARY_SUPERSEDED:+${PRIMARY_SUPERSEDED}$'\n'}${mod_id}:${sup}"
-      done < <(jq -r '.detect.supersedes[]?' "${manifest}")
+      done <<< "${sup_raw}"
     fi
   fi
 done
@@ -418,6 +453,11 @@ if [[ "${JSON_MODE}" -eq 1 ]]; then
   tc_json="$(printf '%s\n' "${FINAL[@]}" | jq -R . | jq -s .)"
   jq -n --argjson tc "${tc_json}" --argjson sig "${SIGNALS_JSON}" \
     '{ toolchains: $tc, signals: $sig, override: false }'
+elif [[ "${EXPLAIN_MODE}" -eq 1 ]]; then
+  for mod_id in "${FINAL[@]}"; do
+    sigs="$(printf '%s' "${SIGNALS_JSON}" | jq -r --arg k "${mod_id}" '(.[$k] // []) | join(", ")')"
+    printf '%s (%s)\n' "${mod_id}" "${sigs}"
+  done
 else
   printf '%s\n' "${FINAL[*]}"
 fi

@@ -26,14 +26,18 @@ compiler_parse_jsonc_object() {
 compiler_ux_managed_keys_json() {
   local root="${1}"
   local crisp="${root}/modules/ux/crisp/settings.profile.jsonc"
-  compiler_parse_jsonc_object "${root}" "${crisp}" | jq -S -c 'keys'
+  local parsed
+  parsed="$(compiler_parse_jsonc_object "${root}" "${crisp}")" || return $?
+  printf '%s\n' "${parsed}" | jq -S -c 'keys'
 }
 
 # Print JSON array of ai-agents settings keys dynamically from modules/capabilities/ai-agents/.
 compiler_ai_agents_keys_json() {
   local root="${1}"
   local ai_cfg="${root}/modules/capabilities/ai-agents/settings.profile.jsonc"
-  compiler_parse_jsonc_object "${root}" "${ai_cfg}" | jq -S -c 'keys'
+  local parsed
+  parsed="$(compiler_parse_jsonc_object "${root}" "${ai_cfg}")" || return $?
+  printf '%s\n' "${parsed}" | jq -S -c 'keys'
 }
 
 # Deterministic jq deep-merge across a list of JSON object files:
@@ -89,8 +93,8 @@ compiler_compile_settings() {
   for mod in "${modules[@]+"${modules[@]}"}"; do
     [[ -n "${mod}" ]] || continue
     dir="$(module_dir_for_id "${root}" "${mod}")" || { rm -rf "${tmp_dir}"; return 4; }
-    ws_file="$(jq -r '.settings.workspace // empty' "${dir}/module.json")"
-    prof_file="$(jq -r '.settings.profile // empty' "${dir}/module.json")"
+    ws_file="$(jq -r '.settings.workspace // empty' "${dir}/module.json")" || { rm -rf "${tmp_dir}"; return 1; }
+    prof_file="$(jq -r '.settings.profile // empty' "${dir}/module.json")" || { rm -rf "${tmp_dir}"; return 1; }
 
     if [[ "${scope}" == "workspace" || "${scope}" == "both" ]]; then
       if [[ -n "${ws_file}" ]]; then
@@ -341,6 +345,66 @@ compiler_rtk_terminal_settings_json() {
   '
 }
 
+# Compile canonical UX-agnostic profile settings for <profile_name> into <out_file>
+# without writing generated artifacts into <root>.
+compiler_compile_profile_settings_file() {
+  local root="${1}"
+  local profile_name="${2}"
+  local out_file="${3}"
+  local recipe="${root}/profiles/${profile_name}/profile.json"
+  if [[ ! -f "${recipe}" ]]; then
+    printf 'error: missing profile recipe: %s\n' "${recipe}" >&2
+    return 1
+  fi
+
+  local resolved_str
+  resolved_str="$(resolve_profile_recipe "${root}" "${profile_name}" "" "" "default")" || return $?
+  local mods=()
+  local m
+  while IFS= read -r m; do
+    [[ -n "${m}" ]] && mods+=("${m}")
+  done <<< "${resolved_str}"
+
+  local ov_ws ov_prof combined_ov
+  ov_ws="$(jq -c 'if (.overrides | type) == "object" and (.overrides | has("workspace") or has("profile")) then (.overrides.workspace // {}) else {} end' "${recipe}")" || return $?
+  ov_prof="$(jq -c 'if (.overrides | type) == "object" and (.overrides | has("workspace") or has("profile")) then (.overrides.profile // {}) else (.overrides // {}) end' "${recipe}")" || return $?
+  combined_ov="$(jq -n --argjson a "${ov_ws}" --argjson b "${ov_prof}" '$a * $b')" || return $?
+
+  local ux_keys
+  ux_keys="$(compiler_ux_managed_keys_json "${root}")" || return 1
+
+  # Capture upstream compile output first so failures propagate even when caller has set +e/+o pipefail.
+  local compiled_settings
+  compiled_settings="$(compiler_compile_settings "${root}" both --override-json "${combined_ov}" -- "${mods[@]+"${mods[@]}"}")" || return $?
+  printf '%s\n' "${compiled_settings}" | jq -S --argjson ux "${ux_keys}" 'reduce $ux[] as $k (.; del(.[$k]))' > "${out_file}" || return $?
+}
+
+# Compile canonical VS Code profile extensions array for <profile_name> into <out_file>
+# without writing generated artifacts into <root>.
+compiler_compile_profile_extensions_file() {
+  local root="${1}"
+  local profile_name="${2}"
+  local out_file="${3}"
+  local recipe="${root}/profiles/${profile_name}/profile.json"
+  if [[ ! -f "${recipe}" ]]; then
+    printf 'error: missing profile recipe: %s\n' "${recipe}" >&2
+    return 1
+  fi
+
+  local resolved_str
+  resolved_str="$(resolve_profile_recipe "${root}" "${profile_name}" "" "" "default")" || return $?
+  local mods=()
+  local m
+  while IFS= read -r m; do
+    [[ -n "${m}" ]] && mods+=("${m}")
+  done <<< "${resolved_str}"
+
+  # Capture upstream compile output first so failures propagate even when caller has set +e/+o pipefail.
+  local compiled_exts
+  compiled_exts="$(compiler_compile_extensions "${root}" profile "${mods[@]+"${mods[@]}"}")" || return $?
+  printf '%s\n' "${compiled_exts}" | jq . > "${out_file}" || return $?
+}
+
 # Build a canonical profile recipe into:
 #   - _merged/<name>.json (0644, UX-agnostic: all 15 symmetric UX keys stripped)
 #   - profiles/<name>/settings.json -> ../../_merged/<name>.json
@@ -363,9 +427,9 @@ compiler_build_profile() {
   done <<< "${resolved_str}"
 
   local ov_ws ov_prof combined_ov
-  ov_ws="$(jq -c 'if (.overrides | type) == "object" and (.overrides | has("workspace") or has("profile")) then (.overrides.workspace // {}) else {} end' "${recipe}")"
-  ov_prof="$(jq -c 'if (.overrides | type) == "object" and (.overrides | has("workspace") or has("profile")) then (.overrides.profile // {}) else (.overrides // {}) end' "${recipe}")"
-  combined_ov="$(jq -n --argjson a "${ov_ws}" --argjson b "${ov_prof}" '$a * $b')"
+  ov_ws="$(jq -c 'if (.overrides | type) == "object" and (.overrides | has("workspace") or has("profile")) then (.overrides.workspace // {}) else {} end' "${recipe}")" || return $?
+  ov_prof="$(jq -c 'if (.overrides | type) == "object" and (.overrides | has("workspace") or has("profile")) then (.overrides.profile // {}) else (.overrides // {}) end' "${recipe}")" || return $?
+  combined_ov="$(jq -n --argjson a "${ov_ws}" --argjson b "${ov_prof}" '$a * $b')" || return $?
 
   local ux_keys
   ux_keys="$(compiler_ux_managed_keys_json "${root}")" || return 1
@@ -373,18 +437,24 @@ compiler_build_profile() {
   local tmp_dir
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/vsp-build-prof.XXXXXX")" || return 1
 
-  if ! compiler_compile_settings "${root}" both --override-json "${combined_ov}" -- "${mods[@]+"${mods[@]}"}" \
-      | jq -S --argjson ux "${ux_keys}" 'reduce $ux[] as $k (.; del(.[$k]))' > "${tmp_dir}/merged.json"; then
+  local compiled_settings
+  if ! compiled_settings="$(compiler_compile_settings "${root}" both --override-json "${combined_ov}" -- "${mods[@]+"${mods[@]}"}")" \
+     || ! printf '%s\n' "${compiled_settings}" | jq -S --argjson ux "${ux_keys}" 'reduce $ux[] as $k (.; del(.[$k]))' > "${tmp_dir}/merged.json"; then
     rm -rf "${tmp_dir}"
     return 1
   fi
 
-  if ! compiler_compile_extensions "${root}" profile "${mods[@]+"${mods[@]}"}" | jq . > "${tmp_dir}/extensions.json"; then
+  local compiled_exts
+  if ! compiled_exts="$(compiler_compile_extensions "${root}" profile "${mods[@]+"${mods[@]}"}")" \
+     || ! printf '%s\n' "${compiled_exts}" | jq . > "${tmp_dir}/extensions.json"; then
     rm -rf "${tmp_dir}"
     return 1
   fi
 
-  mkdir -p "${root}/_merged" "${root}/profiles/${profile_name}"
+  if ! mkdir -p "${root}/_merged" "${root}/profiles/${profile_name}"; then
+    rm -rf "${tmp_dir}"
+    return 1
+  fi
   if ! atomic_write_file --no-follow "${root}/_merged/${profile_name}.json" "${tmp_dir}/merged.json" 0644; then
     rm -rf "${tmp_dir}"
     return 1
@@ -393,7 +463,11 @@ compiler_build_profile() {
     rm -rf "${tmp_dir}"
     return 1
   fi
-  ln -sfn "../../_merged/${profile_name}.json" "${root}/profiles/${profile_name}/settings.json"
+  if ! ln -sfn "../../_merged/${profile_name}.json" "${root}/profiles/${profile_name}/settings.json"; then
+    printf 'error: failed to symlink %s -> ../../_merged/%s.json\n' "${root}/profiles/${profile_name}/settings.json" "${profile_name}" >&2
+    rm -rf "${tmp_dir}"
+    return 1
+  fi
   rm -rf "${tmp_dir}"
   return 0
 }

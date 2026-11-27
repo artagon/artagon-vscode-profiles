@@ -53,10 +53,17 @@ load test_helper
   [[ "$(jq -r '."editor.fontFamily"' "${ws}/.vscode/settings.json")" == "JetBrains Mono" ]]
 
   # Compiled exported bundles never leak any of the 15 UX keys.
-  for bundle in "${REPO_ROOT}"/exports/*.code-profile; do
-    [[ -L "${bundle}" ]] && continue
+  built="${TEST_TMP}/ux-export-repo"
+  mkdir -p "${built}"
+  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" "${built}/"
+  VSPCLI_ROOT="${built}" "${BASH}" "${SCRIPTS_DIR}/export-profiles.sh" >/dev/null
+  bundle_count=0
+  for bundle in "${built}"/exports/*.code-profile; do
+    [[ -f "${bundle}" && ! -L "${bundle}" ]] || continue
+    bundle_count=$((bundle_count + 1))
     [[ "$(jq '.settings | has("workbench.colorTheme") or has("editor.fontFamily") or has("workbench.iconTheme") or has("workbench.productIconTheme")' "${bundle}")" == "false" ]]
   done
+  [[ "${bundle_count}" -eq 15 ]]
 }
 
 @test "ux: --ux-target=user writes UX to <CODE_USER_DIR>/settings.json with .bak & comment-loss guard while keeping workspace clean" {
@@ -119,7 +126,15 @@ EOF
   run vspcli apply --target=workspace --ux=monokai --ux-in-workspace "${ws}"
   [[ "${status}" -eq 4 ]]
 
-  for merged in "${REPO_ROOT}"/_merged/*.json; do
+  built="${TEST_TMP}/ux-merged-repo"
+  mkdir -p "${built}"
+  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" "${built}/"
+  VSPCLI_ROOT="${built}" "${BASH}" "${SCRIPTS_DIR}/compose-settings.sh" >/dev/null
+  merged_count=0
+  for merged in "${built}"/_merged/*.json; do
+    [[ -f "${merged}" ]] || continue
+    merged_count=$((merged_count + 1))
     [[ "$(jq -r '."workbench.sideBar.location"' "${merged}")" == "left" ]]
   done
+  [[ "${merged_count}" -eq 15 ]]
 }

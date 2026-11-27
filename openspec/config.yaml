@@ -2,60 +2,45 @@ schema: spec-driven
 
 context: |
   ## Purpose
-  Manages Visual Studio Code profile configurations, workspace templates, and
-  supply-chain-hardened extension workflows under `~/.config/vscode` (or any
-  cloned path). Replaces stock `User/` profiles with a composable,
-  capability-module-driven architecture compiled by a single Bash 3.2 + `jq`
-  engine.
-
-  ## Scope and Goals
-  - Vertical capability, toolchain, and UX modules under `modules/` backed by
-    a single lowercase-keyed catalog under `catalog/`.
-  - 15 thin compiled profile recipes under `profiles/<name>/profile.json`.
-  - Default AI agent trio (`anthropic.claude-code`, `openai.chatgpt`,
-    `github.copilot-chat`) with explicit opt-outs (`general-minimal`,
-    `ai-copilot`, `--without ai-agents`, `import-profile.sh --no-ai`).
-  - Strict separation of team-shareable workspace settings vs personal UX and
-    machine-scoped profile settings.
-  - Pure Bash 3.2+ (`/bin/bash` macOS compatible) + `jq` runtime (zero
-    Python/Node/Rust runtime dependencies).
-  - Reproducible `.code-profile` bundles with `SHA256SUMS`, install-time
-    SHA-256 VSIX pins, publisher allowlist, and GlassWorm compromised-extension
-    remediation (`reconcile` + `doctor`).
+  vsp v3.0.0 unifies Visual Studio Code profile composition, workspace setup,
+  extension audits, and release generation in a native Rust CLI.
 
   ## Tech Stack
-  - Bash 3.2+ (`/bin/bash` on macOS and GNU Bash on Linux)
-  - `jq` (including Apple `jq` 1.7.1)
-  - `awk`, `curl`, `openssl` / `dd`+`od`, `shasum` / `sha256sum`
-  - Optional shells for RTK wrappers: `zsh`, `fish`, `bash`
-  - VS Code CLI (`code`) for extension install/reconcile/doctor/import
+  - Rust workspace under crates/vsp/ using clap, serde, jsonc-parser, sha2,
+    and fs4. The compiled binary embeds the catalog and packs.
+  - VS Code CLI (code) for live profile, extension, and workspace operations.
+  - Bash and jq for legacy vspcli compatibility shims and repository tooling.
+  - Bash, Zsh, and Fish for the optional RTK terminal wrappers in
+    packs/rtk-terminal/scripts/.
 
   ## Project Structure
-  - `catalog/` - authoritative registries:
-    - `extensions.json` (lowercase IDs, 5 lifecycle statuses, `packMembers`, `themeLabels`)
-    - `publishers.json` (`LC_ALL=C` sorted exact active-module publisher allowlist)
-    - `defaults.json` (default capabilities and UX preset)
-    - `extension-pins.json` (install-time SHA-256 VSIX pins)
-    - `setting-scopes.json` (VS Code 1.147.0 key/type/enum/scope registry)
-  - `modules/` - vertical self-contained modules (`module.json` + JSONC/tasks/scripts):
-    - `modules/capabilities/` (12 capabilities including `core-editor`, `ai-agents`, `ai-copilot`, `markdown`, `shell`, `github-workflows`, `rtk-terminal`, etc.)
-    - `modules/toolchains/` (15 toolchains: `rust`, `python-base`/`python`/`python-ty`, `ts-base`/`ts-eslint-prettier`/`biome`/`astro`, `java-base`/`java-gradle`/`java-maven`/`java-spring`, `cpp-base`/`cpp-clangd`/`cpp-intellisense`)
-    - `modules/ux/` (3 presets: `crisp`, `retina`, `default`; 14 exact symmetric keys in `crisp`/`retina`, `{}` in `default`)
-  - `profiles/` - 15 thin `profile.json` recipes + compiled `settings.json` symlink and `extensions.json`
-  - `_merged/` - compiled UX-agnostic profile settings (generated; do not edit)
-  - `exports/` - compiled UX-agnostic `.code-profile` bundles, 22 legacy symlinks (`ai-profile-*` -> `ai-copilot.code-profile`), and `SHA256SUMS`
-  - `scripts/` - `vspcli`, `lib/` (pure Bash 3.2 sourced libraries), top-level scripts, `git-hooks/pre-commit`, and `tests/`
-  - `openspec/` - OpenSpec specifications and active/archived changes
+  - packs/*.jsonc and packs/rtk-terminal/ define capabilities, toolchains,
+    scoped settings, detection signals, dependencies, and conflicts.
+  - presets.jsonc defines canonical recipes, display presets, and legacy aliases.
+  - catalog/extensions.jsonc defines the extension registry, defaults, and
+    lifecycle metadata. catalog/policy.jsonc defines setting scopes, forbidden
+    keys, autonomy rules, and Default-profile expectations.
+  - vsp.lock.json records per-platform VSIX hash locks, version locks, and
+    declarative exceptions. Tier 0 compromised and removed IDs live in the
+    extension catalog.
+  - crates/vsp/ implements the CLI, resolver, planner, synchronization, and
+    deterministic bundle exports. openspec/ records design and requirements.
 
   ## Core Workflows
-  - `vspcli build` — compiles `_merged/*.json`, `profiles/*/settings.json`, `profiles/*/extensions.json`, `exports/*.code-profile`, 22 legacy symlinks, and `exports/SHA256SUMS` under an exclusive lock.
-  - `vspcli validate` (`scripts/validate-json.sh`) — validates strict JSON/JSONC, catalog/publisher parity, DAG acyclicity, `scalar_leaves` + object-vs-leaf collisions, setting scopes, parsed-config autonomy deny-list, `SHA256SUMS`, broken symlinks, and Rust docs policy sync.
-  - `vspcli detect` / `vspcli apply` — detects project toolchains from `modules/*/*/module.json` signals and writes team-shareable `.vscode/{extensions,settings,tasks}.json` (personal UX & RTK remain opt-in or user-scoped).
-  - `vspcli reconcile` / `vspcli doctor` — audits/syncs installed VS Code profile extensions, uninstalls compromised extensions unconditionally first (Step 0), checks Default-profile application-scope & pin drift.
-  - `scripts/import-profile.sh` — verifies `SHA256SUMS`, scans bundle `.settings` against autonomy deny-list, filters non-active catalog statuses (and `--no-ai`), registers exclusively in `storage.json` with CAS + VS Code running guard, installs pinned/allowlisted extensions, and strips dangling themes/icons on failure.
-
-  ## Constraints and Notes
-  - `_merged/`, `profiles/*/extensions.json`, `profiles/*/settings.json`, and `exports/` are generated artifacts; always edit `catalog/`, `modules/`, or `profiles/*/profile.json` and run `bash scripts/vspcli build`.
-  - Production scripts MUST remain Bash 3.2 + `jq` compatible (no `declare -A`, `mapfile`, `${var,,}`, Python/Node/Rust runtime dependencies).
-  - Sourced libraries in `scripts/lib/*.sh` MUST NOT mutate caller shell options (`set`/`shopt`/`IFS`/`trap`).
-  - `ai-profile-{crisp,retina}` legacy aliases and export symlinks strictly resolve to `ai-copilot` (Copilot-only).
+  - vsp sync and vsp diff require explicit selectors. Standard dry-runs and
+    diff use the vsp-plan/v1 planner. vsp detect is read-only.
+  - vsp sync applies lossless JSONC CST edits and preserves user-owned keys.
+    Profile registration uses advisory locks and a SHA-256 compare-and-swap
+    check. Target provenance lives under the user's XDG state directory.
+  - Profile sync runs Step 0 to remove compromised or removed extensions.
+    vsp doctor returns exit 7 when required observation fails.
+  - Personal composition uses the v3 user config design at
+    ${XDG_CONFIG_HOME:-~/.config}/vsp/config.jsonc. Repository-local .vsp.toml
+    is unsupported for security.
+  - vsp dev validate checks source definitions. vsp export and vsp dev dist
+    compile on demand. The 83 former build outputs under _merged/, exports/,
+    and profiles/*/{extensions,settings}.json are untracked. Release jobs
+    publish checksum manifests and signed build provenance.
+  - Preserve the vspcli migration shim, the 15 canonical profile names,
+    and all 22 legacy bundle aliases. The ai-profile aliases remain
+    Copilot-only.

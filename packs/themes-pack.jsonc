@@ -1,0 +1,48 @@
+// Consolidated v2.2 pack: themes-pack (capability)
+{
+  "version": 2,
+  "id": "themes-pack",
+  "kind": "capability",
+  "description": "Optional curated extra color, file icon, and product icon themes beyond crisp (Tokyo Night) and retina (Catppuccin Mocha)",
+  "requires": [
+    "core-editor"
+  ],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [],
+    "profile": [
+      "akamud.vscode-theme-onedark",
+      "antfu.icons-carbon",
+      "beardedbear.beardedicons",
+      "beardedbear.beardedtheme",
+      "chadalen.vscode-jetbrains-icon-theme",
+      "dracula-theme.theme-dracula",
+      "eliverlara.andromeda",
+      "fawwazfirdaus.poimandres-darker",
+      "github.github-vscode-theme",
+      "jdinhlife.gruvbox",
+      "littensy.charmed-icons",
+      "liviuschera.noctis",
+      "miguelsolorio.symbols",
+      "monokai.theme-monokai-pro-vscode",
+      "mvllow.rose-pine",
+      "nyoomengineering.oxocarbon-vscode",
+      "raunofreiberg.vesper",
+      "sdras.night-owl",
+      "teabyii.ayu",
+      "vscode-icons-team.vscode-icons",
+      "yatasun.jetbrains-product-icons",
+      "zguolee.tabler-icons",
+      "zhuangtongfa.material-theme",
+      "zxchhh.jetbrains-dark-new-ui"
+    ],
+    "unwanted": []
+  },
+  "settings": {
+    "workspace": null,
+    "profile": null
+  },
+  "tasks": null,
+  "detect": null
+}

@@ -1,0 +1,80 @@
+// Consolidated v2.2 pack: cpp-intellisense (toolchain)
+{
+  "version": 2,
+  "id": "cpp-intellisense",
+  "kind": "toolchain",
+  "description": "C/C++ powered by Microsoft C/C++ IntelliSense (mutually exclusive with cpp-clangd)",
+  "requires": [
+    "cpp-base"
+  ],
+  "defaultWith": [],
+  "conflicts": [
+    "cpp-clangd"
+  ],
+  "extensions": {
+    "workspace": [
+      "ms-vscode.cpptools"
+    ],
+    "profile": [],
+    "unwanted": [
+      "llvm-vs-code-extensions.vscode-clangd",
+      "ms-vscode.cpptools-extension-pack"
+    ]
+  },
+  "settings": {
+    // Microsoft C/C++ IntelliSense workspace settings (CMake Tools provider + selective inlay hints).
+    "workspace": {
+      "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+      "C_Cpp.default.cppStandard": "c++20",
+      "C_Cpp.default.cStandard": "c17",
+      "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+      "C_Cpp.default.includePath": [
+        "${workspaceFolder}/include",
+        "${workspaceFolder}/src"
+      ],
+      "C_Cpp.inlayHints.autoDeclarationTypes.enabled": true,
+      "C_Cpp.inlayHints.autoDeclarationTypes.showOnLeft": false,
+      "C_Cpp.inlayHints.parameterNames.enabled": true,
+      "C_Cpp.inlayHints.parameterNames.suppressWhenArgumentContainsName": true,
+      "C_Cpp.inlayHints.parameterNames.hideLeadingUnderscores": true,
+      "C_Cpp.inlayHints.referenceOperator.enabled": true,
+      "C_Cpp.inlayHints.referenceOperator.showSpace": false,
+      "[cpp]": {
+        "editor.defaultFormatter": "ms-vscode.cpptools",
+        "editor.formatOnSave": true
+      },
+      "[c]": {
+        "editor.defaultFormatter": "ms-vscode.cpptools",
+        "editor.formatOnSave": true
+      }
+    },
+    "profile": null
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 42,
+    "fallback": false,
+    "match": "any",
+    "supersedes": [],
+    "rules": [
+      {
+        "type": "file_and_absent",
+        "present": "CMakeLists.txt",
+        "absent": ".clangd"
+      }
+    ]
+  },
+  "retireOnSwitch": {
+    "settings": [
+      "clangd.onConfigChanged",
+      "clangd.checkUpdates",
+      "clangd.arguments",
+      "clangd.detectExtensionConflicts",
+      "clangd.serverCompletionRanking",
+      "C_Cpp.intelliSenseEngine"
+    ],
+    "extensions": [
+      "llvm-vs-code-extensions.vscode-clangd"
+    ]
+  }
+}

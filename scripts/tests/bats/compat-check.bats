@@ -178,3 +178,95 @@ EOF
   [[ "$(printf '%s\n' "${output}" | jq -r '.summary.compatible')" -eq 1 ]]
   [[ "$(printf '%s\n' "${output}" | jq -r '.summary.not_found')" -eq 1 ]]
 }
+
+@test "compat: failed or malformed stable-history lookup exits 2 and blocks --check-compat=block before writes" {
+  install_code_mock "${TEST_TMP}/bin"
+  mp_bin="${TEST_TMP}/mp-stable-fail"
+  mkdir -p "${mp_bin}"
+  cat > "${mp_bin}/curl" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+out=""
+payload=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -d) payload="$2"; shift 2 ;;
+    *)  shift ;;
+  esac
+done
+flags="$(printf '%s' "${payload}" | jq -r '.flags // 0')"
+if [[ "${flags}" == "17" ]]; then
+  case "${STABLE_LOOKUP_MODE:-fail}" in
+    fail)
+      echo "curl: (22) HTTP 503 Service Unavailable" >&2
+      exit 22
+      ;;
+    malformed)
+      printf '{truncated not-json\n' > "${out}"
+      exit 0
+      ;;
+    badshape)
+      printf '{"error":"rate_limited"}\n' > "${out}"
+      exit 0
+      ;;
+  esac
+fi
+# Initial flags=529 batch query returns prerelease-only metadata with a compatible engine
+# so failing the secondary flags=17 lookup would produce a false pass unless caught!
+printf '%s' "${payload}" | jq '{
+  results: [{
+    extensions: [
+      .filters[0].criteria[].value
+      | split(".") as $p
+      | {
+          publisher: { publisherName: $p[0] },
+          extensionName: $p[1],
+          versions: [{
+            version: "0.9.0-pre",
+            properties: [
+              { key: "Microsoft.VisualStudio.Code.PreRelease", value: "true" },
+              { key: "Microsoft.VisualStudio.Code.Engine", value: "^1.90.0" }
+            ]
+          }]
+        }
+    ]
+  }]
+}' > "${out}"
+MOCK
+  chmod 0755 "${mp_bin}/curl"
+
+  ext_f="${TEST_TMP}/pre-ext.json"
+  printf '[{"identifier":{"id":"rust-lang.rust-analyzer"}}]\n' > "${ext_f}"
+
+  for mode in fail malformed badshape; do
+    PATH="${mp_bin}:${PATH}" STABLE_LOOKUP_MODE="${mode}" \
+      run --separate-stderr "${BASH}" "${SCRIPTS_DIR}/check-extension-compatibility.sh" \
+      --extensions-file "${ext_f}" --vscode-version 1.147.0 --marketplace-only --json
+    [[ "${status}" -eq 2 ]]
+    [[ "${stderr}" == *"verification unavailable"* ]]
+  done
+
+  # Verify --check-compat=block aborts BEFORE writing .vscode/ on both failed & malformed stable-history lookups.
+  ws_fail="$(make_workspace rust-stable-fail Cargo.toml)"
+  PATH="${mp_bin}:${PATH}" STABLE_LOOKUP_MODE="fail" \
+    run vspcli apply --target=workspace --check-compat=block "${ws_fail}"
+  [[ "${status}" -eq 1 ]]
+  [[ ! -d "${ws_fail}/.vscode" ]]
+
+  ws_bad="$(make_workspace rust-stable-bad Cargo.toml)"
+  PATH="${mp_bin}:${PATH}" STABLE_LOOKUP_MODE="malformed" \
+    run vspcli apply --target=workspace --check-compat=block "${ws_bad}"
+  [[ "${status}" -eq 1 ]]
+  [[ ! -d "${ws_bad}/.vscode" ]]
+}
+
+@test "compat: malformed profile extensions.json exits 2 instead of silently passing with 0 IDs" {
+  bad_repo="${TEST_TMP}/bad-compat-repo"
+  mkdir -p "${bad_repo}/profiles/broken"
+  printf '[{"identifier":{"id":"rust-lang.rust-analyzer"}}] trailing\n' > "${bad_repo}/profiles/broken/extensions.json"
+
+  run env VSPCLI_ROOT="${bad_repo}" "${BASH}" "${SCRIPTS_DIR}/check-extension-compatibility.sh" \
+    --vscode-version 1.147.0 --marketplace-only broken
+  [[ "${status}" -eq 2 ]]
+}

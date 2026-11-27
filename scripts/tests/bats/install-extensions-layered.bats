@@ -56,8 +56,12 @@ load test_helper
 
 @test "compose: all 15 compiled profiles/<name>/extensions.json match compose-extensions.sh" {
   require_bin jq
+  built="${TEST_TMP}/compose-repo"
+  mkdir -p "${built}"
+  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" "${built}/"
+  VSPCLI_ROOT="${built}" "${BASH}" "${SCRIPTS_DIR}/compose-settings.sh" >/dev/null
   for flavor in ai ai-copilot ai-plus astro cpp-clangd cpp-intellisense general general-minimal github-workflows java-gradle java-maven java-spring python rust shell; do
-    profile_set="$(jq -S '[.[].identifier.id] | sort | unique' "${REPO_ROOT}/profiles/${flavor}/extensions.json")"
+    profile_set="$(jq -S '[.[].identifier.id] | sort | unique' "${built}/profiles/${flavor}/extensions.json")"
     composed_set="$("${BASH}" "${LIB_DIR}/compose-extensions.sh" "${flavor}" | jq -S '[.[].identifier.id] | sort | unique')"
     [[ "${profile_set}" = "${composed_set}" ]] || {
       echo "set mismatch for ${flavor}:" >&2
@@ -87,4 +91,22 @@ load test_helper
   [[ "${stderr}" != *"unknown group"* ]]
   [[ "${output}" == *"[DX] alefragnani.bookmarks"* ]]
   [[ "${output}" == *"[DX] mechatroner.rainbow-csv"* ]]
+}
+
+@test "install-extensions: malformed, trailing-garbage, and multi-document extensions.json exit nonzero with 0 installs" {
+  install_code_mock "${TEST_TMP}/bin"
+  bad_repo="${TEST_TMP}/bad-ext-repo"
+  mkdir -p "${bad_repo}/profiles/malformed" "${bad_repo}/profiles/trailing" "${bad_repo}/profiles/multidoc"
+  cp -R "${REPO_ROOT}/catalog" "${bad_repo}/catalog"
+
+  printf '{broken json\n' > "${bad_repo}/profiles/malformed/extensions.json"
+  printf '[{"identifier":{"id":"enkia.tokyo-night"}}] trailing garbage\n' > "${bad_repo}/profiles/trailing/extensions.json"
+  printf '[{"identifier":{"id":"enkia.tokyo-night"}}]\n[{"identifier":{"id":"editorconfig.editorconfig"}}]\n' > "${bad_repo}/profiles/multidoc/extensions.json"
+
+  for prof in malformed trailing multidoc; do
+    rm -f "${CODE_LOG}"
+    run env VSPCLI_ROOT="${bad_repo}" "${BASH}" "${SCRIPTS_DIR}/install-extensions.sh" "${prof}"
+    [[ "${status}" -ne 0 ]]
+    [[ ! -s "${CODE_LOG}" ]]
+  done
 }

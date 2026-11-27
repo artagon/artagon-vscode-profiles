@@ -74,17 +74,21 @@ load test_helper
 }
 
 @test "migration: legacy export symlinks exist and ai-profile-* strictly targets ai-copilot" {
-  [[ "$(readlink "${REPO_ROOT}/exports/rust-profile-crisp.code-profile")" == "rust.code-profile" ]]
-  [[ "$(readlink "${REPO_ROOT}/exports/ai-profile-crisp.code-profile")" == "ai-copilot.code-profile" ]]
-  [[ "$(readlink "${REPO_ROOT}/exports/ai-profile-retina.code-profile")" == "ai-copilot.code-profile" ]]
+  built="${TEST_TMP}/mig-export-repo"
+  mkdir -p "${built}"
+  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" "${built}/"
+  VSPCLI_ROOT="${built}" "${BASH}" "${SCRIPTS_DIR}/export-profiles.sh" rust ai-copilot >/dev/null
+  [[ "$(readlink "${built}/exports/rust-profile-crisp.code-profile")" == "rust.code-profile" ]]
+  [[ "$(readlink "${built}/exports/ai-profile-crisp.code-profile")" == "ai-copilot.code-profile" ]]
+  [[ "$(readlink "${built}/exports/ai-profile-retina.code-profile")" == "ai-copilot.code-profile" ]]
 }
 
 @test "migration: --refresh-symlinks keeps ai-profile-* pointed at ai-copilot.code-profile" {
   fixture="${TEST_TMP}/refresh-repo"
   mkdir -p "${fixture}/exports"
-  cp "${REPO_ROOT}/exports/ai-copilot.code-profile" "${fixture}/exports/"
-  cp "${REPO_ROOT}/exports/ai.code-profile" "${fixture}/exports/"
-  cp "${REPO_ROOT}/exports/rust.code-profile" "${fixture}/exports/"
+  printf '{"name":"ai-copilot","settings":{},"extensions":{"enabled":["github.copilot-chat"]}}\n' > "${fixture}/exports/ai-copilot.code-profile"
+  printf '{"name":"ai","settings":{},"extensions":{"enabled":["google.google-antigravity"]}}\n' > "${fixture}/exports/ai.code-profile"
+  printf '{"name":"rust","settings":{},"extensions":{"enabled":["rust-lang.rust-analyzer"]}}\n' > "${fixture}/exports/rust.code-profile"
   # Point ai-profile-crisp wrongly at ai.code-profile, then refresh.
   ln -sfn "ai.code-profile" "${fixture}/exports/ai-profile-crisp.code-profile"
   run env VSPCLI_ROOT="${fixture}" "${BASH}" "${SCRIPTS_DIR}/migrate-catalog.sh" --refresh-symlinks

@@ -1,0 +1,92 @@
+// Consolidated v2.2 pack: cpp-clangd (toolchain)
+{
+  "version": 2,
+  "id": "cpp-clangd",
+  "kind": "toolchain",
+  "description": "C/C++ powered by LLVM clangd (mutually exclusive with cpp-intellisense)",
+  "requires": [
+    "cpp-base"
+  ],
+  "defaultWith": [],
+  "conflicts": [
+    "cpp-intellisense"
+  ],
+  "extensions": {
+    "workspace": [
+      "llvm-vs-code-extensions.vscode-clangd"
+    ],
+    "profile": [],
+    "unwanted": [
+      "ms-vscode.cpptools",
+      "ms-vscode.cpptools-extension-pack"
+    ]
+  },
+  "settings": {
+    // clangd C/C++ language server settings (verified against clangd 21/23 CLI flags; disables cpptools IntelliSense).
+    "workspace": {
+      "clangd.onConfigChanged": "restart",
+      "clangd.checkUpdates": false,
+      "clangd.arguments": [
+        "--background-index",
+        "--background-index-priority=low",
+        "--clang-tidy",
+        "--completion-style=detailed",
+        "--all-scopes-completion",
+        "--function-arg-placeholders=1",
+        "--header-insertion=iwyu",
+        "--header-insertion-decorators",
+        "--enable-config",
+        "--pch-storage=memory"
+      ],
+      "clangd.detectExtensionConflicts": true,
+      "clangd.serverCompletionRanking": true,
+      "C_Cpp.intelliSenseEngine": "disabled",
+      "[cpp]": {
+        "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
+        "editor.formatOnSave": true
+      },
+      "[c]": {
+        "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
+        "editor.formatOnSave": true
+      }
+    },
+    "profile": null
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 40,
+    "fallback": false,
+    "match": "any",
+    "supersedes": [
+      "cpp-intellisense"
+    ],
+    "rules": [
+      {
+        "type": "all_files",
+        "paths": [
+          "CMakeLists.txt",
+          ".clangd"
+        ]
+      }
+    ]
+  },
+  "retireOnSwitch": {
+    "settings": [
+      "C_Cpp.default.configurationProvider",
+      "C_Cpp.default.cppStandard",
+      "C_Cpp.default.cStandard",
+      "C_Cpp.default.compileCommands",
+      "C_Cpp.default.includePath",
+      "C_Cpp.inlayHints.autoDeclarationTypes.enabled",
+      "C_Cpp.inlayHints.autoDeclarationTypes.showOnLeft",
+      "C_Cpp.inlayHints.parameterNames.enabled",
+      "C_Cpp.inlayHints.parameterNames.suppressWhenArgumentContainsName",
+      "C_Cpp.inlayHints.parameterNames.hideLeadingUnderscores",
+      "C_Cpp.inlayHints.referenceOperator.enabled",
+      "C_Cpp.inlayHints.referenceOperator.showSpace"
+    ],
+    "extensions": [
+      "ms-vscode.cpptools"
+    ]
+  }
+}

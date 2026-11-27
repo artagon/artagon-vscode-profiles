@@ -1,0 +1,84 @@
+// Consolidated v2.2 pack: astro (toolchain)
+{
+  "version": 2,
+  "id": "astro",
+  "kind": "toolchain",
+  "description": "Astro web development with Tailwind CSS, Stylelint, and automatic ESLint+Prettier (or Biome when biome.json exists)",
+  "requires": [
+    "ts-base"
+  ],
+  "defaultWith": [
+    "ts-eslint-prettier"
+  ],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [
+      "astro-build.astro-vscode",
+      "bradlc.vscode-tailwindcss",
+      "stylelint.vscode-stylelint",
+      "clinyong.vscode-css-modules",
+      "ecmel.vscode-html-css",
+      "pranaygp.vscode-css-peek",
+      "naumovs.color-highlight"
+    ],
+    "profile": [],
+    "unwanted": [
+      "christian-kohler.npm-intellisense",
+      "christian-kohler.path-intellisense"
+    ]
+  },
+  "settings": {
+    // Astro workspace settings (disables built-in CSS/SCSS/Less validation so Tailwind/Stylelint have zero false positives).
+    "workspace": {
+      "stylelint.validate": ["css", "scss", "postcss", "astro"],
+      "astro.content-intellisense": true,
+      "[astro]": {
+        "editor.defaultFormatter": "astro-build.astro-vscode",
+        "editor.formatOnSave": true
+      },
+      "files.associations": {
+        "*.astro": "astro"
+      },
+      "emmet.includeLanguages": {
+        "astro": "html"
+      },
+      "tailwindCSS.includeLanguages": {
+        "astro": "html"
+      },
+      "tailwindCSS.emmetCompletions": true,
+      "css.validate": false,
+      "scss.validate": false,
+      "less.validate": false,
+      "files.watcherExclude": {
+        "**/.astro/**": true
+      },
+      "search.exclude": {
+        "**/.astro/**": true
+      }
+    },
+    "profile": null
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 20,
+    "fallback": false,
+    "match": "any",
+    "supersedes": [
+      "ts-base"
+    ],
+    "rules": [
+      {
+        "type": "all_files",
+        "paths": [
+          "package.json"
+        ],
+        "any_extra": [
+          "astro.config.mjs",
+          "astro.config.ts",
+          "astro.config.js",
+          "astro.config.cjs"
+        ]
+      }
+    ]
+  }
+}

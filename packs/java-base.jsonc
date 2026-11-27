@@ -1,0 +1,156 @@
+// Consolidated v2.2 pack: java-base (toolchain)
+{
+  "version": 2,
+  "id": "java-base",
+  "kind": "toolchain",
+  "description": "Shared Java language support (Red Hat JDT LS with native Lombok, XML, Debug, Test, Dependencies, Checkstyle)",
+  "requires": [
+    "core-editor"
+  ],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [
+      "redhat.java",
+      "redhat.vscode-xml",
+      "vscjava.vscode-java-debug",
+      "vscjava.vscode-java-test",
+      "vscjava.vscode-java-dependency",
+      "shengchen.vscode-checkstyle"
+    ],
+    "profile": [],
+    "unwanted": [
+      "vscjava.vscode-java-pack",
+      "gabrielbb.vscode-lombok",
+      "pmd.pmd",
+      "shirdows.vscode-maven-dependency-explorer",
+      "naco-siren.gradle-language"
+    ]
+  },
+  "settings": {
+    // Shared Java workspace settings: G1GC + StringDeduplication JDT LS tuning, native Lombok,
+    // Jakarta-aware import order, literal-only parameter inlay hints, and test runner defaults.
+    "workspace": {
+      "java.configuration.updateBuildConfiguration": "interactive",
+      "java.jdt.ls.lombokSupport.enabled": true,
+      "java.jdt.ls.vmargs": "-XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxGCPauseMillis=100 -Dsun.zip.disableMemoryMapping=true -Xms256m -Xmx4G -Xlog:disable",
+      "java.jdt.ls.appcds.enabled": "on",
+      "java.jdt.ls.javac.enabled": "off",
+      "java.sharedIndexes.enabled": "on",
+      "java.autobuild.enabled": true,
+      "java.maxConcurrentBuilds": 4,
+
+      "java.compile.nullAnalysis.mode": "automatic",
+      "java.project.resourceFilters": ["node_modules", "\\.git", "\\.idea", "\\.settings", "out"],
+      "java.project.referencedLibraries": ["lib/**/*.jar"],
+      "java.import.exclusions": [
+        "**/node_modules/**",
+        "**/.metadata/**",
+        "**/archetype-resources/**",
+        "**/META-INF/maven/**"
+      ],
+
+      "java.referencesCodeLens.enabled": false,
+      "java.implementationCodeLens": "types",
+      "java.hover.javadoc.enabled": true,
+      "java.signatureHelp.description.enabled": true,
+      "java.signatureHelp.enabled": true,
+
+      "java.completion.enabled": true,
+      "java.completion.guessMethodArguments": "auto",
+      "java.completion.importOrder": ["#", "java", "javax", "jakarta", "org", "com", ""],
+      "java.completion.favoriteStaticMembers": [
+        "org.junit.Assert.*",
+        "org.junit.jupiter.api.Assertions.*",
+        "org.mockito.Mockito.*",
+        "org.mockito.ArgumentMatchers.*",
+        "org.hamcrest.Matchers.*",
+        "org.hamcrest.CoreMatchers.*",
+        "java.util.Objects.requireNonNull",
+        "java.util.Collections.*",
+        "java.util.stream.Collectors.*"
+      ],
+      "java.completion.postfix.enabled": true,
+      "java.completion.chain.enabled": true,
+      "java.completion.matchCase": "firstLetter",
+
+      "java.format.comments.enabled": false,
+      "java.sources.organizeImports.starThreshold": 999,
+      "java.sources.organizeImports.staticStarThreshold": 999,
+      "java.contentProvider.preferred": "fernflower",
+
+      "java.codeGeneration.hashCodeEquals.useJava7Objects": true,
+      "java.codeGeneration.toString.template": "${object.className} {${member.name()}=${member.value}, ${otherMembers}}",
+      "java.codeGeneration.useBlocks": true,
+
+      "java.inlayHints.parameterNames.enabled": "literals",
+      "java.inlayHints.parameterNames.suppressWhenSameNameNumbered": true,
+      "java.inlayHints.variableTypes.enabled": true,
+
+      "java.debug.settings.console": "integratedTerminal",
+      "java.debug.settings.hotCodeReplace": "auto",
+      "java.debug.settings.stepping.skipSynthetics": true,
+      "java.debug.settings.stepping.skipStaticInitializers": false,
+      "java.debug.settings.stepping.skipConstructors": false,
+      "java.debug.settings.exceptionBreakpoint.skipClasses": [
+        "$JDK",
+        "junit.*",
+        "org.junit.*",
+        "org.mockito.*",
+        "org.springframework.*"
+      ],
+
+      "java.dependency.showMembers": true,
+      "java.dependency.syncWithFolderExplorer": true,
+
+      "testing.automaticallyOpenPeekView": "failureInVisibleDocument",
+      "testing.automaticallyOpenTestResults": "openOnTestFailure",
+      "testing.followRunningTest": true,
+      "testing.gutterEnabled": true,
+      "testing.defaultGutterClickAction": "run",
+      "testing.showAllMessages": true,
+      "testing.alwaysRevealTestOnStateChange": true,
+
+      "files.watcherExclude": {
+        "**/.idea/**": true,
+        "**/.settings/**": true,
+        "**/out/**": true
+      },
+      "search.exclude": {
+        "**/.idea/**": true,
+        "**/.settings/**": true,
+        "**/out/**": true
+      },
+
+      "[java]": {
+        "editor.defaultFormatter": "redhat.java",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.organizeImports": "explicit"
+        },
+        "editor.tabSize": 4,
+        "editor.rulers": [120],
+        "editor.suggest.snippetsPreventQuickSuggestions": false
+      },
+
+      "xml.server.preferBinary": true,
+      "xml.validation.enabled": true,
+      "xml.validation.noGrammar": "hint",
+      "xml.format.enabled": true,
+      "xml.format.maxLineWidth": 100,
+      "xml.completion.autoCloseTags": true,
+      "[xml]": {
+        "editor.defaultFormatter": "redhat.vscode-xml",
+        "editor.formatOnSave": true,
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true
+      }
+    },
+    // Application-scoped Java startup hint (effective in Default profile; forbidden in workspace).
+    "profile": {
+      "java.project.importHint": false
+    }
+  },
+  "tasks": null,
+  "detect": null
+}

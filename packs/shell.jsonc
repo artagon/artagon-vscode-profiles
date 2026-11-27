@@ -1,0 +1,120 @@
+// Consolidated v2.2 pack: shell (capability)
+{
+  "version": 2,
+  "id": "shell",
+  "kind": "capability",
+  "description": "Bash, POSIX sh, Fish, ShellCheck, shfmt, and BATS testing support",
+  "requires": [
+    "core-editor"
+  ],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [
+      "mads-hartmann.bash-ide-vscode",
+      "timonwong.shellcheck",
+      "mkhl.shfmt",
+      "bmalehorn.vscode-fish",
+      "jeff-hykin.better-shellscript-syntax",
+      "kherring.bats-test-runner"
+    ],
+    "profile": [],
+    "unwanted": [
+      "foxundermoon.shell-format",
+      "jetmartin.bats"
+    ]
+  },
+  "settings": {
+    // Shell scripting settings: full Bash/POSIX LSP auto-completion, ShellCheck linting with Quick Fixes,
+    // shfmt formatting, Fish auto-format, and BATS support while protecting Zsh/Fish/Csh/Xonsh from false positives.
+    "workspace": {
+      "[shellscript]": {
+        "editor.defaultFormatter": "mkhl.shfmt",
+        "editor.formatOnSave": false,
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true
+      },
+      "[fish]": {
+        "editor.defaultFormatter": "bmalehorn.vscode-fish",
+        "editor.formatOnSave": true,
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true
+      },
+      "[bats]": {
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true
+      },
+      "shfmt.executableArgs": ["-i", "2", "-ci", "-bn"],
+      "shfmt.formatIgnored": false,
+      "shellcheck.enable": true,
+      "shellcheck.enableQuickFix": true,
+      "shellcheck.run": "onSave",
+      "shellcheck.useWorkspaceRootAsCwd": true,
+      "shellcheck.exclude": [
+        "SC1090",
+        "SC1091"
+      ],
+      "shellcheck.ignorePatterns": {
+        "**/*.zsh": true,
+        "**/*.zshrc": true,
+        "**/zshrc": true,
+        "**/*.zshenv": true,
+        "**/zshenv": true,
+        "**/*.zprofile": true,
+        "**/zprofile": true,
+        "**/*.zlogin": true,
+        "**/zlogin": true,
+        "**/*.zlogout": true,
+        "**/zlogout": true,
+        "**/*.zsh-theme": true,
+        "**/*.fish": true,
+        "**/*.csh": true,
+        "**/*.cshrc": true,
+        "**/*.tcsh": true,
+        "**/*.tcshrc": true,
+        "**/*.login": true,
+        "**/*.logout": true,
+        "**/*.xsh": true,
+        "**/*.xonshrc": true
+      },
+      "bashIde.globPattern": "**/*@(.sh|.inc|.bash|.command)",
+      "bashIde.includeAllWorkspaceSymbols": true,
+      "bashIde.enableSourceErrorDiagnostics": true,
+      "bashIde.backgroundAnalysisIgnore": [
+        "**/node_modules/**",
+        "**/.git/**",
+        "**/.venv/**",
+        "**/target/**",
+        "**/dist/**",
+        "**/build/**"
+      ],
+      "bashIde.shellcheckPath": "",
+      "bashIde.shfmt.path": "",
+      "bashIde.explainshellEndpoint": "",
+      "files.associations": {
+        "*.bats": "bats",
+        "*.sh": "shellscript",
+        "*.bash": "shellscript"
+      }
+    },
+    "profile": null
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 60,
+    "fallback": false,
+    "match": "any",
+    "supersedes": [],
+    "rules": [
+      {
+        "type": "file",
+        "path": ".shellcheckrc"
+      },
+      {
+        "type": "glob",
+        "pattern": "*.bats",
+        "max_depth": 3
+      }
+    ]
+  }
+}

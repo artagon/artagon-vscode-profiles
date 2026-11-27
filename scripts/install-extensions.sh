@@ -18,6 +18,8 @@ source "${LIB_DIR}/vsix-pin.sh"
 source "${LIB_DIR}/legacy-profile-name.sh"
 # shellcheck source=scripts/lib/module-resolver.sh
 source "${LIB_DIR}/module-resolver.sh"
+# shellcheck source=scripts/lib/compiler.sh
+source "${LIB_DIR}/compiler.sh"
 
 usage() {
   cat <<'EOF'
@@ -151,6 +153,7 @@ if [[ "${DRY_RUN}" -eq 0 ]] && ! command -v code >/dev/null 2>&1; then
 fi
 
 # Verify single-store consistency before mutating VS Code.
+# shellcheck disable=SC2034 # Out-variable populated by resolve_code_store in scripts/lib/common.sh.
 CODE_STORE_USER_DIR=""
 CODE_STORE_DATA_ROOT=""
 if [[ "${DRY_RUN}" -eq 0 ]]; then
@@ -210,6 +213,11 @@ fi
 # Handle `all`: propagate --target, --dry-run, --group, --without-group to every profile!
 if [[ "${PROFILE}" == "all" && "${EXACT_PROFILE}" -eq 0 ]]; then
   failed=0
+  all_profiles=""
+  if ! all_profiles="$(discover_profiles "${ROOT}")"; then
+    echo "install-extensions: failed to discover profiles" >&2
+    exit 1
+  fi
   while IFS= read -r prof_name; do
     [[ -n "${prof_name}" ]] || continue
     cmd=("${BASH}" "${0}" "${prof_name}" "--target=${TARGET}")
@@ -229,7 +237,7 @@ if [[ "${PROFILE}" == "all" && "${EXACT_PROFILE}" -eq 0 ]]; then
     if ! "${cmd[@]}"; then
       failed=1
     fi
-  done < <(discover_profiles "${ROOT}")
+  done <<< "${all_profiles}"
   exit "${failed}"
 fi
 
@@ -242,15 +250,42 @@ if [[ "${EXACT_PROFILE}" -eq 0 ]]; then
 fi
 
 EXT_FILE="${ROOT}/profiles/${PROFILE}/extensions.json"
-if [[ ! -f "${EXT_FILE}" ]]; then
+TMP_EXT_FILE=""
+VSIX_TMP=""
+trap '[[ -n "${TMP_EXT_FILE}" ]] && rm -f "${TMP_EXT_FILE}"; [[ -n "${VSIX_TMP}" ]] && rm -rf "${VSIX_TMP}"' EXIT
+
+if [[ -f "${ROOT}/profiles/${PROFILE}/profile.json" ]]; then
+  # Always compile authoritative profile.json on demand rather than reusing stale ignored extensions.json.
+  TMP_EXT_FILE="$(mktemp "${TMPDIR:-/tmp}/vsp-inst-ext.XXXXXX")"
+  if ! compiler_compile_profile_extensions_file "${ROOT}" "${PROFILE}" "${TMP_EXT_FILE}"; then
+    printf 'install-extensions: failed to compile extensions on-demand for profile %q\n' "${PROFILE}" >&2
+    exit 1
+  fi
+  EXT_FILE="${TMP_EXT_FILE}"
+elif [[ ! -f "${EXT_FILE}" ]]; then
   printf 'install-extensions: missing extensions file: %s\n' "${EXT_FILE}" >&2
+  exit 1
+fi
+
+if ! jq -e -s '
+  length == 1
+  and (.[0] | type == "array")
+  and (all(.[0][]; type == "object" and (.identifier | type == "object") and (.identifier.id | type == "string") and ((.identifier.id | length) > 0)))
+' "${EXT_FILE}" >/dev/null; then
+  printf 'install-extensions: invalid or malformed extensions JSON array: %s\n' "${EXT_FILE}" >&2
+  exit 1
+fi
+
+raw_ids=""
+if ! raw_ids="$(jq -r -s '.[0][].identifier.id' "${EXT_FILE}")"; then
+  printf 'install-extensions: failed to parse extension IDs from: %s\n' "${EXT_FILE}" >&2
   exit 1
 fi
 
 ALL_IDS=()
 while IFS= read -r id; do
   [[ -n "${id}" ]] && ALL_IDS+=("${id}")
-done < <(jq -r '.[] | .identifier.id // empty' "${EXT_FILE}")
+done <<< "${raw_ids}"
 
 if [[ "${#ALL_IDS[@]}" -eq 0 ]]; then
   exit 0
@@ -305,7 +340,6 @@ DELAY="${VSCODE_EXTENSION_INSTALL_DELAY:-1}"
 PINS_FILE="$(pins_file_path "${ROOT}")"
 export VSCODE_VSIX_CACHE_DIR="${VSCODE_VSIX_CACHE_DIR-${ROOT}/.cache/vsix}"
 VSIX_TMP="$(mktemp -d "${TMPDIR:-/tmp}/vsp-vsix.XXXXXX")"
-trap 'rm -rf "${VSIX_TMP}"' EXIT
 
 FAILED=()
 BATCH_IDS=()

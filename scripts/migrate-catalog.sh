@@ -92,8 +92,6 @@ doctor() {
       [[ -n "${prof}" ]] || continue
       count=$((count + 1))
       [[ -f "${ROOT}/profiles/${prof}/profile.json" ]] || { echo "missing: profiles/${prof}/profile.json"; issues=$((issues + 1)); }
-      [[ -f "${ROOT}/_merged/${prof}.json" ]] || { echo "missing: _merged/${prof}.json"; issues=$((issues + 1)); }
-      [[ -f "${ROOT}/exports/${prof}.code-profile" ]] || { echo "missing: exports/${prof}.code-profile"; issues=$((issues + 1)); }
     done < <(discover_profiles "${ROOT}")
 
     local legacy_dir

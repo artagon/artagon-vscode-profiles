@@ -1,0 +1,81 @@
+// Consolidated v2.2 pack: java-maven (toolchain)
+{
+  "version": 2,
+  "id": "java-maven",
+  "kind": "toolchain",
+  "description": "Java with Apache Maven build tool (mutually exclusive with java-gradle)",
+  "requires": [
+    "java-base"
+  ],
+  "defaultWith": [],
+  "conflicts": [
+    "java-gradle"
+  ],
+  "extensions": {
+    "workspace": [
+      "vscjava.vscode-maven"
+    ],
+    "profile": [],
+    "unwanted": [
+      "shirdows.vscode-maven-dependency-explorer"
+    ]
+  },
+  "settings": {
+    // Maven workspace settings (disables Gradle import, downloads sources, enables GAV & conflict diagnostics).
+    "workspace": {
+      "java.project.resourceFilters": ["target"],
+      "java.import.maven.enabled": true,
+      "java.import.gradle.enabled": false,
+      "java.maven.downloadSources": true,
+      "maven.pomfile.autoUpdateEffectivePOM": false,
+      "maven.terminal.useJavaHome": true,
+      "maven.executable.preferMavenWrapper": true,
+      "maven.completion.gavEnabled": true,
+      "maven.dependency.enableConflictDiagnostics": true,
+      "maven.view": "hierarchical",
+      "java.test.config": {
+        "name": "MavenJUnit",
+        "workingDirectory": "${workspaceFolder}",
+        "vmArgs": ["-ea"],
+        "args": []
+      },
+      "java.test.defaultConfig": "MavenJUnit",
+      "files.watcherExclude": {
+        "**/target/**": true
+      },
+      "search.exclude": {
+        "**/target/**": true
+      }
+    },
+    "profile": null
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 32,
+    "fallback": false,
+    "match": "any",
+    "supersedes": [],
+    "rules": [
+      {
+        "type": "file",
+        "path": "pom.xml"
+      }
+    ]
+  },
+  "retireOnSwitch": {
+    "settings": [
+      "java.gradle.buildServer.enabled",
+      "java.gradle.buildServer.openBuildOutput",
+      "java.import.gradle.wrapper.enabled",
+      "java.import.gradle.annotationProcessing.enabled",
+      "java.import.gradle.offline.enabled",
+      "java.import.gradle.arguments",
+      "java.import.gradle.jvmArguments",
+      "gradle.autoDetect",
+      "gradle.reuseTerminals"
+    ],
+    "extensions": [
+      "vscjava.vscode-gradle"
+    ]
+  }
+}

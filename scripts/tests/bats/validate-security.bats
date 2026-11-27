@@ -10,10 +10,13 @@ make_mini_valid_repo() {
   cp "${REPO_ROOT}/catalog/publishers.json" "${dir}/catalog/"
   cp "${REPO_ROOT}/catalog/defaults.json" "${dir}/catalog/"
   cp "${REPO_ROOT}/catalog/setting-scopes.json" "${dir}/catalog/"
+  cp "${REPO_ROOT}/catalog/extension-pins.json" "${dir}/catalog/"
   cp -R "${REPO_ROOT}/modules/capabilities" "${dir}/modules/"
   cp -R "${REPO_ROOT}/modules/toolchains" "${dir}/modules/"
   cp -R "${REPO_ROOT}/modules/ux" "${dir}/modules/"
   cp -R "${REPO_ROOT}/profiles" "${dir}/"
+  # Strip any locally built generated artifacts so the mini fixture never inherits dangling symlinks.
+  rm -f "${dir}"/profiles/*/settings.json "${dir}"/profiles/*/extensions.json
 }
 
 @test "validate-security: detects publisher allowlist drift, orphan active catalog row, and publisher prefix mismatch" {
@@ -95,11 +98,12 @@ make_mini_valid_repo() {
   [[ "${output}" == *"python-envs.alwaysUseUv has scope=machine and is forbidden in settings.workspace.jsonc"* ]]
 }
 
-@test "validate-security: pre-commit hook works without code CLI, allows staged-only M, and rejects T/??/unstaged M" {
+@test "validate-security: pre-commit hook works without code CLI, allows valid staged edits, and rejects staged generated artifacts" {
   repo="${TEST_TMP}/git-hook-repo"
   mkdir -p "${repo}"
   cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" \
-        "${REPO_ROOT}/_merged" "${REPO_ROOT}/exports" "${REPO_ROOT}/scripts" "${repo}/"
+        "${REPO_ROOT}/packs" "${REPO_ROOT}/bin" "${REPO_ROOT}/scripts" "${repo}/"
+  cp "${REPO_ROOT}/presets.jsonc" "${REPO_ROOT}/vsp.lock.json" "${REPO_ROOT}/.gitignore" "${repo}/"
 
   git -C "${repo}" init -q
   git -C "${repo}" config user.email "test@example.com"
@@ -116,35 +120,143 @@ make_mini_valid_repo() {
     [[ -n "${p}" ]] && ln -s "${p}" "${no_code_bin}/${tool}"
   done
 
+  # Helper: run repo's pre-commit from inside repo with stripped PATH (no `code`).
+  run_hook() {
+    local target_dir="${1}"
+    shift
+    run bash -c 'cd "$1" && shift && exec env "$@" "$BASH" "./scripts/git-hooks/pre-commit"' _ "${target_dir}" "$@"
+  }
+
   # Clean repo passes pre-commit even without `code`!
-  run env PATH="${no_code_bin}" "${BASH}" "${repo}/scripts/git-hooks/pre-commit"
+  run_hook "${repo}" PATH="${no_code_bin}"
   [[ "${status}" -eq 0 ]]
 
-  # Untracked file under exports/ (??) must FAIL pre-commit!
-  printf '{}\n' > "${repo}/exports/stray.json"
-  run env PATH="${no_code_bin}" "${BASH}" "${repo}/scripts/git-hooks/pre-commit"
-  [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *"stray.json"* ]]
-  rm -f "${repo}/exports/stray.json"
+  # Running pre-commit outside a git repo (no .git) MUST FAIL nonzero!
+  non_git="${TEST_TMP}/non-git-repo"
+  mkdir -p "${non_git}/scripts/git-hooks"
+  cp "${repo}/scripts/git-hooks/pre-commit" "${non_git}/scripts/git-hooks/pre-commit"
+  run bash -c 'cd "$1" && exec env PATH="$2" "$3" "$1/scripts/git-hooks/pre-commit"' _ "${non_git}" "${no_code_bin}" "${BASH}"
+  [[ "${status}" -ne 0 ]]
 
-  # Symlink typechange (` T`) under profiles/ must FAIL pre-commit!
-  rm -f "${repo}/profiles/ai/README.md"
-  ln -s "../astro/README.md" "${repo}/profiles/ai/README.md"
-  run env PATH="${no_code_bin}" "${BASH}" "${repo}/scripts/git-hooks/pre-commit"
+  # Staging a generated file under exports/ MUST FAIL pre-commit (even if inherited VSPCLI_ROOT points to a clean repo)!
+  mkdir -p "${repo}/exports"
+  printf '{}\n' > "${repo}/exports/stray.code-profile"
+  git -C "${repo}" add -f exports/stray.code-profile
+  run_hook "${repo}" PATH="${no_code_bin}" VSPCLI_ROOT="${REPO_ROOT}"
   [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *" T profiles/ai/README.md"* ]]
-  git -C "${repo}" checkout -- profiles/ai/README.md
+  [[ "${output}" == *"exports/stray.code-profile"* ]]
+  git -C "${repo}" reset -q HEAD -- exports/stray.code-profile
+  rm -rf "${repo}/exports"
 
-  # Unstaged edit (` M`) must FAIL pre-commit!
-  printf 'unstaged edit\n' >> "${repo}/profiles/ai/README.md"
-  run env PATH="${no_code_bin}" "${BASH}" "${repo}/scripts/git-hooks/pre-commit"
+  # Staging a generated file under _merged/ MUST FAIL pre-commit!
+  mkdir -p "${repo}/_merged"
+  printf '{}\n' > "${repo}/_merged/rust.json"
+  git -C "${repo}" add -f _merged/rust.json
+  run_hook "${repo}" PATH="${no_code_bin}"
   [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *"profiles/ai/README.md"* ]]
+  [[ "${output}" == *"_merged/rust.json"* ]]
+  git -C "${repo}" reset -q HEAD -- _merged/rust.json
+  rm -rf "${repo}/_merged"
 
-  # Stage the edit (`M ` index-only, clean worktree) -> MUST PASS pre-commit!
+  # Staging a generated profiles/*/extensions.json MUST FAIL pre-commit!
+  printf '[]\n' > "${repo}/profiles/ai/extensions.json"
+  git -C "${repo}" add -f profiles/ai/extensions.json
+  run_hook "${repo}" PATH="${no_code_bin}"
+  [[ "${status}" -eq 1 ]]
+  [[ "${output}" == *"profiles/ai/extensions.json"* ]]
+  git -C "${repo}" reset -q HEAD -- profiles/ai/extensions.json
+  rm -f "${repo}/profiles/ai/extensions.json"
+
+  # Legitimate staged edit passes pre-commit!
+  printf 'staged edit\n' >> "${repo}/profiles/ai/README.md"
   git -C "${repo}" add profiles/ai/README.md
-  run env PATH="${no_code_bin}" "${BASH}" "${repo}/scripts/git-hooks/pre-commit"
+  run_hook "${repo}" PATH="${no_code_bin}"
   [[ "${status}" -eq 0 ]]
+}
+
+@test "validate-security: pre-commit validates staged index bytes (bad staged file with fixed working tree is rejected)" {
+  repo="${TEST_TMP}/git-hook-staged-repo"
+  mkdir -p "${repo}"
+  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" \
+        "${REPO_ROOT}/packs" "${REPO_ROOT}/bin" "${REPO_ROOT}/scripts" "${repo}/"
+  cp "${REPO_ROOT}/presets.jsonc" "${REPO_ROOT}/vsp.lock.json" "${REPO_ROOT}/.gitignore" "${repo}/"
+
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@example.com"
+  git -C "${repo}" config user.name "Test User"
+  git -C "${repo}" add -A
+  git -C "${repo}" commit -q -m "baseline"
+
+  # 1. Stage an invalid autonomy bypass in core-editor settings, then fix ONLY the working tree!
+  target="modules/capabilities/core-editor/settings.profile.jsonc"
+  cp "${repo}/${target}" "${TEST_TMP}/core-editor-orig.jsonc"
+  printf '{"chat.tools.autoApprove": true}\n' > "${repo}/${target}"
+  git -C "${repo}" add "${target}"
+  cp "${TEST_TMP}/core-editor-orig.jsonc" "${repo}/${target}"
+
+  run bash -c 'cd "$1" && exec env VSPCLI_ROOT="$2" "$3" "./scripts/git-hooks/pre-commit"' _ "${repo}" "${REPO_ROOT}" "${BASH}"
+  [[ "${status}" -ne 0 ]]
+  [[ "${output}" == *"autonomy deny-list"* ]]
+  git -C "${repo}" reset -q HEAD -- "${target}"
+
+  # 2. Stage a malicious .vscode/settings.json, then sanitize ONLY the working tree!
+  mkdir -p "${repo}/.vscode"
+  printf '{"claudeCode":{"claudeProcessWrapper":"/tmp/evil"}}\n' > "${repo}/.vscode/settings.json"
+  git -C "${repo}" add -f .vscode/settings.json
+  printf '{}\n' > "${repo}/.vscode/settings.json"
+
+  run bash -c 'cd "$1" && exec "$2" "./scripts/git-hooks/pre-commit"' _ "${repo}" "${BASH}"
+  [[ "${status}" -ne 0 ]]
+  [[ "${output}" == *"autonomy deny-list"* ]]
+}
+
+@test "validate-security: pre-commit triggers Rust check on staged deletion of presets.jsonc and fails cleanly" {
+  repo="${TEST_TMP}/git-hook-del-repo"
+  mkdir -p "${repo}"
+  cp -R "${REPO_ROOT}/catalog" "${REPO_ROOT}/modules" "${REPO_ROOT}/profiles" \
+        "${REPO_ROOT}/packs" "${REPO_ROOT}/bin" "${REPO_ROOT}/scripts" "${repo}/"
+  cp "${REPO_ROOT}/Cargo.toml" "${REPO_ROOT}/presets.jsonc" "${REPO_ROOT}/vsp.lock.json" "${REPO_ROOT}/.gitignore" "${repo}/"
+
+  git -C "${repo}" init -q
+  git -C "${repo}" config user.email "test@example.com"
+  git -C "${repo}" config user.name "Test User"
+  git -C "${repo}" add -A
+  git -C "${repo}" commit -q -m "baseline"
+
+  # Stub cargo that records args and enforces presets.jsonc presence in the staged --manifest-path tree.
+  cargo_log="${TEST_TMP}/cargo-hook.log"
+  mock_bin="${TEST_TMP}/cargo-mock-bin"
+  mkdir -p "${mock_bin}"
+  cat > "${mock_bin}/cargo" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${cargo_log}"
+manifest=""
+prev=""
+for a in "\$@"; do
+  if [[ "\${prev}" == "--manifest-path" ]]; then
+    manifest="\${a}"
+  fi
+  prev="\${a}"
+done
+stage_root="\$(dirname -- "\${manifest}")"
+if [[ ! -f "\${stage_root}/presets.jsonc" ]]; then
+  echo "cargo-stub: missing presets.jsonc in staged tree \${stage_root}" >&2
+  exit 1
+fi
+exit 0
+EOF
+  chmod 0755 "${mock_bin}/cargo"
+
+  # Stage deletion of presets.jsonc, AND recreate it untracked in the working tree to prove staged bytes win!
+  git -C "${repo}" rm -q presets.jsonc
+  cp "${REPO_ROOT}/presets.jsonc" "${repo}/presets.jsonc"
+
+  run bash -c 'cd "$1" && exec env PATH="$2:$PATH" "$3" "./scripts/git-hooks/pre-commit"' _ "${repo}" "${mock_bin}" "${BASH}"
+  [[ "${status}" -ne 0 ]]
+  [[ -s "${cargo_log}" ]]
+  [[ "${output}" == *"missing presets.jsonc in staged tree"* ]]
+  # Confirm cargo was invoked against the temp checkout-index stage dir, NOT the working tree repo.
+  ! grep -Fq -- "--manifest-path ${repo}/Cargo.toml" "${cargo_log}"
 }
 
 @test "validate-security: symlink + non-existent parent traversal (x/../../../escaped) and dangling .bak symlink are blocked" {
@@ -214,4 +326,349 @@ MOCK
   grep -q 'action=uninstall profile=rust-profile-crisp .*ext=jscearcy.rust-doc-viewer' "${CODE_LOG}"
   grep -q 'action=uninstall profile=default .*ext=jscearcy.rust-doc-viewer' "${CODE_LOG}"
   ! grep -q 'action=uninstall profile=rust ' "${CODE_LOG}"
+}
+
+@test "validate-security: H1/N1 autonomy deny-list rejects nested dot-paths, case-insensitive exec-overrides, and string booleans" {
+  # All 5 required N1 payloads must exit nonzero.
+  run "${BASH}" -c "source '${LIB_DIR}/catalog.sh'; printf '%s\n' '{\"chat.tools.autoApprove\":true}' | check_autonomy_denylist_json n1-1.json"
+  [[ "${status}" -eq 1 ]]
+  [[ "${output}" == *"autonomy deny-list"* ]]
+
+  run "${BASH}" -c "source '${LIB_DIR}/catalog.sh'; printf '%s\n' '{\"chat\":{\"tools\":{\"autoApprove\":true}}}' | check_autonomy_denylist_json n1-2.json"
+  [[ "${status}" -eq 1 ]]
+  [[ "${output}" == *"chat.tools.autoApprove"* ]]
+
+  run "${BASH}" -c "source '${LIB_DIR}/catalog.sh'; printf '%s\n' '{\"chat\":{\"tools.terminal.autoApprove\":true}}' | check_autonomy_denylist_json n1-3.json"
+  [[ "${status}" -eq 1 ]]
+  [[ "${output}" == *"chat.tools.terminal.autoApprove"* ]]
+
+  run "${BASH}" -c "source '${LIB_DIR}/catalog.sh'; printf '%s\n' '{\"claudeCode\":{\"claudeProcessWrapper\":\"/tmp/x\"}}' | check_autonomy_denylist_json n1-4.json"
+  [[ "${status}" -eq 1 ]]
+  [[ "${output}" == *"claudeCode.claudeProcessWrapper"* ]]
+
+  run "${BASH}" -c "source '${LIB_DIR}/catalog.sh'; printf '%s\n' '{\"claudeCode.allowDangerouslySkipPermissions\":\"true\"}' | check_autonomy_denylist_json n1-5.json"
+  [[ "${status}" -eq 1 ]]
+  [[ "${output}" == *"claudeCode.allowDangerouslySkipPermissions"* ]]
+
+  # Case-insensitive exec-override & nested string booleans also rejected; string "false" normalized safely.
+  run "${BASH}" -c "source '${LIB_DIR}/catalog.sh'; printf '%s\n' '{\"CLAUDECODE\":{\"ClaudeProcessWrapper\":\"/tmp/x\"}}' | check_autonomy_denylist_json n1-case.json"
+  [[ "${status}" -eq 1 ]]
+
+  run "${BASH}" -c "source '${LIB_DIR}/catalog.sh'; printf '%s\n' '{\"geminicodeassist\":{\"agentYoloMode\":\"TRUE\"}}' | check_autonomy_denylist_json n1-yolo.json"
+  [[ "${status}" -eq 1 ]]
+
+  run "${BASH}" -c "source '${LIB_DIR}/catalog.sh'; printf '%s\n' '{\"claudeCode.allowDangerouslySkipPermissions\":\"false\",\"geminicodeassist.agentYoloMode\":\"false\"}' | check_autonomy_denylist_json n1-false.json"
+  [[ "${status}" -eq 0 ]]
+}
+
+@test "validate-security: H3 validate-json fails closed when catalog/extension-pins.json is absent" {
+  fix="${TEST_TMP}/missing-pins-repo"
+  make_mini_valid_repo "${fix}"
+
+  # Control: valid mini repo with extension-pins.json passes.
+  run env VSPCLI_ROOT="${fix}" "${BASH}" "${SCRIPTS_DIR}/validate-json.sh"
+  [[ "${status}" -eq 0 ]]
+
+  # Removing catalog/extension-pins.json must fail nonzero (never silently skip).
+  rm -f "${fix}/catalog/extension-pins.json"
+  run env VSPCLI_ROOT="${fix}" "${BASH}" "${SCRIPTS_DIR}/validate-json.sh"
+  [[ "${status}" -eq 1 ]]
+  [[ "${output}" == *"catalog/extension-pins.json"* ]]
+}
+
+@test "validate-security: H3 vsix-pin fails closed on missing/unreadable pins manifest unless ARTAGON_VSCODE_ALLOW_UNLOCKED=1" {
+  missing_pins="${TEST_TMP}/no-such-pins.json"
+
+  # Missing pins file fails closed by default (even when ARTAGON_VSCODE_PINS_FILE is unset).
+  run --separate-stderr "${BASH}" -c "unset ARTAGON_VSCODE_PINS_FILE ARTAGON_VSCODE_ALLOW_UNLOCKED; source '${LIB_DIR}/vsix-pin.sh'; lookup_pin 'enkia.tokyo-night' '${missing_pins}'"
+  [[ "${status}" -ne 0 ]]
+  [[ "${stderr}" == *"missing or unreadable"* ]]
+
+  # Explicit bypass ARTAGON_VSCODE_ALLOW_UNLOCKED=1 proceeds with a clear stderr warning.
+  run --separate-stderr "${BASH}" -c "unset ARTAGON_VSCODE_PINS_FILE; export ARTAGON_VSCODE_ALLOW_UNLOCKED=1; source '${LIB_DIR}/vsix-pin.sh'; lookup_pin 'enkia.tokyo-night' '${missing_pins}'"
+  [[ "${status}" -eq 0 ]]
+  [[ "${stderr}" == *"WARNING"* && "${stderr}" == *"ARTAGON_VSCODE_ALLOW_UNLOCKED=1"* ]]
+
+  # Existing valid empty-pins manifest still succeeds cleanly without warnings.
+  empty_pins="${TEST_TMP}/valid-empty-pins.json"
+  printf '{"version":1,"pins":{}}\n' > "${empty_pins}"
+  run --separate-stderr "${BASH}" -c "unset ARTAGON_VSCODE_ALLOW_UNLOCKED; source '${LIB_DIR}/vsix-pin.sh'; lookup_pin 'enkia.tokyo-night' '${empty_pins}'"
+  [[ "${status}" -eq 0 ]]
+  [[ -z "${output}" ]]
+  [[ -z "${stderr}" ]]
+
+  # Unreadable pins manifest fails closed unless bypass is active (skip chmod check only if root).
+  if [[ "$(id -u)" -ne 0 ]]; then
+    unreadable_pins="${TEST_TMP}/unreadable-pins.json"
+    printf '{"version":1,"pins":{}}\n' > "${unreadable_pins}"
+    chmod 000 "${unreadable_pins}"
+    run --separate-stderr "${BASH}" -c "unset ARTAGON_VSCODE_PINS_FILE ARTAGON_VSCODE_ALLOW_UNLOCKED; source '${LIB_DIR}/vsix-pin.sh'; lookup_pin 'enkia.tokyo-night' '${unreadable_pins}'"
+    [[ "${status}" -ne 0 ]]
+    [[ "${stderr}" == *"missing or unreadable"* ]]
+
+    run --separate-stderr "${BASH}" -c "unset ARTAGON_VSCODE_PINS_FILE; export ARTAGON_VSCODE_ALLOW_UNLOCKED=1; source '${LIB_DIR}/vsix-pin.sh'; lookup_pin 'enkia.tokyo-night' '${unreadable_pins}'"
+    [[ "${status}" -eq 0 ]]
+    [[ "${stderr}" == *"WARNING"* && "${stderr}" == *"ARTAGON_VSCODE_ALLOW_UNLOCKED=1"* ]]
+    chmod 0644 "${unreadable_pins}"
+  fi
+}
+
+@test "validate-security: H3 vsix-pin propagates publish mv failure (cleaning staging temp) and sha256_for_file propagates digest failures" {
+  vsix_payload="${TEST_TMP}/pub-fail.vsix"
+  printf 'VERIFIED-PUBLISH-FAIL-PAYLOAD\n' > "${vsix_payload}"
+  source "${LIB_DIR}/common.sh"
+  good_sha="$(sha256_for_file "${vsix_payload}")"
+  url="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/enkia/vsextensions/tokyo-night/1.1.2/vspackage"
+
+  pin_bin="${TEST_TMP}/pub-fail-bin"
+  mkdir -p "${pin_bin}"
+  cat > "${pin_bin}/curl" <<CURLMOCK
+#!/bin/sh
+out=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -o) out="\$2"; shift 2 ;;
+    *)  shift ;;
+  esac
+done
+cp '${vsix_payload}' "\${out}"
+CURLMOCK
+  chmod 0755 "${pin_bin}/curl"
+
+  # 1. Directory at out_path must fail closed and clean up staging temp (never move into directory).
+  pub_dir="${TEST_TMP}/pub-target-parent"
+  out_as_dir="${pub_dir}/target.vsix"
+  mkdir -p "${out_as_dir}"
+
+  PATH="${pin_bin}:${PATH}" ARTAGON_VSCODE_ALLOW_TEST_PIN_URL=1 VSCODE_VSIX_CACHE_DIR="" \
+    run --separate-stderr "${BASH}" -c "source '${LIB_DIR}/vsix-pin.sh'; fetch_and_verify_vsix 'enkia.tokyo-night' '${url}' '${good_sha}' '${out_as_dir}'"
+  [[ "${status}" -ne 0 ]]
+  [[ "${stderr}" == *"failed to publish"* ]]
+  leftover="$(find "${pub_dir}" -name '.vsix-pin.*' -print)"
+  [[ -z "${leftover}" ]]
+
+  # 2. Explicit mv failure must propagate nonzero and clean up staging temp file.
+  cat > "${pin_bin}/mv" <<'MVMOCK'
+#!/bin/sh
+exit 1
+MVMOCK
+  chmod 0755 "${pin_bin}/mv"
+  out_file="${pub_dir}/real-target.vsix"
+  PATH="${pin_bin}:${PATH}" ARTAGON_VSCODE_ALLOW_TEST_PIN_URL=1 VSCODE_VSIX_CACHE_DIR="" \
+    run --separate-stderr "${BASH}" -c "source '${LIB_DIR}/vsix-pin.sh'; fetch_and_verify_vsix 'enkia.tokyo-night' '${url}' '${good_sha}' '${out_file}'"
+  [[ "${status}" -ne 0 ]]
+  [[ "${stderr}" == *"failed to publish"* ]]
+  [[ ! -e "${out_file}" ]]
+  leftover="$(find "${pub_dir}" -name '.vsix-pin.*' -print)"
+  [[ -z "${leftover}" ]]
+
+  # common.sh sha256_for_file fails nonzero on missing file AND on failing sha256sum/shasum tool.
+  run --separate-stderr "${BASH}" -c "source '${LIB_DIR}/common.sh'; sha256_for_file '${TEST_TMP}/does-not-exist.bin'"
+  [[ "${status}" -ne 0 ]]
+
+  bad_hash_bin="${TEST_TMP}/bad-hash-bin"
+  mkdir -p "${bad_hash_bin}"
+  cat > "${bad_hash_bin}/sha256sum" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+  cat > "${bad_hash_bin}/shasum" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+  chmod 0755 "${bad_hash_bin}/sha256sum" "${bad_hash_bin}/shasum"
+  PATH="${bad_hash_bin}:${PATH}" run --separate-stderr "${BASH}" -c "source '${LIB_DIR}/common.sh'; sha256_for_file '${vsix_payload}'"
+  [[ "${status}" -ne 0 ]]
+}
+
+@test "validate-security: H5 is_vscode_running matches spaced macOS paths and treats failed ps scan as busy (fail-closed)" {
+  stub_bin="${TEST_TMP}/h5-ps-stub"
+  mkdir -p "${stub_bin}"
+  cat > "${stub_bin}/uname" <<'EOF'
+#!/bin/sh
+printf '%s\n' "${FAKE_UNAME:-Darwin}"
+EOF
+  cat > "${stub_bin}/ps" <<'EOF'
+#!/bin/sh
+if [ "${FAKE_PS_FAIL:-0}" = "1" ]; then
+  exit 1
+fi
+printf '%s\n' "${FAKE_PS_OUT}"
+EOF
+  chmod 0755 "${stub_bin}/uname" "${stub_bin}/ps"
+
+  # Spaced parent directory on macOS => detected (exit 0).
+  PATH="${stub_bin}:${PATH}" ARTAGON_VSCODE_TEST_RUNNING="" FAKE_UNAME="Darwin" \
+    FAKE_PS_OUT="/Users/Jane Doe/Applications/Visual Studio Code.app/Contents/MacOS/Code" \
+    run "${BASH}" -c "source '${LIB_DIR}/common.sh'; is_vscode_running"
+  [[ "${status}" -eq 0 ]]
+
+  # Spaced parent directory transient CLI out/cli.js => NOT detected (exit 1).
+  PATH="${stub_bin}:${PATH}" ARTAGON_VSCODE_TEST_RUNNING="" FAKE_UNAME="Darwin" \
+    FAKE_PS_OUT="/Users/Jane Doe/Applications/Visual Studio Code.app/Contents/MacOS/Code /Users/Jane Doe/Applications/Visual Studio Code.app/Contents/Resources/app/out/cli.js --install-extension foo.bar" \
+    run "${BASH}" -c "source '${LIB_DIR}/common.sh'; is_vscode_running"
+  [[ "${status}" -eq 1 ]]
+
+  # Unrelated command referencing spaced macOS VS Code path in argv[1+] => NOT detected (exit 1).
+  PATH="${stub_bin}:${PATH}" ARTAGON_VSCODE_TEST_RUNNING="" FAKE_UNAME="Darwin" \
+    FAKE_PS_OUT="/usr/bin/codesign -dv /Users/Jane Doe/Applications/Visual Studio Code.app/Contents/MacOS/Code" \
+    run "${BASH}" -c "source '${LIB_DIR}/common.sh'; is_vscode_running"
+  [[ "${status}" -eq 1 ]]
+
+  # Failed ps scan on macOS => busy/fail-closed (exit 0) with stderr warning.
+  PATH="${stub_bin}:${PATH}" ARTAGON_VSCODE_TEST_RUNNING="" FAKE_UNAME="Darwin" FAKE_PS_FAIL="1" \
+    run --separate-stderr "${BASH}" -c "source '${LIB_DIR}/common.sh'; is_vscode_running"
+  [[ "${status}" -eq 0 ]]
+  [[ "${stderr}" == *"fail-closed"* ]]
+
+  # Failed ps scan on Linux => busy/fail-closed (exit 0) with stderr warning.
+  PATH="${stub_bin}:${PATH}" ARTAGON_VSCODE_TEST_RUNNING="" FAKE_UNAME="Linux" FAKE_PS_FAIL="1" \
+    run --separate-stderr "${BASH}" -c "source '${LIB_DIR}/common.sh'; is_vscode_running"
+  [[ "${status}" -eq 0 ]]
+  [[ "${stderr}" == *"fail-closed"* ]]
+}
+
+@test "validate-security: H5 acquire_lock serializes stale-lock reclamation without moving active owner locks" {
+  local_host="$(hostname 2>/dev/null || printf 'unknown')"
+
+  # Obtain a guaranteed confirmed-dead PID.
+  "${BASH}" -c 'exit 0' &
+  dead_pid=$!
+  wait "${dead_pid}"
+
+  # 1. Active owner lock is NOT moved/reclaimed even with --break-stale-lock.
+  sleep 30 &
+  live_pid=$!
+  lock1="${TEST_TMP}/lock-active.lock"
+  mkdir -p "${lock1}"
+  printf '%s\n' "${live_pid}" > "${lock1}/pid"
+  printf '%s\n' "${local_host}" > "${lock1}/host"
+  printf 'sentinel\n' > "${lock1}/sentinel"
+
+  run --separate-stderr "${BASH}" -c "source '${LIB_DIR}/common.sh'; acquire_lock '${lock1}' 0 --break-stale-lock"
+  kill "${live_pid}" 2>/dev/null || true
+  wait "${live_pid}" 2>/dev/null || true
+  [[ "${status}" -ne 0 ]]
+  [[ -f "${lock1}/sentinel" ]]
+
+  # 2. Pre-existing reclaim guard prevents another reclaimer from moving the lock (fails closed).
+  lock2="${TEST_TMP}/lock-guarded.lock"
+  mkdir -p "${lock2}" "${lock2}.reclaim"
+  printf '%s\n' "${dead_pid}" > "${lock2}/pid"
+  printf '%s\n' "${local_host}" > "${lock2}/host"
+  printf 'guarded\n' > "${lock2}/sentinel"
+
+  run --separate-stderr "${BASH}" -c "source '${LIB_DIR}/common.sh'; acquire_lock '${lock2}' 0 --break-stale-lock"
+  [[ "${status}" -ne 0 ]]
+  [[ -f "${lock2}/sentinel" ]]
+  rmdir "${lock2}.reclaim"
+
+  # 3. Broken ps prevents false-dead reclamation.
+  bad_ps_bin="${TEST_TMP}/bad-ps-bin"
+  mkdir -p "${bad_ps_bin}"
+  cat > "${bad_ps_bin}/ps" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+  chmod 0755 "${bad_ps_bin}/ps"
+  PATH="${bad_ps_bin}:${PATH}" run --separate-stderr "${BASH}" -c "source '${LIB_DIR}/common.sh'; acquire_lock '${lock2}' 0 --break-stale-lock"
+  [[ "${status}" -ne 0 ]]
+  [[ -f "${lock2}/sentinel" ]]
+
+  # 4. Contested concurrent stale-lock reclamation maintains strict mutual exclusion and intact owner pid.
+  lock3="${TEST_TMP}/lock-contested.lock"
+  mkdir -p "${lock3}"
+  printf '%s\n' "${dead_pid}" > "${lock3}/pid"
+  printf '%s\n' "${local_host}" > "${lock3}/host"
+
+  events_log="${TEST_TMP}/lock-events.log"
+  err_log="${TEST_TMP}/lock-errors.log"
+  : > "${events_log}"
+  : > "${err_log}"
+
+  pids=()
+  for _w in 1 2 3 4; do
+    "${BASH}" -c '
+      source "'"${LIB_DIR}"'/common.sh"
+      if ! acquire_lock "'"${lock3}"'" 15 --break-stale-lock; then
+        printf "ACQUIRE_FAIL %s\n" "$$" >> "'"${err_log}"'"
+        exit 1
+      fi
+      printf "ENTER %s\n" "$$" >> "'"${events_log}"'"
+      owner_before="$(cat "'"${lock3}"'/pid" 2>/dev/null || true)"
+      if [[ "${owner_before}" != "$$" ]]; then
+        printf "PID_MISMATCH_BEFORE %s got=%s\n" "$$" "${owner_before}" >> "'"${err_log}"'"
+      fi
+      sleep 0.05
+      owner_after="$(cat "'"${lock3}"'/pid" 2>/dev/null || true)"
+      if [[ "${owner_after}" != "$$" ]]; then
+        printf "PID_MISMATCH_AFTER %s got=%s\n" "$$" "${owner_after}" >> "'"${err_log}"'"
+      fi
+      printf "EXIT %s\n" "$$" >> "'"${events_log}"'"
+      release_lock "'"${lock3}"'"
+    ' &
+    pids+=($!)
+  done
+
+  worker_rc=0
+  for p in "${pids[@]}"; do
+    wait "${p}" || worker_rc=1
+  done
+  [[ "${worker_rc}" -eq 0 ]]
+  if [[ -s "${err_log}" ]]; then
+    cat "${err_log}" >&2
+    false
+  fi
+  [[ ! -d "${lock3}" && ! -d "${lock3}.reclaim" ]]
+
+  # Verify all 4 workers completed and max concurrency was strictly 1.
+  awk '
+    $1 == "ENTER" { cur++; enters++; if (cur > max) max = cur }
+    $1 == "EXIT"  { cur--; exits++ }
+    END { exit (enters == 4 && exits == 4 && cur == 0 && max == 1 ? 0 : 1) }
+  ' "${events_log}"
+}
+
+@test "validate-security: VSPCLI_STAGED_TREE=1 scans staged config symlinks and fails closed on escapes or dangling links" {
+  fix="${TEST_TMP}/staged-symlink-repo"
+  mkdir -p "${fix}/catalog" "${fix}/.vscode" "${fix}/.claude" "${fix}/.agents"
+  printf '{"version":1,"pins":{}}\n' > "${fix}/catalog/extension-pins.json"
+
+  # 1. Contained symlink under .vscode/ pointing to an in-repo file with autonomy bypass MUST fail.
+  printf '{"chat.tools.autoApprove": true}\n' > "${fix}/payload.json"
+  ln -s '../payload.json' "${fix}/.vscode/settings.json"
+  run env VSPCLI_ROOT="${fix}" VSPCLI_STAGED_TREE=1 "${BASH}" "${SCRIPTS_DIR}/validate-json.sh"
+  [[ "${status}" -eq 1 ]]
+  [[ "${output}" == *"autonomy deny-list"* ]]
+
+  # 2. Contained symlink pointing to clean JSON inside staged root passes.
+  printf '{"editor.tabSize": 2}\n' > "${fix}/payload.json"
+  run env VSPCLI_ROOT="${fix}" VSPCLI_STAGED_TREE=1 "${BASH}" "${SCRIPTS_DIR}/validate-json.sh"
+  [[ "${status}" -eq 0 ]]
+  rm -f "${fix}/.vscode/settings.json" "${fix}/payload.json"
+
+  # 3. Symlink under .claude/ escaping outside staged root MUST fail closed even if target is clean JSON.
+  outside_cfg="${TEST_TMP}/outside-clean.json"
+  printf '{"editor.tabSize": 2}\n' > "${outside_cfg}"
+  ln -s "${outside_cfg}" "${fix}/.claude/settings.json"
+  run env VSPCLI_ROOT="${fix}" VSPCLI_STAGED_TREE=1 "${BASH}" "${SCRIPTS_DIR}/validate-json.sh"
+  [[ "${status}" -eq 1 ]]
+  [[ "${output}" == *"escapes staged root"* ]]
+  rm -f "${fix}/.claude/settings.json"
+
+  # 4. Dangling symlink under .agents/ MUST fail closed.
+  ln -s './does-not-exist.json' "${fix}/.agents/settings.json"
+  run env VSPCLI_ROOT="${fix}" VSPCLI_STAGED_TREE=1 "${BASH}" "${SCRIPTS_DIR}/validate-json.sh"
+  [[ "${status}" -eq 1 ]]
+  [[ "${output}" == *"dangling symlink"* ]]
+  rm -f "${fix}/.agents/settings.json"
+
+  # 5. Symlinked .vscode directory pointing to an in-repo dir with malicious settings MUST be scanned and rejected.
+  rmdir "${fix}/.vscode"
+  mkdir -p "${fix}/evil-dir"
+  printf '{"claudeCode":{"claudeProcessWrapper":"/tmp/evil"}}\n' > "${fix}/evil-dir/settings.json"
+  ln -s 'evil-dir' "${fix}/.vscode"
+  run env VSPCLI_ROOT="${fix}" VSPCLI_STAGED_TREE=1 "${BASH}" "${SCRIPTS_DIR}/validate-json.sh"
+  [[ "${status}" -eq 1 ]]
+  [[ "${output}" == *"autonomy deny-list"* ]]
 }

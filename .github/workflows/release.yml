@@ -1,0 +1,340 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional version label for dry-run dispatch (e.g. v2.1.0-rc1)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build-binary:
+    name: Build vsp (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Resolve release tag
+        id: meta
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          elif [[ -n "${INPUT_TAG}" ]]; then
+            tag="${INPUT_TAG}"
+          else
+            tag="v0.0.0-dev-${GITHUB_SHA::7}"
+          fi
+          printf 'tag=%s\n' "${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build release binary for ${{ matrix.target }}
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          rustup target add "${TARGET}"
+          cargo build --release --locked --bin vsp --target "${TARGET}"
+          ls -lh "target/${TARGET}/release/vsp"
+
+      - name: Package binary tarball
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          stage="release-stage/vsp-${TAG}-${TARGET}"
+          mkdir -p "${stage}" release-out
+          cp "target/${TARGET}/release/vsp" "${stage}/vsp"
+          chmod 0755 "${stage}/vsp"
+          for doc in README.md SECURITY.md CHANGELOG.md LICENSE; do
+            [[ -f "${doc}" ]] && cp "${doc}" "${stage}/${doc}"
+          done
+          tar -C release-stage -czf "release-out/vsp-${TAG}-${TARGET}.tar.gz" "vsp-${TAG}-${TARGET}"
+
+      - name: Upload target tarball artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vsp-${{ matrix.target }}
+          path: release-out/vsp-*.tar.gz
+          if-no-files-found: error
+
+  build-profiles:
+    name: Build deterministic profile bundles & SHA256SUMS
+    needs:
+      - build-binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Resolve release tag
+        id: meta
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          elif [[ -n "${INPUT_TAG}" ]]; then
+            tag="${INPUT_TAG}"
+          else
+            tag="v0.0.0-dev-${GITHUB_SHA::7}"
+          fi
+          printf 'tag=%s\n' "${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download Linux vsp binary
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: vsp-x86_64-unknown-linux-gnu
+          path: bin-dist
+
+      - name: Run vsp dev dist twice and verify deterministic SHA256SUMS
+        shell: bash
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p bin-unpacked
+          tar -xzf "bin-dist/vsp-${TAG}-x86_64-unknown-linux-gnu.tar.gz" -C bin-unpacked
+          VSP_BIN="${PWD}/bin-unpacked/vsp-${TAG}-x86_64-unknown-linux-gnu/vsp"
+          chmod 0755 "${VSP_BIN}"
+
+          "${VSP_BIN}" dev validate
+
+          rm -rf dist dist-verify
+          "${VSP_BIN}" dev dist --out dist
+          "${VSP_BIN}" dev dist --out dist-verify
+
+          cmp -s dist/SHA256SUMS dist-verify/SHA256SUMS
+          diff -ru dist dist-verify
+          (cd dist && sha256sum -c SHA256SUMS)
+
+          mkdir -p profiles-out
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -C dist -czf "profiles-out/vsp-profiles-${TAG}.tar.gz" .
+          cp dist/SHA256SUMS "profiles-out/vsp-profiles-${TAG}.SHA256SUMS"
+
+      - name: Check Homebrew formula template syntax
+        shell: bash
+        run: ruby -c Formula/vsp.rb
+
+      - name: Upload deterministic profiles bundle artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vsp-profiles
+          path: profiles-out/*
+          if-no-files-found: error
+
+  publish-release:
+    name: Checksum, render Homebrew formula, attest provenance & publish GitHub Release
+    needs:
+      - build-binary
+      - build-profiles
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Resolve release tag
+        id: meta
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          elif [[ -n "${INPUT_TAG}" ]]; then
+            tag="${INPUT_TAG}"
+          else
+            tag="v0.0.0-dev-${GITHUB_SHA::7}"
+          fi
+          printf 'tag=%s\n' "${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download all release artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate and verify unified SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          LC_ALL=C find . -maxdepth 1 -type f -name '*.tar.gz' -printf '%f\n' \
+            | LC_ALL=C sort \
+            | xargs sha256sum > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Render and verify Homebrew formula
+        shell: bash
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ruby -c Formula/vsp.rb
+
+          VERSION="${TAG#v}"
+          lookup_sha() {
+            local file="${1}" sha
+            sha="$(awk -v f="${file}" '{ sub(/^\*/, "", $2); if ($2 == f) print $1 }' release-assets/SHA256SUMS)"
+            if [[ ! "${sha}" =~ ^[0-9a-f]{64}$ ]] || [[ "${sha}" == "0000000000000000000000000000000000000000000000000000000000000000" ]]; then
+              printf 'Missing or invalid SHA-256 digest for %s in release-assets/SHA256SUMS\n' "${file}" >&2
+              exit 1
+            fi
+            printf '%s\n' "${sha}"
+          }
+
+          SHA_MACOS_ARM64="$(lookup_sha "vsp-${TAG}-aarch64-apple-darwin.tar.gz")"
+          SHA_MACOS_X64="$(lookup_sha "vsp-${TAG}-x86_64-apple-darwin.tar.gz")"
+          SHA_LINUX_X64="$(lookup_sha "vsp-${TAG}-x86_64-unknown-linux-gnu.tar.gz")"
+
+          mkdir -p homebrew-formula/Formula
+          VERSION="${VERSION}" \
+          SHA_MACOS_ARM64="${SHA_MACOS_ARM64}" \
+          SHA_MACOS_X64="${SHA_MACOS_X64}" \
+          SHA_LINUX_X64="${SHA_LINUX_X64}" \
+          OUT_FORMULA="homebrew-formula/Formula/vsp.rb" \
+          ruby -e '
+            formula = File.read("Formula/vsp.rb")
+            ver = ENV.fetch("VERSION")
+            digests = {
+              "aarch64-apple-darwin" => ENV.fetch("SHA_MACOS_ARM64"),
+              "x86_64-apple-darwin" => ENV.fetch("SHA_MACOS_X64"),
+              "x86_64-unknown-linux-gnu" => ENV.fetch("SHA_LINUX_X64"),
+            }
+            unless formula.sub!(/^(\s*version\s+)"[^"]+"/, %(\\1"#{ver}"))
+              abort "Failed to update version in Formula/vsp.rb"
+            end
+            digests.each do |target, sha|
+              abort "Invalid sha256 for #{target}: #{sha}" unless sha.match?(/\A[0-9a-f]{64}\z/) && sha != "0" * 64
+              pattern = /(url\s+"[^"]*#{Regexp.escape(target)}\.tar\.gz"\n\s*sha256\s+)"[0-9a-f]{64}"/
+              unless formula.sub!(pattern, %(\\1"#{sha}"))
+                abort "Failed to update sha256 for #{target} in Formula/vsp.rb"
+              end
+            end
+            abort "Placeholder all-zero sha256 still present" if formula.include?("0" * 64)
+            File.write(ENV.fetch("OUT_FORMULA"), formula)
+          '
+
+          ruby -c homebrew-formula/Formula/vsp.rb
+          cp homebrew-formula/Formula/vsp.rb release-assets/vsp.rb
+
+      - name: Upload rendered Homebrew formula artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: homebrew-formula
+          path: homebrew-formula
+          if-no-files-found: error
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release-assets/*
+
+      - name: Attach assets to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" release-assets/*
+          else
+            gh release create "${TAG}" release-assets/* \
+              --verify-tag \
+              --title "${TAG}" \
+              --generate-notes
+          fi
+
+  # Optional automated tap publisher: activates only on tagged releases when repository
+  # variable `HOMEBREW_TAP_REPO` (e.g. `artagon/homebrew-aitools`) and secret
+  # `HOMEBREW_TAP_TOKEN` are configured. When unset, the rendered `Formula/vsp.rb` is
+  # still verified and uploaded as both the `homebrew-formula` artifact and `vsp.rb`
+  # GitHub Release asset for manual tap updates.
+  publish-homebrew-tap:
+    name: Publish rendered Formula/vsp.rb to Homebrew tap (optional)
+    needs:
+      - publish-release
+    if: startsWith(github.ref, 'refs/tags/v') && vars.HOMEBREW_TAP_REPO != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check optional tap publish credentials
+        id: gate
+        shell: bash
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [[ -n "${HOMEBREW_TAP_TOKEN}" ]]; then
+            echo "ready=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "HOMEBREW_TAP_TOKEN secret is not set; skipping automated tap push. Download rendered Formula/vsp.rb from the release assets or homebrew-formula artifact."
+            echo "ready=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Download rendered Homebrew formula artifact
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: homebrew-formula
+          path: rendered-formula
+
+      - name: Checkout Homebrew tap repository
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ vars.HOMEBREW_TAP_REPO }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap-repo
+
+      - name: Update and push Formula/vsp.rb to tap
+        if: steps.gate.outputs.ready == 'true'
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p tap-repo/Formula
+          cp rendered-formula/Formula/vsp.rb tap-repo/Formula/vsp.rb
+          ruby -c tap-repo/Formula/vsp.rb
+          cd tap-repo
+          if git diff --quiet -- Formula/vsp.rb && [[ -z "$(git ls-files --others --exclude-standard -- Formula/vsp.rb)" ]]; then
+            echo "Tap Formula/vsp.rb is already up to date for ${TAG}."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/vsp.rb
+          git commit -m "vsp ${TAG}"
+          git push

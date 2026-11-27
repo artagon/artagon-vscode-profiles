@@ -143,21 +143,44 @@ check_autonomy_denylist_json() {
   local label="${1:-stdin}"
   local hits
   hits="$(jq -r '
+    def norm_bool:
+      if type == "boolean" then .
+      elif type == "string" then
+        (ascii_downcase) as $s
+        | if $s == "true" then true
+          elif $s == "false" then false
+          else . end
+      else . end;
+    def matches_key($k; $path; $target):
+      ($target | ascii_downcase) as $t
+      | ($k | ascii_downcase) as $kl
+      | ($path | ascii_downcase) as $pl
+      | ($kl == $t) or ($pl == $t) or ($pl | endswith("." + $t));
+    def exec_override_keys:
+      [
+        "claudeCode.claudeProcessWrapper",
+        "claudeCode.environmentVariables",
+        "antigravity.serverArgs",
+        "antigravity.releaseBaseUrl",
+        "antigravity.caCertificates",
+        "chatgpt.cliExecutable"
+      ];
     def inspect($p):
       if type == "object" then
         to_entries[] as $e
         | ($p + [$e.key]) as $np
         | ($np | join(".")) as $path
+        | ($e.value | norm_bool) as $val
         | (
-            if ($e.key | test("^chat\\.tools\\..*autoapprov"; "i")) then
+            if ($e.key | test("^chat\\.tools\\..*autoapprov"; "i")) or ($path | test("(^|\\.)chat\\.tools\\..*autoapprov"; "i")) then
               "forbidden autonomy key: \($path)"
-            elif ($e.key == "claudeCode.allowDangerouslySkipPermissions" and $e.value == true) then
+            elif matches_key($e.key; $path; "claudeCode.allowDangerouslySkipPermissions") and ($val == true) then
               "forbidden autonomy setting: \($path)=true"
-            elif ($e.key == "claudeCode.initialPermissionMode" and $e.value == "bypassPermissions") then
+            elif matches_key($e.key; $path; "claudeCode.initialPermissionMode") and (($e.value | type) == "string") and (($e.value | ascii_downcase) == "bypasspermissions") then
               "forbidden autonomy setting: \($path)=bypassPermissions"
-            elif ($e.key == "geminicodeassist.agentYoloMode" and $e.value == true) then
+            elif matches_key($e.key; $path; "geminicodeassist.agentYoloMode") and ($val == true) then
               "forbidden autonomy setting: \($path)=true"
-            elif ($e.key == "claudeCode.claudeProcessWrapper" or $e.key == "claudeCode.environmentVariables" or $e.key == "antigravity.serverArgs" or $e.key == "antigravity.releaseBaseUrl" or $e.key == "antigravity.caCertificates" or $e.key == "chatgpt.cliExecutable") then
+            elif any(exec_override_keys[]; matches_key($e.key; $path; .)) then
               "forbidden exec-override key: \($path)"
             else empty end
           ),
@@ -165,7 +188,7 @@ check_autonomy_denylist_json() {
       elif type == "array" then
         .[] | inspect($p)
       elif type == "string" then
-        if test("bypassPermissions|--dangerously-skip-permissions") then
+        if test("bypassPermissions|--dangerously-skip-permissions"; "i") then
           "forbidden bypassPermissions value at: \($p | join("."))"
         else empty end
       else empty end;

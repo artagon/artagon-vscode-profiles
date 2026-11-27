@@ -1,0 +1,30 @@
+// Consolidated v2.2 pack: quality (capability)
+{
+  "version": 2,
+  "id": "quality",
+  "kind": "capability",
+  "description": "Optional SonarQube for IDE (SonarLint) static analysis",
+  "requires": [
+    "core-editor"
+  ],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [],
+    "profile": [
+      "sonarsource.sonarlint-vscode"
+    ],
+    "unwanted": []
+  },
+  "settings": {
+    "workspace": null,
+    // SonarQube for IDE profile preferences (telemetry disabled, new-code focus, generated-dir exclusions).
+    "profile": {
+      "sonarlint.disableTelemetry": true,
+      "sonarlint.focusOnNewCode": true,
+      "sonarlint.analysisExcludesStandalone": "**/.venv/**,**/node_modules/**,**/dist/**,**/build/**,**/target/**,**/.astro/**"
+    }
+  },
+  "tasks": null,
+  "detect": null
+}

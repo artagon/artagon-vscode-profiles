@@ -21,24 +21,41 @@ to_lower() {
 # Portable SHA-256 hex digest of a file (or stdin when arg is "-").
 sha256_for_file() {
   local target="${1}"
+  local raw="" digest=""
+
+  if [[ "${target}" != "-" ]]; then
+    if [[ ! -r "${target}" || -d "${target}" ]]; then
+      printf 'error: sha256_for_file: cannot read file: %s\n' "${target}" >&2
+      return 1
+    fi
+  fi
+
   if command -v sha256sum >/dev/null 2>&1; then
     if [[ "${target}" == "-" ]]; then
-      sha256sum | awk '{print $1}'
+      raw="$(sha256sum)" || return 1
     else
-      sha256sum < "${target}" | awk '{print $1}'
+      raw="$(sha256sum < "${target}")" || return 1
     fi
-    return 0
-  fi
-  if command -v shasum >/dev/null 2>&1; then
+  elif command -v shasum >/dev/null 2>&1; then
     if [[ "${target}" == "-" ]]; then
-      shasum -a 256 | awk '{print $1}'
+      raw="$(shasum -a 256)" || return 1
     else
-      shasum -a 256 < "${target}" | awk '{print $1}'
+      raw="$(shasum -a 256 < "${target}")" || return 1
     fi
-    return 0
+  else
+    echo "error: sha256sum or shasum is required" >&2
+    return 1
   fi
-  echo "error: sha256sum or shasum is required" >&2
-  return 1
+
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  digest="${raw%%[[:space:]]*}"
+  digest="$(printf '%s' "${digest}" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  if [[ ! "${digest}" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'error: sha256_for_file: invalid digest output for %s\n' "${target}" >&2
+    return 1
+  fi
+  printf '%s\n' "${digest}"
+  return 0
 }
 
 # Portable 8-hex-character random ID (zero Python dependency, zero SIGPIPE head).
@@ -399,6 +416,15 @@ atomic_write_file() {
   return 0
 }
 
+# Populate lock metadata atomically (write host + started_at before atomic pid rename).
+_write_lock_metadata() {
+  local lock_dir="${1}"
+  hostname 2>/dev/null > "${lock_dir}/host" || printf 'unknown\n' > "${lock_dir}/host" || return 1
+  date -u '+%Y-%m-%dT%H:%M:%SZ' > "${lock_dir}/started_at" || return 1
+  printf '%s\n' "$$" > "${lock_dir}/.pid.$$" || return 1
+  mv -f "${lock_dir}/.pid.$$" "${lock_dir}/pid" || { rm -f "${lock_dir}/.pid.$$"; return 1; }
+}
+
 # ABA-free fail-closed directory lock (NEVER silently auto-evicts stale locks).
 # Usage: acquire_lock <lock_dir> [timeout_secs] [--break-stale-lock]
 acquire_lock() {
@@ -413,37 +439,70 @@ acquire_lock() {
   parent="$(dirname -- "${lock_dir}")"
   mkdir -p "${parent}" || return 1
 
+  local reclaim_guard="${lock_dir}.reclaim"
   local waited=0
   while true; do
     if mkdir "${lock_dir}" 2>/dev/null; then
-      printf '%s\n' "$$" > "${lock_dir}/pid"
-      hostname 2>/dev/null > "${lock_dir}/host" || printf 'unknown\n' > "${lock_dir}/host"
-      date -u '+%Y-%m-%dT%H:%M:%SZ' > "${lock_dir}/started_at"
+      if ! _write_lock_metadata "${lock_dir}"; then
+        rm -rf "${lock_dir}"
+        return 1
+      fi
       return 0
     fi
 
-    if [[ "${break_stale}" -eq 1 && -f "${lock_dir}/pid" ]]; then
-      local owner_pid owner_host my_host
-      owner_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
-      owner_host="$(cat "${lock_dir}/host" 2>/dev/null || true)"
-      my_host="$(hostname 2>/dev/null || printf 'unknown')"
-      # Only reap confirmed-dead local-host PID (ps -p avoids EPERM false-dead on other users' processes)
-      # and use atomic mv-reap so two concurrent reapers cannot suffer an ABA delete of a newly acquired lock.
-      if [[ "${owner_host}" == "${my_host}" && "${owner_pid}" =~ ^[0-9]+$ ]] && ! ps -p "${owner_pid}" >/dev/null 2>&1; then
-        local reap_dir="${lock_dir}.reap.$$"
-        if mv "${lock_dir}" "${reap_dir}" 2>/dev/null; then
-          local reaped_pid
-          reaped_pid="$(cat "${reap_dir}/pid" 2>/dev/null || true)"
-          if [[ "${reaped_pid}" == "${owner_pid}" ]]; then
-            echo "lock: removing confirmed-dead stale lock (pid=${owner_pid}): ${lock_dir}" >&2
-            rm -rf "${reap_dir}"
-          else
-            # Unexpected owner raced before mv; restore cleanly!
-            mv "${reap_dir}" "${lock_dir}" 2>/dev/null || true
+    if [[ "${break_stale}" -eq 1 && -f "${lock_dir}/pid" && -f "${lock_dir}/host" ]]; then
+      # Serialize stale-lock reclamation atomically under a secondary mkdir reclaim guard
+      # so two concurrent reclaimers can never race and move a newly acquired owner's lock.
+      if mkdir "${reclaim_guard}" 2>/dev/null; then
+        local acquired_after_reap=0
+        local owner_pid owner_host owner_ts my_host
+        if [[ -f "${lock_dir}/pid" && -f "${lock_dir}/host" ]]; then
+          owner_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
+          owner_host="$(cat "${lock_dir}/host" 2>/dev/null || true)"
+          owner_ts="$(cat "${lock_dir}/started_at" 2>/dev/null || true)"
+          my_host="$(hostname 2>/dev/null || printf 'unknown')"
+          # Only reap confirmed-dead local-host PID; verify `ps -p $$` works so a broken `ps`
+          # never causes a false-dead reclamation.
+          if [[ -n "${owner_host}" && "${owner_host}" == "${my_host}" && "${owner_pid}" =~ ^[0-9]+$ ]] \
+             && ps -p "$$" >/dev/null 2>&1 \
+             && ! ps -p "${owner_pid}" >/dev/null 2>&1; then
+            # Re-verify lock ownership AFTER confirming owner_pid is dead. A dead PID cannot
+            # release the lock, so if metadata still matches, no live owner replaced it between
+            # our initial read and the ps check.
+            local recheck_pid recheck_host recheck_ts
+            recheck_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
+            recheck_host="$(cat "${lock_dir}/host" 2>/dev/null || true)"
+            recheck_ts="$(cat "${lock_dir}/started_at" 2>/dev/null || true)"
+            if [[ "${recheck_pid}" == "${owner_pid}" && "${recheck_host}" == "${owner_host}" && "${recheck_ts}" == "${owner_ts}" ]]; then
+              local reap_dir="${lock_dir}.reap.$$"
+              if mv "${lock_dir}" "${reap_dir}" 2>/dev/null; then
+                local reaped_pid
+                reaped_pid="$(cat "${reap_dir}/pid" 2>/dev/null || true)"
+                if [[ "${reaped_pid}" == "${owner_pid}" ]]; then
+                  echo "lock: removing confirmed-dead stale lock (pid=${owner_pid}): ${lock_dir}" >&2
+                  rm -rf "${reap_dir}"
+                  # Claim the lock and write live metadata BEFORE releasing reclaim_guard
+                  # so no waiting reclaimer can ever observe or disturb an uninitialized lock.
+                  if mkdir "${lock_dir}" 2>/dev/null; then
+                    if _write_lock_metadata "${lock_dir}"; then
+                      acquired_after_reap=1
+                    else
+                      rm -rf "${lock_dir}"
+                    fi
+                  fi
+                else
+                  # Unexpected owner raced via external removal; restore cleanly without deleting.
+                  mv "${reap_dir}" "${lock_dir}" 2>/dev/null || true
+                fi
+              fi
+            fi
           fi
         fi
+        rmdir "${reclaim_guard}" 2>/dev/null || true
+        if [[ "${acquired_after_reap}" -eq 1 ]]; then
+          return 0
+        fi
         break_stale=0
-        continue
       fi
     fi
 
@@ -484,18 +543,39 @@ is_vscode_running() {
   fi
   case "$(uname -s)" in
     Darwin)
-      # Drain ps stdout via awk so large process tables never trigger SIGPIPE (141) under pipefail.
+      local ps_out=""
+      if ! ps_out="$(ps -eo args= 2>/dev/null)"; then
+        echo "warning: ps process scan failed; treating VS Code as running (fail-closed)" >&2
+        return 0
+      fi
+      # Drain ps output via awk so large process tables never trigger SIGPIPE (141) under pipefail.
       # VS Code 1.147+ on macOS runs as Contents/MacOS/Code (older releases used Contents/MacOS/Electron);
-      # anchor argv[0] so unrelated commands mentioning the path are never matched, and exclude out/cli.js.
-      ps -eo args= 2>/dev/null | LC_ALL=C awk '
-        /^[[:space:]]*(\/[^[:space:]\/]+)*\/Visual Studio Code(\.app)?\/Contents\/MacOS\/(Code|Electron)([[:space:]]|$)/ && !/out\/cli\.js/ { found = 1 }
+      # match absolute paths including spaces in parent directories while rejecting unrelated commands
+      # referencing the path in argv[1+], and exclude transient CLI out/cli.js invocations.
+      printf '%s\n' "${ps_out}" | LC_ALL=C awk '
+        {
+          line = $0
+          sub(/^[[:space:]]+/, "", line)
+          if (line ~ /out\/cli\.js/) next
+          if (match(line, /\/Visual Studio Code(\.app)?\/Contents\/MacOS\/(Code|Electron)([[:space:]]|$)/)) {
+            prefix = substr(line, 1, RSTART - 1)
+            if (prefix == "" || (prefix ~ /^\// && prefix !~ /[[:space:]]\//)) {
+              found = 1
+            }
+          }
+        }
         END { exit (found ? 0 : 1) }
       ' && return 0
       return 1
       ;;
     Linux)
+      local ps_out=""
+      if ! ps_out="$(ps -eo args= 2>/dev/null)"; then
+        echo "warning: ps process scan failed; treating VS Code as running (fail-closed)" >&2
+        return 0
+      fi
       # Anchor argv[0] to .../code and exclude transient CLI (out/cli.js) and remote-cli invocations.
-      ps -eo args= 2>/dev/null | LC_ALL=C awk '
+      printf '%s\n' "${ps_out}" | LC_ALL=C awk '
         /^[[:space:]]*[^[:space:]]*\/code([[:space:]]|$)/ && !/out\/cli\.js/ && !/\/remote-cli\// { found = 1 }
         END { exit (found ? 0 : 1) }
       ' && return 0

@@ -5,7 +5,7 @@
 # Exit codes:
 #   0 — all audited extensions are compatible
 #   1 — one or more extensions are incompatible or NOT_FOUND
-#   2 — usage error, missing dependency, or failed VS Code version discovery
+#   2 — usage error, missing dependency, failed VS Code version discovery, or verification unavailable (Marketplace/parser failure)
 set -euo pipefail
 
 SCRIPT_ROOT="$(CDPATH='' cd -- "$(dirname -- "${0}")/.." && pwd -P)"
@@ -15,6 +15,8 @@ LIB_DIR="${SCRIPT_ROOT}/scripts/lib"
 source "${LIB_DIR}/common.sh"
 # shellcheck source=scripts/lib/module-resolver.sh
 source "${LIB_DIR}/module-resolver.sh"
+# shellcheck source=scripts/lib/compiler.sh
+source "${LIB_DIR}/compiler.sh"
 
 API_URL="https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery"
 JSON_MODE=0
@@ -113,15 +115,16 @@ VSCODE_VER="${VSCODE_VER%%-*}"
 
 # Collect unique lowercased extension IDs to audit.
 AUDIT_IDS=()
+AUDIT_IDS_LC_SEEN="|"
 add_id_unique() {
   local id="${1}"
   [[ -n "${id}" ]] || return 0
   local lc
   lc="$(to_lower "${id}")"
-  local existing
-  for existing in "${AUDIT_IDS[@]+"${AUDIT_IDS[@]}"}"; do
-    [[ "$(to_lower "${existing}")" == "${lc}" ]] && return 0
-  done
+  case "${AUDIT_IDS_LC_SEEN}" in
+    *"|${lc}|"*) return 0 ;;
+  esac
+  AUDIT_IDS_LC_SEEN="${AUDIT_IDS_LC_SEEN}${lc}|"
   AUDIT_IDS+=("${id}")
 }
 
@@ -131,9 +134,14 @@ if [[ -n "${EXTENSIONS_FILE}" ]]; then
     exit 2
   fi
   if jq -e -s 'length == 1 and (.[0] | type == "array")' "${EXTENSIONS_FILE}" >/dev/null 2>&1; then
+    ext_ids_raw=""
+    if ! ext_ids_raw="$(jq -r -s '.[0][] | if type == "string" then . else .identifier.id // empty end' "${EXTENSIONS_FILE}")"; then
+      printf 'check-compat: failed to parse extensions JSON file: %s\n' "${EXTENSIONS_FILE}" >&2
+      exit 2
+    fi
     while IFS= read -r id; do
       add_id_unique "${id}"
-    done < <(jq -r '.[] | if type == "string" then . else .identifier.id // empty end' "${EXTENSIONS_FILE}")
+    done <<< "${ext_ids_raw}"
   else
     while IFS= read -r id; do
       id="${id%%#*}"
@@ -144,20 +152,52 @@ if [[ -n "${EXTENSIONS_FILE}" ]]; then
 fi
 
 if [[ "${CHECK_ALL}" -eq 1 ]]; then
+  all_profs=""
+  if ! all_profs="$(discover_profiles "${ROOT}")"; then
+    echo "check-compat: failed to discover profiles" >&2
+    exit 2
+  fi
   while IFS= read -r p; do
     [[ -n "${p}" ]] && PROFILES+=("${p}")
-  done < <(discover_profiles "${ROOT}")
+  done <<< "${all_profs}"
 fi
 
 for p in "${PROFILES[@]+"${PROFILES[@]}"}"; do
   ef="${ROOT}/profiles/${p}/extensions.json"
+  tmp_ef=""
   if [[ ! -f "${ef}" ]]; then
-    printf 'check-compat: missing extensions file for profile %q: %s\n' "${p}" "${ef}" >&2
+    if [[ -f "${ROOT}/profiles/${p}/profile.json" ]]; then
+      tmp_ef="$(mktemp "${TMPDIR:-/tmp}/vsp-compat-ext.XXXXXX")"
+      if ! compiler_compile_profile_extensions_file "${ROOT}" "${p}" "${tmp_ef}"; then
+        rm -f "${tmp_ef}"
+        printf 'check-compat: failed to compile extensions on-demand for profile %q\n' "${p}" >&2
+        exit 2
+      fi
+      ef="${tmp_ef}"
+    else
+      printf 'check-compat: missing extensions file for profile %q: %s\n' "${p}" "${ef}" >&2
+      exit 2
+    fi
+  fi
+  if ! jq -e -s '
+    length == 1
+    and (.[0] | type == "array")
+    and (all(.[0][]; type == "object" and (.identifier | type == "object") and (.identifier.id | type == "string") and ((.identifier.id | length) > 0)))
+  ' "${ef}" >/dev/null; then
+    printf 'check-compat: invalid or malformed extensions JSON for profile %q: %s\n' "${p}" "${ef}" >&2
+    [[ -n "${tmp_ef}" ]] && rm -f "${tmp_ef}"
     exit 2
   fi
+  prof_ids_raw=""
+  if ! prof_ids_raw="$(jq -r -s '.[0][].identifier.id' "${ef}")"; then
+    printf 'check-compat: failed to parse extensions JSON for profile %q: %s\n' "${p}" "${ef}" >&2
+    [[ -n "${tmp_ef}" ]] && rm -f "${tmp_ef}"
+    exit 2
+  fi
+  [[ -n "${tmp_ef}" ]] && rm -f "${tmp_ef}"
   while IFS= read -r id; do
     add_id_unique "${id}"
-  done < <(jq -r '.[] | .identifier.id // empty' "${ef}")
+  done <<< "${prof_ids_raw}"
 done
 
 # Pure Bash 3.2 full semver comparison (major.minor.patch).
@@ -385,7 +425,14 @@ for cf in "${BATCH_DIR}"/chunk-*.txt; do
 done
 
 if [[ "${#RESP_FILES[@]}" -gt 0 ]]; then
-  jq -s '[ .[] | (.results[0].extensions // [])[] ]' "${RESP_FILES[@]}" > "${MERGED_MP}"
+  if ! jq -e -s 'all(.[]; type == "object" and (.results | type == "array"))' "${RESP_FILES[@]}" >/dev/null 2>&1; then
+    echo "check-compat: Marketplace API returned malformed JSON response" >&2
+    exit 2
+  fi
+  if ! jq -s '[ .[] | (.results[0].extensions // [])[] ]' "${RESP_FILES[@]}" > "${MERGED_MP}"; then
+    echo "check-compat: failed to merge Marketplace API response" >&2
+    exit 2
+  fi
 else
   printf '[]\n' > "${MERGED_MP}"
 fi
@@ -397,7 +444,8 @@ NOT_FOUND_COUNT=0
 for id in "${AUDIT_IDS[@]+"${AUDIT_IDS[@]}"}"; do
   id_lc="$(to_lower "${id}")"
   # Prefer latest stable version; fall back to latest pre-release ONLY when pre-release-only.
-  ext_meta="$(jq -c --arg id_lc "${id_lc}" '
+  ext_meta=""
+  if ! ext_meta="$(jq -c --arg id_lc "${id_lc}" '
     map(select(((.publisher.publisherName + "." + .extensionName) | ascii_downcase) == $id_lc))
     | .[0] as $ext
     | if $ext == null then null
@@ -415,7 +463,10 @@ for id in "${AUDIT_IDS[@]+"${AUDIT_IDS[@]}"}"; do
           }
           end
       end
-  ' "${MERGED_MP}")"
+  ' "${MERGED_MP}")"; then
+    printf 'check-compat: verification unavailable for %s (malformed Marketplace extension metadata)\n' "${id}" >&2
+    exit 2
+  fi
 
   if [[ "${ext_meta}" == "null" || -z "${ext_meta}" ]]; then
     NOT_FOUND_COUNT=$((NOT_FOUND_COUNT + 1))
@@ -431,31 +482,57 @@ for id in "${AUDIT_IDS[@]+"${AUDIT_IDS[@]}"}"; do
   # When IncludeLatestVersionOnly returned only a pre-release version, query full
   # version history (flags=17, no IncludeFiles) for this single extension so
   # stable-first selection picks the latest stable release if one exists.
+  # Fail closed (exit 2, verification unavailable) on request failure or malformed payload
+  # instead of falling back to a prerelease false pass.
   if [[ "${pre}" == "true" ]]; then
     fb_chunk="${WORK_TMP}/fb-id.txt"
     fb_resp="${WORK_TMP}/fb-resp.json"
     printf '%s\n' "${id}" > "${fb_chunk}"
-    if query_batch "${fb_chunk}" "${fb_resp}" 17 2>/dev/null; then
-      fb_meta="$(jq -c --arg id_lc "${id_lc}" '
-        (.results[0].extensions // [])
-        | map(select(((.publisher.publisherName + "." + .extensionName) | ascii_downcase) == $id_lc))
-        | .[0] as $ext
-        | if $ext == null then null
-          else
-            ($ext.versions // []) as $vers
-            | ($vers | map(select(((.properties // []) | any(.key == "Microsoft.VisualStudio.Code.PreRelease" and .value == "true")) | not))) as $stable
-            | if ($stable | length) > 0 then {
-                version: ($stable[0].version // ""),
-                prerelease: false,
-                engine: ((($stable[0].properties // []) | map(select(.key == "Microsoft.VisualStudio.Code.Engine")) | .[0].value) // "*")
-              } else null end
-          end
-      ' "${fb_resp}" 2>/dev/null || printf 'null')"
-      if [[ "${fb_meta}" != "null" && -n "${fb_meta}" ]]; then
-        ver="$(printf '%s' "${fb_meta}" | jq -r '.version')"
-        eng="$(printf '%s' "${fb_meta}" | jq -r '.engine')"
-        pre="false"
-      fi
+    if ! query_batch "${fb_chunk}" "${fb_resp}" 17; then
+      printf 'check-compat: verification unavailable for %s (stable-history Marketplace request failed)\n' "${id}" >&2
+      exit 2
+    fi
+    if ! jq -e -s '
+      length == 1
+      and (.[0] | type == "object")
+      and (.[0].results | type == "array")
+      and ((.[0].results | length) > 0)
+      and (.[0].results[0] | type == "object")
+      and (.[0].results[0].extensions | type == "array")
+    ' "${fb_resp}" >/dev/null 2>&1; then
+      printf 'check-compat: verification unavailable for %s (malformed stable-history Marketplace response)\n' "${id}" >&2
+      exit 2
+    fi
+    fb_meta=""
+    if ! fb_meta="$(jq -c -s --arg id_lc "${id_lc}" '
+      .[0].results[0].extensions
+      | map(select(((.publisher.publisherName + "." + .extensionName) | ascii_downcase) == $id_lc))
+      | .[0] as $ext
+      | if $ext == null or (($ext.versions | type) != "array") or (($ext.versions | length) == 0) then
+          { state: "unavailable" }
+        else
+          ($ext.versions | map(select(((.properties // []) | any(.key == "Microsoft.VisualStudio.Code.PreRelease" and .value == "true")) | not))) as $stable
+          | if ($stable | length) > 0 then {
+              state: "stable",
+              version: ($stable[0].version // ""),
+              prerelease: false,
+              engine: ((($stable[0].properties // []) | map(select(.key == "Microsoft.VisualStudio.Code.Engine")) | .[0].value) // "*")
+            } else {
+              state: "prerelease_only"
+            } end
+        end
+    ' "${fb_resp}")"; then
+      printf 'check-compat: verification unavailable for %s (failed to parse stable-history Marketplace response)\n' "${id}" >&2
+      exit 2
+    fi
+    fb_state="$(printf '%s' "${fb_meta}" | jq -r '.state // "unavailable"')"
+    if [[ "${fb_state}" == "stable" ]]; then
+      ver="$(printf '%s' "${fb_meta}" | jq -r '.version')"
+      eng="$(printf '%s' "${fb_meta}" | jq -r '.engine')"
+      pre="false"
+    elif [[ "${fb_state}" != "prerelease_only" ]]; then
+      printf 'check-compat: verification unavailable for %s (missing version history in stable-history response)\n' "${id}" >&2
+      exit 2
     fi
   fi
 

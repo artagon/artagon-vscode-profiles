@@ -4,7 +4,7 @@
 bats_require_minimum_version 1.5.0
 load test_helper
 
-RTK_DIR="${REPO_ROOT}/modules/capabilities/rtk-terminal/scripts"
+RTK_DIR="${REPO_ROOT}/packs/rtk-terminal/scripts"
 
 @test "rtk-init.bash: missing rtk emits clear stderr and leaves ARTAGON_RTK_WRAPPED unset so later PATH retry works" {
   bin="${TEST_TMP}/late-rtk"

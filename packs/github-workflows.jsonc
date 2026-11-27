@@ -1,0 +1,69 @@
+// Consolidated v2.2 pack: github-workflows (capability)
+{
+  "version": 2,
+  "id": "github-workflows",
+  "kind": "capability",
+  "description": "GitHub Actions workflow schema validation, IntelliSense, and run inspection (additive on repos with .github/workflows)",
+  "requires": [
+    "core-editor"
+  ],
+  "defaultWith": [],
+  "conflicts": [],
+  "extensions": {
+    "workspace": [
+      "github.vscode-github-actions"
+    ],
+    "profile": [],
+    "unwanted": []
+  },
+  "settings": {
+    // GitHub Actions workflow handoff: let github.vscode-github-actions own workflow language ID
+    // and schema validation while Red Hat YAML (base settings in core-editor) handles formatting and custom action.yml schemas.
+    "workspace": {
+      "yaml.disableSchemaDetection": [
+        "**/.github/workflows/*.yml",
+        "**/.github/workflows/*.yaml",
+        "**/.gitea/workflows/*.yml",
+        "**/.gitea/workflows/*.yaml",
+        "**/.forgejo/workflows/*.yml",
+        "**/.forgejo/workflows/*.yaml"
+      ],
+      "yaml.schemas": {
+        "https://json.schemastore.org/github-action.json": [
+          ".github/actions/**/action.yml",
+          ".github/actions/**/action.yaml",
+          "action.yml",
+          "action.yaml"
+        ]
+      },
+      "[github-actions-workflow]": {
+        "editor.defaultFormatter": "redhat.vscode-yaml",
+        "editor.formatOnSave": false,
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true
+      }
+    },
+    "profile": null
+  },
+  "tasks": null,
+  "detect": {
+    "priority": 80,
+    "fallback": false,
+    "match": "any",
+    "supersedes": [],
+    "rules": [
+      {
+        "type": "glob",
+        "dir": ".github/workflows",
+        "pattern": "*.yml",
+        "max_depth": 1
+      },
+      {
+        "type": "glob",
+        "dir": ".github/workflows",
+        "pattern": "*.yaml",
+        "max_depth": 1
+      }
+    ]
+  }
+}
