@@ -174,10 +174,8 @@ impl fmt::Display for AiMode {
 pub fn resolve_legacy_profile_name(name: &str) -> Option<(&'static str, UxPreset)> {
     let (stem, ux) = if let Some(s) = name.strip_suffix("-crisp") {
         (s, UxPreset::Crisp)
-    } else if let Some(s) = name.strip_suffix("-retina") {
-        (s, UxPreset::Retina)
     } else {
-        return None;
+        (name.strip_suffix("-retina")?, UxPreset::Retina)
     };
 
     let canonical = match stem {
