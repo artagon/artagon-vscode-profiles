@@ -335,16 +335,52 @@ fn h1_m1_shipped_lock_fails_closed_and_unlocked_bypass_is_sticky() {
     let data = sb.data();
     let desired = preset_extensions(&sb, "rust");
 
-    // Pick a desired extension that the shipped lock marks Tier 1 + pending_refresh.
-    let lock = read_lock(&repo_root().join("vsp.lock.json"));
-    let pending = desired
-        .iter()
-        .find(|id| {
-            let entry = &lock["extensions"][id.to_ascii_lowercase()];
-            entry["tier"] == 1 && entry["status"] == "pending_refresh"
-        })
-        .expect("the rust preset has a pending Tier 1 extension in the shipped lock")
-        .clone();
+    // Stage an isolated v2 catalog copy with a synthetic pending_refresh Tier 1 extension so this
+    // regression stays deterministic even after all 103 production lock entries are verified.
+    let fixture_cat = sb.path("pending-lock-cat");
+    fs::create_dir_all(fixture_cat.join("catalog")).expect("mkdir catalog");
+    for rel in [
+        "catalog/extensions.jsonc",
+        "catalog/policy.jsonc",
+        "presets.jsonc",
+        "vsp.lock.json",
+    ] {
+        fs::copy(repo_root().join(rel), fixture_cat.join(rel)).expect("copy v2 catalog file");
+    }
+    fn copy_dir_rec(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).expect("mkdir dst");
+        for entry in fs::read_dir(src).expect("read dir") {
+            let entry = entry.expect("entry");
+            let from = entry.path();
+            let to = dst.join(entry.file_name());
+            if entry.file_type().expect("ft").is_dir() {
+                copy_dir_rec(&from, &to);
+            } else {
+                fs::copy(&from, &to).expect("copy file");
+            }
+        }
+    }
+    copy_dir_rec(&repo_root().join("packs"), &fixture_cat.join("packs"));
+
+    let pending = "anthropic.claude-code".to_string();
+    assert!(
+        desired.iter().any(|id| id == &pending),
+        "rust preset must include {pending}"
+    );
+    let mut lock = read_lock(&fixture_cat.join("vsp.lock.json"));
+    lock["extensions"][&pending] = serde_json::json!({
+        "tier": 1,
+        "universal": false,
+        "status": "pending_refresh",
+        "version": null,
+        "targets": {}
+    });
+    fs::write(
+        fixture_cat.join("vsp.lock.json"),
+        serde_json::to_string_pretty(&lock).expect("serialize lock"),
+    )
+    .expect("write mutated lock");
+    let cat_arg = fixture_cat.to_str().expect("utf8").to_string();
 
     // Pre-register `rust` so `code --list-extensions --profile=rust` observes `others`
     // (FABLE-01 treats unregistered profiles as empty installed sets).
@@ -365,8 +401,16 @@ fn h1_m1_shipped_lock_fails_closed_and_unlocked_bypass_is_sticky() {
         ..Default::default()
     });
 
-    let strict = sb.vsp_shipped_lock(&["--vscode-data-dir", &data, "sync", "-p", "rust"]);
-    assert_exit(&strict, 5, "sync against the shipped lock");
+    let strict = sb.vsp_shipped_lock(&[
+        "--catalog",
+        &cat_arg,
+        "--vscode-data-dir",
+        &data,
+        "sync",
+        "-p",
+        "rust",
+    ]);
+    assert_exit(&strict, 5, "sync against a pending Tier 1 lock");
     assert!(
         stderr(&strict).contains("Tier 1 hash lock"),
         "{}",
@@ -392,6 +436,8 @@ fn h1_m1_shipped_lock_fails_closed_and_unlocked_bypass_is_sticky() {
     // Explicit bypass: installs by ID, warns, and records the bypass.
     sb.clear_code_log();
     let bypass = sb.vsp_shipped_lock(&[
+        "--catalog",
+        &cat_arg,
         "--vscode-data-dir",
         &data,
         "--json",
@@ -414,7 +460,16 @@ fn h1_m1_shipped_lock_fails_closed_and_unlocked_bypass_is_sticky() {
         installed: &installed_lines(&desired),
         ..Default::default()
     });
-    let later = sb.vsp_shipped_lock(&["--vscode-data-dir", &data, "--json", "sync", "-p", "rust"]);
+    let later = sb.vsp_shipped_lock(&[
+        "--catalog",
+        &cat_arg,
+        "--vscode-data-dir",
+        &data,
+        "--json",
+        "sync",
+        "-p",
+        "rust",
+    ]);
     assert_exit(&later, 0, "later sync without --allow-unlocked");
     assert_eq!(
         parse_json(&later)["unlockedBypass"],

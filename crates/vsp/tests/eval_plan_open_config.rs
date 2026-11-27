@@ -354,6 +354,15 @@ fn opus06_plan_populates_lock_status_and_would_refuse_and_honors_allow_unlocked(
     // Configure a Tier 2 entry with an explicit verified semver version and ensure we have
     // verified Tier 1, pending Tier 1, version Tier 2, unlocked Tier 3, and user-unlocked extras.
     if let Some(lockfile) = catalog.lockfile.as_mut() {
+        if let Some(entry) = lockfile.extensions.get_mut("anthropic.claude-code") {
+            entry.tier = 1;
+            entry.universal = Some(false);
+            entry.status = Some(LockEntryStatus::PendingRefresh);
+            entry.version = None;
+            entry.sha256 = None;
+            entry.vsix_url = None;
+            entry.targets.clear();
+        }
         if let Some(entry) = lockfile.extensions.get_mut("tamasfe.even-better-toml") {
             entry.tier = 2;
             entry.status = Some(LockEntryStatus::Verified);

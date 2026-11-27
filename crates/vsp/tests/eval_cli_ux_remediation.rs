@@ -207,16 +207,75 @@ fn universal_dry_run_performs_zero_writes_across_export_dist_dev_and_self() {
         38
     );
 
-    // 3. `dev pins --check --strict` / `--release-gate`: fails exit 1 on pending entries,
-    //    while normal `dev pins --check` exits 0.
+    // 3. `dev pins --check --strict` / `--release-gate`: passes exit 0 on the refreshed
+    //    shipped lockfile (0 pending Tier 1 / Tier 2), and fails exit 1 on a synthetic catalog
+    //    with pending entries!
     let pins_ok = sb.vsp(&["dev", "pins", "--check", "--json"]);
     assert_exit(&pins_ok, 0, "dev pins --check");
     assert_eq!(parse_stdout_json(&pins_ok)["strictReleaseGate"], false);
 
     for gate_flag in ["--strict", "--release-gate"] {
-        let strict = sb.vsp(&["dev", "pins", "--check", gate_flag, "--json"]);
-        assert_exit(&strict, 1, &format!("dev pins --check {gate_flag}"));
-        let strict_val = parse_stdout_json(&strict);
+        let strict_ok = sb.vsp(&["dev", "pins", "--check", gate_flag, "--json"]);
+        assert_exit(
+            &strict_ok,
+            0,
+            &format!("shipped lock dev pins --check {gate_flag}"),
+        );
+        let strict_val = parse_stdout_json(&strict_ok);
+        assert_eq!(strict_val["strictReleaseGate"], true);
+        assert_eq!(strict_val["status"], "ok");
+        assert_eq!(strict_val["pendingTier1"], 0);
+        assert_eq!(strict_val["pendingTier2"], 0);
+    }
+
+    let pending_gate_repo = sb.path("pending-gate-repo");
+    let root_for_gate = repo_root();
+    fs::create_dir_all(pending_gate_repo.join("catalog")).expect("mkdir gate catalog");
+    for rel in [
+        "catalog/extensions.jsonc",
+        "catalog/policy.jsonc",
+        "presets.jsonc",
+        "vsp.lock.json",
+    ] {
+        fs::copy(root_for_gate.join(rel), pending_gate_repo.join(rel)).expect("copy gate file");
+    }
+    copy_tree(
+        &root_for_gate.join("packs"),
+        &pending_gate_repo.join("packs"),
+    );
+    let mut gate_lock: Value = serde_json::from_str(
+        &fs::read_to_string(pending_gate_repo.join("vsp.lock.json")).expect("read gate lock"),
+    )
+    .expect("parse gate lock");
+    gate_lock["extensions"]["anthropic.claude-code"] = json!({
+        "tier": 1,
+        "universal": false,
+        "status": "pending_refresh",
+        "version": null,
+        "targets": {}
+    });
+    fs::write(
+        pending_gate_repo.join("vsp.lock.json"),
+        serde_json::to_string_pretty(&gate_lock).expect("ser gate lock"),
+    )
+    .expect("write gate lock");
+    let pending_gate_str = pending_gate_repo.to_str().expect("utf8");
+    for gate_flag in ["--strict", "--release-gate"] {
+        let strict_fail = sb.vsp(&[
+            "--catalog",
+            pending_gate_str,
+            "dev",
+            "pins",
+            "--check",
+            gate_flag,
+            "--json",
+        ]);
+        assert_exit(
+            &strict_fail,
+            1,
+            &format!("synthetic pending dev pins --check {gate_flag}"),
+        );
+        let strict_val = parse_stdout_json(&strict_fail);
         assert_eq!(strict_val["strictReleaseGate"], true);
         assert_eq!(strict_val["status"], "failed");
     }
@@ -635,11 +694,69 @@ fn plan_extras_diff_and_sync_dry_run_parity_and_would_refuse_exit_5() {
         "exit 0\n",
     ));
 
-    // 1. Without `--allow-unlocked` (pending Tier 1 pins in embedded vsp.lock.json):
+    // Stage a temp catalog with one synthetic pending Tier 1 pin so refusal prediction is
+    // tested deterministically even when the shipped lockfile has 0 pending entries.
+    let pending_cat = sb.path("pending-plan-cat");
+    let root = repo_root();
+    fs::create_dir_all(pending_cat.join("catalog")).expect("mkdir catalog");
+    for rel in [
+        "catalog/extensions.jsonc",
+        "catalog/policy.jsonc",
+        "presets.jsonc",
+        "vsp.lock.json",
+    ] {
+        fs::copy(root.join(rel), pending_cat.join(rel)).expect("copy cat file");
+    }
+    copy_tree(&root.join("packs"), &pending_cat.join("packs"));
+    let mut pending_lock: Value = serde_json::from_str(
+        &fs::read_to_string(pending_cat.join("vsp.lock.json")).expect("read lock"),
+    )
+    .expect("parse lock");
+    pending_lock["extensions"]["anthropic.claude-code"] = json!({
+        "tier": 1,
+        "universal": false,
+        "status": "pending_refresh",
+        "version": null,
+        "targets": {}
+    });
+    fs::write(
+        pending_cat.join("vsp.lock.json"),
+        serde_json::to_string_pretty(&pending_lock).expect("ser lock"),
+    )
+    .expect("write lock");
+    let pending_cat_str = pending_cat.to_str().expect("utf8");
+
+    // 0. Shipped embedded lockfile (0 pending Tier 1): both `diff` and `sync --dry-run` exit 0!
+    let shipped_dry = sb.vsp(&[
+        "--vscode-data-dir",
+        &data,
+        "--dry-run",
+        "sync",
+        "-p",
+        "rust",
+        "--json",
+    ]);
+    assert_exit(&shipped_dry, 0, "shipped lock sync --dry-run -p rust");
+    assert!(parse_stdout_json(&shipped_dry)
+        .get("would_refuse")
+        .is_none());
+
+    // 1. Without `--allow-unlocked` against a pending Tier 1 pin:
     //    `diff` exits 0, `sync --dry-run` prints identical plan AND exits 5!
-    let diff_strict = sb.vsp(&["--vscode-data-dir", &data, "diff", "-p", "rust", "--json"]);
+    let diff_strict = sb.vsp(&[
+        "--catalog",
+        pending_cat_str,
+        "--vscode-data-dir",
+        &data,
+        "diff",
+        "-p",
+        "rust",
+        "--json",
+    ]);
     assert_exit(&diff_strict, 0, "diff -p rust strict");
     let sync_dry_strict = sb.vsp(&[
+        "--catalog",
+        pending_cat_str,
         "--vscode-data-dir",
         &data,
         "--dry-run",
@@ -667,6 +784,8 @@ fn plan_extras_diff_and_sync_dry_run_parity_and_would_refuse_exit_5() {
 
     // 2. With `--allow-unlocked`: BOTH `diff` and `sync --dry-run` exit 0 with identical output.
     let diff_unlocked = sb.vsp(&[
+        "--catalog",
+        pending_cat_str,
         "--vscode-data-dir",
         &data,
         "diff",
@@ -677,6 +796,8 @@ fn plan_extras_diff_and_sync_dry_run_parity_and_would_refuse_exit_5() {
     ]);
     assert_exit(&diff_unlocked, 0, "diff -p rust --allow-unlocked");
     let sync_dry_unlocked = sb.vsp(&[
+        "--catalog",
+        pending_cat_str,
         "--vscode-data-dir",
         &data,
         "--dry-run",
@@ -1059,11 +1180,8 @@ fn human_readable_diff_list_and_show_ux() {
         prof_out.contains("extension ensure_installed:"),
         "{prof_out}"
     );
-    assert!(
-        prof_out.contains("[verified]") || prof_out.contains("[pending]"),
-        "{prof_out}"
-    );
-    assert!(prof_out.contains("Would refuse ("), "{prof_out}");
+    assert!(prof_out.contains("[verified]"), "{prof_out}");
+    assert!(prof_out.contains("[version]"), "{prof_out}");
     assert!(
         prof_out
             .trim_end()
@@ -1071,6 +1189,52 @@ fn human_readable_diff_list_and_show_ux() {
             .last()
             .is_some_and(|l| l.starts_with("Summary:")),
         "Summary line must be at the bottom:\n{prof_out}"
+    );
+
+    // Verify `Would refuse (` and `[pending]` rendering against a synthetic pending Tier 1 catalog.
+    let pending_ux_cat = sb.path("pending-ux-cat");
+    let root = repo_root();
+    fs::create_dir_all(pending_ux_cat.join("catalog")).expect("mkdir ux cat");
+    for rel in [
+        "catalog/extensions.jsonc",
+        "catalog/policy.jsonc",
+        "presets.jsonc",
+        "vsp.lock.json",
+    ] {
+        fs::copy(root.join(rel), pending_ux_cat.join(rel)).expect("copy ux file");
+    }
+    copy_tree(&root.join("packs"), &pending_ux_cat.join("packs"));
+    let mut ux_lock: Value = serde_json::from_str(
+        &fs::read_to_string(pending_ux_cat.join("vsp.lock.json")).expect("read ux lock"),
+    )
+    .expect("parse ux lock");
+    ux_lock["extensions"]["anthropic.claude-code"] = json!({
+        "tier": 1,
+        "universal": false,
+        "status": "pending_refresh",
+        "version": null,
+        "targets": {}
+    });
+    fs::write(
+        pending_ux_cat.join("vsp.lock.json"),
+        serde_json::to_string_pretty(&ux_lock).expect("ser ux lock"),
+    )
+    .expect("write ux lock");
+    let diff_prof_pending = sb.vsp(&[
+        "--catalog",
+        pending_ux_cat.to_str().expect("utf8"),
+        "--vscode-data-dir",
+        &data,
+        "diff",
+        "-p",
+        "rust",
+    ]);
+    assert_exit(&diff_prof_pending, 0, "diff profile pending text");
+    let pending_prof_out = stdout(&diff_prof_pending);
+    assert!(pending_prof_out.contains("[pending]"), "{pending_prof_out}");
+    assert!(
+        pending_prof_out.contains("Would refuse ("),
+        "{pending_prof_out}"
     );
 
     // 2. `vsp list`: bare names when piped, aligned badges/descriptions with `-l/--long`.

@@ -472,9 +472,9 @@ fn diff_and_sync_dry_run_are_byte_identical_for_json_and_text() {
         (vec![ws.path().to_str().expect("utf8")], 0),
         (vec!["-p", "rust", "--ux", "retina", "--allow-unlocked"], 0),
         // Without `--allow-unlocked`, pending embedded Tier 1 locks populate `would_refuse`,
-        // so `diff` exits 0 while `sync --dry-run` predicts the apply refusal with exit 5
-        // and emits byte-identical stdout!
-        (vec!["-p", "rust", "--ux", "retina"], 5),
+        // With all 28 Tier 1 pins verified in the shipped vsp.lock.json, both `diff` and
+        // `sync --dry-run` exit 0 with byte-identical stdout!
+        (vec!["-p", "rust", "--ux", "retina"], 0),
         (vec!["--user", "--ux", "crisp", "--ai", "off"], 0),
     ];
 

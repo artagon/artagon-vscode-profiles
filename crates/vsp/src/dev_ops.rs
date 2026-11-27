@@ -1053,11 +1053,16 @@ fn query_marketplace_compat_batch(
                 "compat: Marketplace API request failed: {err}"
             ))
         })?;
-    let val: Value = resp.body_mut().read_json().map_err(|err| {
-        VspError::IncompleteObservation(format!(
-            "compat: Marketplace API returned malformed JSON: {err}"
-        ))
-    })?;
+    let val: Value = resp
+        .body_mut()
+        .with_config()
+        .limit(64 * 1024 * 1024)
+        .read_json()
+        .map_err(|err| {
+            VspError::IncompleteObservation(format!(
+                "compat: Marketplace API returned malformed JSON: {err}"
+            ))
+        })?;
     if !val.get("results").is_some_and(Value::is_array) {
         return Err(VspError::IncompleteObservation(
             "compat: Marketplace API response missing results array".to_string(),

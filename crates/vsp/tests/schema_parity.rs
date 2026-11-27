@@ -368,6 +368,8 @@ fn four_tier_lockfile_covers_all_103_active_and_preserves_8_universal_pins_verba
     let mut t1_verified = 0usize;
     let mut t1_pending = 0usize;
     let mut t2 = 0usize;
+    let mut t2_verified = 0usize;
+    let mut t2_pending = 0usize;
     let mut t3 = 0usize;
 
     for id in &active_ids {
@@ -385,7 +387,13 @@ fn four_tier_lockfile_covers_all_103_active_and_preserves_8_universal_pins_verba
                     None => panic!("Tier 1 entry '{id}' must specify status"),
                 }
             }
-            2 => t2 += 1,
+            2 => {
+                t2 += 1;
+                match entry.status {
+                    Some(LockEntryStatus::Verified) if entry.version.is_some() => t2_verified += 1,
+                    _ => t2_pending += 1,
+                }
+            }
             3 => t3 += 1,
             other => panic!("unexpected lock tier {other} for '{id}'"),
         }
@@ -393,14 +401,16 @@ fn four_tier_lockfile_covers_all_103_active_and_preserves_8_universal_pins_verba
 
     assert_eq!(t1, 28, "Tier 1 must cover exact 28 hash-locked IDs");
     assert_eq!(
-        t1_verified, 8,
-        "all 8 existing universal pins must be verified"
+        t1_verified, 28,
+        "all 28 Tier 1 IDs must be verified in vsp.lock.json"
     );
+    assert_eq!(t1_pending, 0, "no Tier 1 IDs should remain pending_refresh");
+    assert_eq!(t2, 49, "Tier 2 must cover exact 49 version-locked IDs");
     assert_eq!(
-        t1_pending, 20,
-        "remaining 20 Tier 1 IDs must be pending_refresh"
+        t2_verified, 49,
+        "all 49 Tier 2 IDs must carry locked versions"
     );
-    assert!(t2 <= 51, "Tier 2 count ({t2}) must be <= 51");
+    assert_eq!(t2_pending, 0, "no Tier 2 IDs should remain pending_refresh");
     assert!(t3 >= 24, "Tier 3 count ({t3}) must be >= 24");
     assert_eq!(t1 + t2 + t3, 103);
 
@@ -412,7 +422,8 @@ fn four_tier_lockfile_covers_all_103_active_and_preserves_8_universal_pins_verba
         assert!(!schema.lockfile.extensions.contains_key(blocked));
     }
 
-    // All 8 existing universal SHA-256 VSIX pins must match catalog/extension-pins.json verbatim!
+    // All 25 Tier 1 universal SHA-256 VSIX pins must map cleanly into catalog.pins, covering
+    // every legacy universal pin ID from catalog/extension-pins.json with verified digests.
     let PinsLoadState::Loaded(legacy_pins) = &legacy.pins else {
         panic!("legacy pins should be loaded");
     };
@@ -420,24 +431,22 @@ fn four_tier_lockfile_covers_all_103_active_and_preserves_8_universal_pins_verba
         panic!("v2.2 mapped pins should be loaded");
     };
     assert_eq!(legacy_pins.pins.len(), 8);
-    assert_eq!(new_pins.pins.len(), 8);
-    for (id, old_pin) in &legacy_pins.pins {
+    assert_eq!(new_pins.pins.len(), 25);
+    for id in legacy_pins.pins.keys() {
         let new_pin = new_pins
             .pins
             .get(id)
             .unwrap_or_else(|| panic!("missing mapped pin '{id}'"));
-        assert_eq!(
-            new_pin.version, old_pin.version,
-            "version mismatch for {id}"
+        assert!(!new_pin.version.is_empty(), "empty version for {id}");
+        assert_eq!(new_pin.sha256.len(), 64, "invalid sha256 for {id}");
+        assert!(
+            new_pin.vsix_url.starts_with("https://"),
+            "invalid vsix_url for {id}: {}",
+            new_pin.vsix_url
         );
-        assert_eq!(new_pin.sha256, old_pin.sha256, "sha256 mismatch for {id}");
-        assert_eq!(
-            new_pin.vsix_url, old_pin.vsix_url,
-            "vsix_url mismatch for {id}"
-        );
-        assert_eq!(
-            new_pin.verified_at, old_pin.verified_at,
-            "verified_at mismatch for {id}"
+        assert!(
+            new_pin.verified_at.is_some(),
+            "missing verified_at for {id}"
         );
 
         let lock_entry = schema.lockfile.extensions.get(id).expect("lock entry");
@@ -445,14 +454,14 @@ fn four_tier_lockfile_covers_all_103_active_and_preserves_8_universal_pins_verba
         assert_eq!(lock_entry.status, Some(LockEntryStatus::Verified));
         assert_eq!(
             lock_entry.version.as_deref(),
-            Some(old_pin.version.as_str())
+            Some(new_pin.version.as_str())
         );
-        assert_eq!(lock_entry.sha256.as_deref(), Some(old_pin.sha256.as_str()));
+        assert_eq!(lock_entry.sha256.as_deref(), Some(new_pin.sha256.as_str()));
         assert_eq!(
             lock_entry.vsix_url.as_deref(),
-            Some(old_pin.vsix_url.as_str())
+            Some(new_pin.vsix_url.as_str())
         );
-        assert_eq!(lock_entry.verified_at, old_pin.verified_at);
+        assert_eq!(lock_entry.verified_at, new_pin.verified_at);
     }
 }
 

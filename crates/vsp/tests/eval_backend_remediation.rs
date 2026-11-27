@@ -291,28 +291,19 @@ fn opus02_pre_write_vsix_refusal_zero_mutations_and_mid_apply_exit_6() {
         sb.path("code.log").display()
     ));
 
-    // 1. Embedded catalog refusal -> exit 5, ZERO mutations, end-user guidance!
-    let embedded_refusal = sb
-        .command()
-        .args(["--vscode-data-dir", &data, "sync", "-p", "rust"])
-        .output()
-        .expect("embedded sync");
-    assert_eq!(embedded_refusal.status.code(), Some(5));
-    assert_eq!(
-        fs::read_to_string(&storage).expect("storage after"),
-        storage_before,
-        "storage.json must be untouched on pre-write exit 5"
+    // 1. Embedded catalog refusal formatting (audience-aware end-user guidance without
+    //    `dev pins --refresh`) verified directly against the grouped refusal formatter.
+    let emb_cat = vsp::schema_loader::load_embedded().expect("embedded catalog");
+    let emb_err = vsp::vsix::format_vsix_refusal_summary(
+        &emb_cat,
+        "rust",
+        &[vsp::vsix::VsixFailure {
+            id: "anthropic.claude-code".to_string(),
+            message: "extension 'anthropic.claude-code' is marked 'pending_refresh' in vsp.lock.json (Tier 1 hash lock)".to_string(),
+            is_safety_refusal: true,
+            kind: vsp::vsix::VsixFailureKind::Tier1PendingRefresh,
+        }],
     );
-    assert!(!sb.path("data/User/profiles").exists());
-    assert!(!sb.path("state/vsp/profiles").exists());
-    assert!(!sb.path("config/vsp/rtk").exists());
-    assert_eq!(
-        sb.code_log(),
-        "",
-        "zero code invocations on pre-write exit 5"
-    );
-
-    let emb_err = stderr(&embedded_refusal);
     assert!(
         emb_err.contains("Tier 1 hash lock pending_refresh"),
         "{emb_err}"
@@ -328,9 +319,26 @@ fn opus02_pre_write_vsix_refusal_zero_mutations_and_mid_apply_exit_6() {
         "embedded catalog must not tell end users to run dev pins --refresh: {emb_err}"
     );
 
-    // 2. External `--catalog <DIR>` refusal -> exit 5, ZERO mutations, maintainer guidance!
+    // 2. External `--catalog <DIR>` with synthetic pending Tier 1 pin -> exit 5, ZERO mutations,
+    //    grouped multi-line maintainer guidance!
     let ext_cat = sb.path("ext-catalog");
     copy_v2_catalog(&ext_cat);
+    let ext_lock_path = ext_cat.join("vsp.lock.json");
+    let mut ext_lock: Value =
+        serde_json::from_str(&fs::read_to_string(&ext_lock_path).expect("read ext lock"))
+            .expect("parse ext lock");
+    ext_lock["extensions"]["anthropic.claude-code"] = json!({
+        "tier": 1,
+        "universal": false,
+        "status": "pending_refresh",
+        "version": null,
+        "targets": {}
+    });
+    fs::write(
+        &ext_lock_path,
+        serde_json::to_string_pretty(&ext_lock).expect("ser ext lock"),
+    )
+    .expect("write ext lock");
     let ext_cat_str = ext_cat.to_str().expect("utf8");
     let ext_refusal = sb
         .command()
@@ -348,9 +356,23 @@ fn opus02_pre_write_vsix_refusal_zero_mutations_and_mid_apply_exit_6() {
     assert_eq!(ext_refusal.status.code(), Some(5));
     assert_eq!(
         fs::read_to_string(&storage).expect("storage after ext"),
-        storage_before
+        storage_before,
+        "storage.json must be untouched on pre-write exit 5"
+    );
+    assert!(!sb.path("data/User/profiles").exists());
+    assert!(!sb.path("state/vsp/profiles").exists());
+    assert!(!sb.path("config/vsp/rtk").exists());
+    assert_eq!(
+        sb.code_log(),
+        "",
+        "zero code invocations on pre-write exit 5"
     );
     let ext_err = stderr(&ext_refusal);
+    assert!(
+        ext_err.contains("Tier 1 hash lock pending_refresh"),
+        "{ext_err}"
+    );
+    assert!(ext_err.contains("    - anthropic.claude-code"), "{ext_err}");
     assert!(
         ext_err.contains("dev pins --refresh") && ext_err.contains("retry with `--catalog"),
         "external catalog must emit maintainer remedy: {ext_err}"
@@ -603,6 +625,14 @@ fn opus01_tier2_unpinned_warns_records_provenance_and_fails_doctor_strict() {
                     "targets": targets
                 });
             }
+        } else if entry["tier"] == 2 {
+            // Explicitly force Tier 2 entries to pending_refresh in this synthetic fixture so
+            // Tier 2 fail-open warnings & provenance stay covered even with a refreshed lockfile.
+            *entry = json!({
+                "tier": 2,
+                "status": "pending_refresh",
+                "version": null
+            });
         }
     }
     fs::write(&lock_path, lock.to_string()).expect("write lock");
@@ -767,13 +797,15 @@ fn carbon03_opus11_doctor_strict_rtk_gating_and_fail_closed_lockfile() {
     let report: Value = serde_json::from_slice(&clean.stdout).expect("json");
     assert_eq!(report["warns"], 0);
     assert_eq!(report["fails"], 0);
-    assert!(
-        report["pending_tier1_pins"].as_u64().unwrap_or(0) > 0,
-        "must report informational pending_tier1_pins: {report}"
+    assert_eq!(
+        report["pending_tier1_pins"].as_u64(),
+        Some(0),
+        "shipped lockfile must have 0 pending_tier1_pins: {report}"
     );
-    assert!(
-        report["pending_tier2_pins"].as_u64().unwrap_or(0) > 0,
-        "must report informational pending_tier2_pins: {report}"
+    assert_eq!(
+        report["pending_tier2_pins"].as_u64(),
+        Some(0),
+        "shipped lockfile must have 0 pending_tier2_pins: {report}"
     );
     assert!(
         report["checks"]
@@ -787,6 +819,48 @@ fn carbon03_opus11_doctor_strict_rtk_gating_and_fail_closed_lockfile() {
             }),
         "expected optional RTK PASS: {report}"
     );
+
+    // 1b. Synthetic pending lockfile still reports informational pending counts while passing `--strict`.
+    let pending_cat = sb.path("pending-doc-cat");
+    copy_v2_catalog(&pending_cat);
+    let pending_lock_path = pending_cat.join("vsp.lock.json");
+    let mut pending_lock: Value =
+        serde_json::from_str(&fs::read_to_string(&pending_lock_path).expect("read lock"))
+            .expect("json");
+    pending_lock["extensions"]["anthropic.claude-code"] = json!({
+        "tier": 1,
+        "universal": false,
+        "status": "pending_refresh",
+        "version": null,
+        "targets": {}
+    });
+    pending_lock["extensions"]["rust-lang.rust-analyzer"] = json!({
+        "tier": 2,
+        "status": "pending_refresh",
+        "version": null
+    });
+    fs::write(
+        &pending_lock_path,
+        serde_json::to_string_pretty(&pending_lock).expect("ser"),
+    )
+    .expect("write pending lock");
+    let pending_doc = sb
+        .command()
+        .args([
+            "--catalog",
+            pending_cat.to_str().expect("utf8"),
+            "--vscode-data-dir",
+            &data,
+            "doctor",
+            "--strict",
+            "--json",
+        ])
+        .output()
+        .expect("pending doctor --strict");
+    assert_eq!(pending_doc.status.code(), Some(0));
+    let pending_rep: Value = serde_json::from_slice(&pending_doc.stdout).expect("json");
+    assert_eq!(pending_rep["pending_tier1_pins"], 1);
+    assert_eq!(pending_rep["pending_tier2_pins"], 1);
 
     // 2. `user_config.defaults.rtkTerminal: true` without RTK wrappers -> WARN (exit 1 under --strict).
     let cfg_path = sb.path("rtk-config.jsonc");

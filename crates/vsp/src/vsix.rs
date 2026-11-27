@@ -34,8 +34,10 @@ type WorkerOutcome = Result<String, (String, bool, VsixFailureKind)>;
 /// Maximum number of HTTP redirects followed while validating every hop.
 const MAX_REDIRECT_HOPS: usize = 10;
 
-/// Maximum VSIX archive download size (`256 MiB`) to bound disk/memory usage.
-const MAX_VSIX_BYTES: u64 = 256 * 1024 * 1024;
+/// Maximum VSIX archive download size (`1 GiB`) to accommodate large native AI extensions
+/// (for example `openai.chatgpt` > 340 MiB) while still bounding disk usage during `64 KiB`
+/// streaming verification.
+const MAX_VSIX_BYTES: u64 = 1024 * 1024 * 1024;
 
 static STAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -1294,7 +1296,7 @@ pub fn query_marketplace_extension_versions(
             "pageNumber": 1,
             "pageSize": 1
         }],
-        "assetTypes": [],
+        "assetTypes": ["Microsoft.VisualStudio.Services.VSIXPackage"],
         "flags": 103
     });
 
@@ -1309,9 +1311,16 @@ pub fn query_marketplace_extension_versions(
             ))
         })?;
 
-    let body: Value = resp.body_mut().read_json().map_err(|err| {
-        VspError::IncompleteObservation(format!("malformed Marketplace JSON for '{ext_id}': {err}"))
-    })?;
+    let body: Value = resp
+        .body_mut()
+        .with_config()
+        .limit(64 * 1024 * 1024)
+        .read_json()
+        .map_err(|err| {
+            VspError::IncompleteObservation(format!(
+                "malformed Marketplace JSON for '{ext_id}': {err}"
+            ))
+        })?;
 
     let versions = body
         .pointer("/results/0/extensions/0/versions")
