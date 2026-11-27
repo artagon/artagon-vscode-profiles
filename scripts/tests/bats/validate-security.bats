@@ -615,7 +615,10 @@ EOF
     wait "${p}" || worker_rc=1
   done
   [[ "${worker_rc}" -eq 0 ]]
-  [[ ! -s "${err_log}" ]]
+  if [[ -s "${err_log}" ]]; then
+    cat "${err_log}" >&2
+    false
+  fi
   [[ ! -d "${lock3}" && ! -d "${lock3}.reclaim" ]]
 
   # Verify all 4 workers completed and max concurrency was strictly 1.

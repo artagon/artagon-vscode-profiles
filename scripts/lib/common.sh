@@ -455,35 +455,45 @@ acquire_lock() {
       # so two concurrent reclaimers can never race and move a newly acquired owner's lock.
       if mkdir "${reclaim_guard}" 2>/dev/null; then
         local acquired_after_reap=0
-        local owner_pid owner_host my_host
+        local owner_pid owner_host owner_ts my_host
         if [[ -f "${lock_dir}/pid" && -f "${lock_dir}/host" ]]; then
           owner_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
           owner_host="$(cat "${lock_dir}/host" 2>/dev/null || true)"
+          owner_ts="$(cat "${lock_dir}/started_at" 2>/dev/null || true)"
           my_host="$(hostname 2>/dev/null || printf 'unknown')"
           # Only reap confirmed-dead local-host PID; verify `ps -p $$` works so a broken `ps`
           # never causes a false-dead reclamation.
           if [[ -n "${owner_host}" && "${owner_host}" == "${my_host}" && "${owner_pid}" =~ ^[0-9]+$ ]] \
              && ps -p "$$" >/dev/null 2>&1 \
              && ! ps -p "${owner_pid}" >/dev/null 2>&1; then
-            local reap_dir="${lock_dir}.reap.$$"
-            if mv "${lock_dir}" "${reap_dir}" 2>/dev/null; then
-              local reaped_pid
-              reaped_pid="$(cat "${reap_dir}/pid" 2>/dev/null || true)"
-              if [[ "${reaped_pid}" == "${owner_pid}" ]]; then
-                echo "lock: removing confirmed-dead stale lock (pid=${owner_pid}): ${lock_dir}" >&2
-                rm -rf "${reap_dir}"
-                # Claim the lock and write live metadata BEFORE releasing reclaim_guard
-                # so no waiting reclaimer can ever observe or disturb an uninitialized lock.
-                if mkdir "${lock_dir}" 2>/dev/null; then
-                  if _write_lock_metadata "${lock_dir}"; then
-                    acquired_after_reap=1
-                  else
-                    rm -rf "${lock_dir}"
+            # Re-verify lock ownership AFTER confirming owner_pid is dead. A dead PID cannot
+            # release the lock, so if metadata still matches, no live owner replaced it between
+            # our initial read and the ps check.
+            local recheck_pid recheck_host recheck_ts
+            recheck_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
+            recheck_host="$(cat "${lock_dir}/host" 2>/dev/null || true)"
+            recheck_ts="$(cat "${lock_dir}/started_at" 2>/dev/null || true)"
+            if [[ "${recheck_pid}" == "${owner_pid}" && "${recheck_host}" == "${owner_host}" && "${recheck_ts}" == "${owner_ts}" ]]; then
+              local reap_dir="${lock_dir}.reap.$$"
+              if mv "${lock_dir}" "${reap_dir}" 2>/dev/null; then
+                local reaped_pid
+                reaped_pid="$(cat "${reap_dir}/pid" 2>/dev/null || true)"
+                if [[ "${reaped_pid}" == "${owner_pid}" ]]; then
+                  echo "lock: removing confirmed-dead stale lock (pid=${owner_pid}): ${lock_dir}" >&2
+                  rm -rf "${reap_dir}"
+                  # Claim the lock and write live metadata BEFORE releasing reclaim_guard
+                  # so no waiting reclaimer can ever observe or disturb an uninitialized lock.
+                  if mkdir "${lock_dir}" 2>/dev/null; then
+                    if _write_lock_metadata "${lock_dir}"; then
+                      acquired_after_reap=1
+                    else
+                      rm -rf "${lock_dir}"
+                    fi
                   fi
+                else
+                  # Unexpected owner raced via external removal; restore cleanly without deleting.
+                  mv "${reap_dir}" "${lock_dir}" 2>/dev/null || true
                 fi
-              else
-                # Unexpected owner raced via external removal; restore cleanly without deleting.
-                mv "${reap_dir}" "${lock_dir}" 2>/dev/null || true
               fi
             fi
           fi
